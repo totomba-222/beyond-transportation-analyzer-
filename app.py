@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL FLEXIBLE VERSION)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 3.0)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -24,14 +24,15 @@ def get_pricing_policies():
         # Alaska (Vehicle-based logic)
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-        # Canada (Vehicle-based logic)
-        {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40}, # Example
-        {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35}, # Example
+        # Canada (Example vehicle-based logic)
+        {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
+        {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
         # Nebraska (General)
         {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
-        # Illinois & New Mexico (Placeholders)
-        {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
-        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
+        # Illinois (UPDATED - Inferred from summary data)
+        {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
+        # New Mexico (UPDATED - Inferred from detailed data)
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 39.50},
     ]
     return pd.DataFrame(policies_data).fillna(0)
 
@@ -39,19 +40,16 @@ def get_policy_driver_pay(row, df_policies):
     state_policies = df_policies[df_policies['State'] == row['State']]
     if state_policies.empty: return 0
 
-    # Prioritize vehicle-specific policy IF vehicle type is available and relevant
     if 'Vehicle_Type' in row and pd.notna(row['Vehicle_Type']):
         vehicle_specific_rules = state_policies[state_policies['Vehicle_Type'] == row['Vehicle_Type']]
         rules = vehicle_specific_rules[(row['Distance_Miles'] >= vehicle_specific_rules['Min_Miles']) & (row['Distance_Miles'] <= vehicle_specific_rules['Max_Miles'])]
         if not rules.empty:
-            # Found a specific rule, apply it
             rule = rules.iloc[0]
             if rule.get('Per_Mile_Rate', 0) > 0:
                 extra_miles = row['Distance_Miles'] - rule['Min_Miles']
                 return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
             else: return rule['Policy_Pay']
 
-    # Fallback to general ('ANY') policy for the state
     any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
     rules = any_vehicle_rules[(row['Distance_Miles'] >= any_vehicle_rules['Min_Miles']) & (row['Distance_Miles'] <= any_vehicle_rules['Max_Miles'])]
     if not rules.empty:
@@ -61,7 +59,7 @@ def get_policy_driver_pay(row, df_policies):
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
         
-    return 0 # No matching policy found
+    return 0
 
 def analyze_data(df_data, df_policies):
     df = df_data.copy()
@@ -76,7 +74,6 @@ def analyze_data(df_data, df_policies):
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # If Vehicle_Type column doesn't exist, create it as None.
     if 'Vehicle_Type' not in df.columns:
         df['Vehicle_Type'] = None
     else:
