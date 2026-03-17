@@ -61,6 +61,17 @@ def create_state_page(state_code, state_name):
     if uploaded_file:
         try:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
+            
+            # **THE FIX IS HERE: Clean column names automatically**
+            df.columns = df.columns.str.strip()
+
+            # Now, check for required columns after cleaning
+            required_cols = ['Trip_Date', 'State', 'Driver_Name', 'Distance_Miles', 'Gross_Pay', 'Net_Pay']
+            if not all(col in df.columns for col in required_cols):
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                st.error(f"File is missing required columns: {', '.join(missing_cols)}")
+                return
+
             st.session_state[f'analyzed_df_{state_code}'] = analyze_data(df, all_policies)
             st.success("File processed. Select an analysis to run below.")
         except Exception as e:
@@ -73,6 +84,7 @@ def create_state_page(state_code, state_name):
         st.subheader("Run Analysis")
         
         if st.button("Run Financial Analysis", key=f"financial_{state_code}"):
+            # ... (rest of the code is the same)
             total_gross = analyzed_df['Gross_Pay'].sum()
             total_margin = analyzed_df['Margin'].sum()
             avg_margin_percent = total_margin / total_gross if total_gross > 0 else 0
@@ -88,15 +100,16 @@ def create_state_page(state_code, state_name):
 
         if st.button("Generate Driver Statement", key=f"driver_{state_code}"):
             st.session_state.page = f'driver_{state_code}'
-            st.rerun() # CORRECTED
+            st.rerun()
 
 def create_driver_subpage(state_code):
+    # ... (rest of the code is the same)
     st.title(f"👤 Driver Statement for {state_code}")
     if f'analyzed_df_{state_code}' not in st.session_state:
         st.warning("No data available. Please upload data on the state page first.")
         if st.button("Go back to State Page"):
             st.session_state.page = state_code
-            st.rerun() # CORRECTED
+            st.rerun()
         return
 
     df = st.session_state[f'analyzed_df_{state_code}']
@@ -119,7 +132,7 @@ def create_driver_subpage(state_code):
 
     if st.button("Go back to State Page"):
         st.session_state.page = state_code
-        st.rerun() # CORRECTED
+        st.rerun()
 
 # ==============================================================================
 #  3. MAIN APP ROUTER
@@ -134,7 +147,7 @@ if 'page' not in st.session_state:
 
 if selection != st.session_state.page and not st.session_state.page.startswith('driver_'):
     st.session_state.page = selection
-    st.rerun() # CORRECTED
+    st.rerun()
 
 current_page = st.session_state.page
 if current_page.startswith('driver_'):
