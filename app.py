@@ -2,53 +2,86 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL FLEXIBLE VERSION)
 # ==============================================================================
+st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
+
 @st.cache_data
 def get_pricing_policies():
-    # This is the policy for what the DRIVER should be paid (Net_Pay)
+    # Vehicle_Type 'ANY' is the default/fallback for states.
     policies_data = [
-        {'State': 'OR', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
-        {'State': 'OR', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40},
-        {'State': 'OR', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75},
-        {'State': 'S.CA', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
-        {'State': 'S.CA', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
-        {'State': 'S.CA', 'Min_Miles': 8.01, 'Max_Miles': 15, 'Policy_Pay': 43},
-        {'State': 'N.CA', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
-        {'State': 'N.CA', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
-        {'State': 'AK', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
-        {'State': 'IL', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
-        {'State': 'NM', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
-        {'State': 'NE', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
-        {'State': 'CAN', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
+        # Oregon
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75},
+        # South California
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 15, 'Policy_Pay': 43},
+        # North California
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
+        # Alaska (Vehicle-based logic)
+        {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
+        {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
+        # Canada (Vehicle-based logic)
+        {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40}, # Example
+        {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35}, # Example
+        # Nebraska (General)
+        {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
+        # Illinois & New Mexico (Placeholders)
+        {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 0},
     ]
-    df = pd.DataFrame(policies_data).fillna(0)
-    return df
+    return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
     state_policies = df_policies[df_policies['State'] == row['State']]
     if state_policies.empty: return 0
-    rules = state_policies[(row['Distance_Miles'] >= state_policies['Min_Miles']) & (row['Distance_Miles'] <= state_policies['Max_Miles'])]
+
+    # Prioritize vehicle-specific policy IF vehicle type is available and relevant
+    if 'Vehicle_Type' in row and pd.notna(row['Vehicle_Type']):
+        vehicle_specific_rules = state_policies[state_policies['Vehicle_Type'] == row['Vehicle_Type']]
+        rules = vehicle_specific_rules[(row['Distance_Miles'] >= vehicle_specific_rules['Min_Miles']) & (row['Distance_Miles'] <= vehicle_specific_rules['Max_Miles'])]
+        if not rules.empty:
+            # Found a specific rule, apply it
+            rule = rules.iloc[0]
+            if rule.get('Per_Mile_Rate', 0) > 0:
+                extra_miles = row['Distance_Miles'] - rule['Min_Miles']
+                return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
+            else: return rule['Policy_Pay']
+
+    # Fallback to general ('ANY') policy for the state
+    any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
+    rules = any_vehicle_rules[(row['Distance_Miles'] >= any_vehicle_rules['Min_Miles']) & (row['Distance_Miles'] <= any_vehicle_rules['Max_Miles'])]
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
             extra_miles = row['Distance_Miles'] - rule['Min_Miles']
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
-    return 0
+        
+    return 0 # No matching policy found
 
 def analyze_data(df_data, df_policies):
     df = df_data.copy()
-    # Clean column names
     df.columns = df.columns.str.strip()
     
-    # Convert types
-    df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
-    numeric_cols = ['Distance_Miles', 'Gross_Pay', 'Net_Pay']
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    required_cols = ['Trip_Date', 'State', 'Driver_Name', 'Distance_Miles', 'Gross_Pay', 'Net_Pay']
+    if not all(col in df.columns for col in required_cols):
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        raise ValueError(f"File is missing required columns: {', '.join(missing_cols)}")
 
-    # Core Analysis based on CORRECTED logic
+    df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
+    for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # If Vehicle_Type column doesn't exist, create it as None.
+    if 'Vehicle_Type' not in df.columns:
+        df['Vehicle_Type'] = None
+    else:
+        df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
+
     df['Policy_Driver_Pay'] = df.apply(get_policy_driver_pay, axis=1, df_policies=df_policies)
     df['Margin'] = df['Gross_Pay'] - df['Net_Pay']
     df['Loss_Amount'] = df.apply(lambda row: row['Net_Pay'] - row['Policy_Driver_Pay'] if row['Net_Pay'] > row['Policy_Driver_Pay'] else 0, axis=1)
@@ -58,24 +91,29 @@ def analyze_data(df_data, df_policies):
 # ==============================================================================
 #  2. UI PAGE GENERATOR
 # ==============================================================================
-
-# **THIS IS THE LINE THAT WAS CHANGED**
-st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
-
 def create_state_page(state_code, state_name):
     st.title(f"📊 {state_name} - Analysis Dashboard")
     
+    st.subheader("Official Pricing Policy")
+    all_policies = get_pricing_policies()
+    state_policy_df = all_policies[all_policies['State'] == state_code]
+    st.table(state_policy_df.drop(columns=['State']))
+
     st.subheader("Upload Trip Data for this State")
+    st.markdown("Required columns: `Trip_Date`, `State`, `Driver_Name`, `Distance_Miles`, `Gross_Pay`, `Net_Pay`")
+    st.markdown("Optional column for AK/CAN: `Vehicle_Type`")
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
 
     if uploaded_file:
         try:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
-            all_policies = get_pricing_policies()
             st.session_state[f'analyzed_df_{state_code}'] = analyze_data(df, all_policies)
-            st.success("File processed. You can now see the analysis below.")
+            st.success("File processed. Analysis is shown below.")
+        except ValueError as ve:
+            st.error(str(ve))
+            return
         except Exception as e:
-            st.error(f"Error processing file: {e}")
+            st.error(f"An unexpected error occurred: {e}")
             return
 
     if f'analyzed_df_{state_code}' in st.session_state:
@@ -102,14 +140,14 @@ def create_state_page(state_code, state_name):
         else:
             st.subheader("Non-Compliant Trips (Driver Paid > Policy)")
             display_cols = {
-                'Trip_Date': 'Date',
-                'Driver_Name': 'Driver',
-                'Distance_Miles': 'Miles',
-                'Net_Pay': 'Current Driver Pay',
-                'Policy_Driver_Pay': 'Policy Driver Pay',
-                'Loss_Amount': 'Loss'
+                'Trip_Date': 'Date', 'Driver_Name': 'Driver',
+                'Distance_Miles': 'Miles', 'Net_Pay': 'Current Driver Pay',
+                'Policy_Driver_Pay': 'Policy Driver Pay', 'Loss_Amount': 'Loss'
             }
-            st.dataframe(non_compliant_trips[display_cols.keys()].rename(columns=display_cols))
+            if 'Vehicle_Type' in non_compliant_trips.columns and non_compliant_trips['Vehicle_Type'].notna().any():
+                display_cols['Vehicle_Type'] = 'Vehicle'
+            
+            st.dataframe(non_compliant_trips[list(display_cols.keys())].rename(columns=display_cols))
 
             st.subheader("Compliance Impact Summary")
             total_loss = non_compliant_trips['Loss_Amount'].sum()
@@ -131,12 +169,5 @@ st.sidebar.title("Navigation")
 st.sidebar.markdown("Select a state to begin analysis.")
 STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
 selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
-
-if 'page' not in st.session_state:
-    st.session_state.page = selection
-
-if selection != st.session_state.page:
-    st.session_state.page = selection
-    st.rerun()
 
 create_state_page(selection, STATES[selection])
