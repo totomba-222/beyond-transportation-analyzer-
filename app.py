@@ -6,7 +6,6 @@ import streamlit as st
 # ==============================================================================
 @st.cache_data
 def get_pricing_policies():
-    # This function holds the official pricing rules for all states.
     policies_data = [
         {'State': 'OR', 'Min_Miles': 0, 'Max_Miles': 8, 'Base_Price': 35},
         {'State': 'OR', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Base_Price': 40},
@@ -17,10 +16,10 @@ def get_pricing_policies():
         {'State': 'N.CA', 'Min_Miles': 0, 'Max_Miles': 6, 'Base_Price': 38},
         {'State': 'N.CA', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Base_Price': 42},
         {'State': 'AK', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 40},
-        {'State': 'IL', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0}, # Placeholder
-        {'State': 'NM', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0}, # Placeholder
-        {'State': 'NE', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0}, # Placeholder
-        {'State': 'CAN', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0}, # Placeholder
+        {'State': 'IL', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0},
+        {'State': 'NM', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0},
+        {'State': 'NE', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0},
+        {'State': 'CAN', 'Min_Miles': 0, 'Max_Miles': 999, 'Base_Price': 0},
     ]
     df = pd.DataFrame(policies_data).fillna(0)
     return df
@@ -47,50 +46,39 @@ def analyze_data(df_data, df_policies):
     return df
 
 # ==============================================================================
-#  2. UI PAGE GENERATOR (The core of the new design)
+#  2. UI PAGE GENERATOR
 # ==============================================================================
 def create_state_page(state_code, state_name):
     st.title(f"📊 {state_name} - Analysis Dashboard")
-
-    # --- Display Pricing Policy ---
     st.subheader("Official Pricing Policy")
     all_policies = get_pricing_policies()
     state_policy_df = all_policies[all_policies['State'] == state_code]
     st.table(state_policy_df)
 
-    # --- Upload Data ---
     st.subheader("Upload Trip Data for this State")
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
 
     if uploaded_file:
         try:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
-            # Run analysis and store in session state for this specific state
             st.session_state[f'analyzed_df_{state_code}'] = analyze_data(df, all_policies)
             st.success("File processed. Select an analysis to run below.")
         except Exception as e:
             st.error(f"Error processing file: {e}")
             return
 
-    # --- Analysis Buttons ---
     if f'analyzed_df_{state_code}' in st.session_state:
         analyzed_df = st.session_state[f'analyzed_df_{state_code}']
-        
         st.markdown("---")
         st.subheader("Run Analysis")
         
-        # Financial Analysis Button
         if st.button("Run Financial Analysis", key=f"financial_{state_code}"):
             total_gross = analyzed_df['Gross_Pay'].sum()
             total_margin = analyzed_df['Margin'].sum()
             avg_margin_percent = total_margin / total_gross if total_gross > 0 else 0
-            summary_data = {
-                'Metric': ['Total Trips', 'Total Gross Pay (Revenue)', 'Total Net Pay (Driver Cost)', 'Total Margin (Profit)', 'Average Margin %'],
-                'Value': [f"{len(analyzed_df)}", f"${total_gross:,.2f}", f"${analyzed_df['Net_Pay'].sum():,.2f}", f"${total_margin:,.2f}", f"{avg_margin_percent:.2%}"]
-            }
+            summary_data = {'Metric': ['Total Trips', 'Total Gross Pay (Revenue)', 'Total Net Pay (Driver Cost)', 'Total Margin (Profit)', 'Average Margin %'], 'Value': [f"{len(analyzed_df)}", f"${total_gross:,.2f}", f"${analyzed_df['Net_Pay'].sum():,.2f}", f"${total_margin:,.2f}", f"{avg_margin_percent:.2%}"]}
             st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
-        # High-Margin Analysis Button
         if st.button("Analyze High-Margin Trips", key=f"margin_{state_code}"):
             high_margin_trips = analyzed_df[analyzed_df['Is_High_Margin']]
             if high_margin_trips.empty:
@@ -98,25 +86,21 @@ def create_state_page(state_code, state_name):
             else:
                 st.dataframe(high_margin_trips[['Trip_Date', 'Driver_Name', 'Distance_Miles', 'Gross_Pay', 'Policy_Price', 'Price_Variance']])
 
-        # Driver Statement Button
         if st.button("Generate Driver Statement", key=f"driver_{state_code}"):
-            st.session_state.page = f'driver_{state_code}' # Switch to driver sub-page
-            st.experimental_rerun()
-
+            st.session_state.page = f'driver_{state_code}'
+            st.rerun() # CORRECTED
 
 def create_driver_subpage(state_code):
     st.title(f"👤 Driver Statement for {state_code}")
-    
     if f'analyzed_df_{state_code}' not in st.session_state:
         st.warning("No data available. Please upload data on the state page first.")
         if st.button("Go back to State Page"):
             st.session_state.page = state_code
-            st.experimental_rerun()
+            st.rerun() # CORRECTED
         return
 
     df = st.session_state[f'analyzed_df_{state_code}']
     driver_list = sorted(df['Driver_Name'].unique().tolist())
-    
     selected_driver = st.selectbox("Select a Driver:", driver_list)
     start_date = st.date_input("Start Date", value=df['Trip_Date'].min().date())
     end_date = st.date_input("End Date", value=df['Trip_Date'].max().date())
@@ -135,39 +119,23 @@ def create_driver_subpage(state_code):
 
     if st.button("Go back to State Page"):
         st.session_state.page = state_code
-        st.experimental_rerun()
+        st.rerun() # CORRECTED
 
 # ==============================================================================
-#  3. MAIN APP ROUTER (State-based navigation)
+#  3. MAIN APP ROUTER
 # ==============================================================================
 st.sidebar.title("Navigation")
 st.sidebar.markdown("Select a state to begin analysis.")
-
-# Define the states and their pages
-STATES = {
-    "OR": "Oregon",
-    "S.CA": "South California",
-    "N.CA": "North California",
-    "AK": "Alaska",
-    "IL": "Illinois",
-    "NM": "New Mexico",
-    "NE": "Nebraska",
-    "CAN": "Canada"
-}
-
-# Use radio buttons for state selection
+STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
 selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
 
-# Initialize session state for page navigation
 if 'page' not in st.session_state:
     st.session_state.page = selection
 
-# If a state is selected from sidebar, set it as the current page
 if selection != st.session_state.page and not st.session_state.page.startswith('driver_'):
     st.session_state.page = selection
-    st.experimental_rerun()
+    st.rerun() # CORRECTED
 
-# Page routing logic
 current_page = st.session_state.page
 if current_page.startswith('driver_'):
     state_code = current_page.split('_')[1]
@@ -175,6 +143,4 @@ if current_page.startswith('driver_'):
 elif current_page in STATES:
     create_state_page(current_page, STATES[current_page])
 else:
-    # Default to the first state if something goes wrong
     create_state_page("OR", "Oregon")
-
