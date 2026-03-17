@@ -2,13 +2,12 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 3.0)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 4.0 - NM CORRECTED)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
 @st.cache_data
 def get_pricing_policies():
-    # Vehicle_Type 'ANY' is the default/fallback for states.
     policies_data = [
         # Oregon
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
@@ -29,10 +28,12 @@ def get_pricing_policies():
         {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
         # Nebraska (General)
         {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
-        # Illinois (UPDATED - Inferred from summary data)
+        # Illinois (Inferred from summary data)
         {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        # New Mexico (UPDATED - Inferred from detailed data)
-        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 39.50},
+        # New Mexico (CORRECTED - Multi-tier policy based on detailed analysis)
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 12, 'Policy_Pay': 39.50},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 12.01, 'Max_Miles': 20, 'Policy_Pay': 45},
     ]
     return pd.DataFrame(policies_data).fillna(0)
 
