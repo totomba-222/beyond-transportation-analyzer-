@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (REBUILT LOGIC)
+#  1. PRICING POLICIES & ANALYSIS ENGINE
 # ==============================================================================
 @st.cache_data
 def get_pricing_policies():
@@ -58,10 +58,13 @@ def analyze_data(df_data, df_policies):
 # ==============================================================================
 #  2. UI PAGE GENERATOR
 # ==============================================================================
+
+# **THIS IS THE LINE THAT WAS CHANGED**
+st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
+
 def create_state_page(state_code, state_name):
     st.title(f"📊 {state_name} - Analysis Dashboard")
     
-    # --- Upload Data ---
     st.subheader("Upload Trip Data for this State")
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
 
@@ -70,7 +73,7 @@ def create_state_page(state_code, state_name):
             df = pd.read_excel(uploaded_file, engine='openpyxl')
             all_policies = get_pricing_policies()
             st.session_state[f'analyzed_df_{state_code}'] = analyze_data(df, all_policies)
-            st.success("File processed. Select an analysis to run below.")
+            st.success("File processed. You can now see the analysis below.")
         except Exception as e:
             st.error(f"Error processing file: {e}")
             return
@@ -79,7 +82,6 @@ def create_state_page(state_code, state_name):
         analyzed_df = st.session_state[f'analyzed_df_{state_code}']
         st.markdown("---")
         
-        # --- Financial Analysis ---
         st.header("Financial Summary")
         total_revenue = analyzed_df['Gross_Pay'].sum()
         total_driver_cost = analyzed_df['Net_Pay'].sum()
@@ -92,7 +94,6 @@ def create_state_page(state_code, state_name):
         }
         st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
-        # --- Compliance Analysis (THE NEW SECTION) ---
         st.header("Pricing Policy Compliance Analysis")
         non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
         
@@ -110,7 +111,6 @@ def create_state_page(state_code, state_name):
             }
             st.dataframe(non_compliant_trips[display_cols.keys()].rename(columns=display_cols))
 
-            # --- NEW KPIs ---
             st.subheader("Compliance Impact Summary")
             total_loss = non_compliant_trips['Loss_Amount'].sum()
             non_compliant_ratio = len(non_compliant_trips) / len(analyzed_df)
@@ -125,14 +125,13 @@ def create_state_page(state_code, state_name):
             kpi_col2.metric(label="Potential Margin % (if compliant)", value=f"{potential_margin_percent:.2%}", delta=f"{(potential_margin_percent - current_margin_percent):.2%}")
 
 # ==============================================================================
-#  3. MAIN APP ROUTER (No changes needed here)
+#  3. MAIN APP ROUTER
 # ==============================================================================
 st.sidebar.title("Navigation")
 st.sidebar.markdown("Select a state to begin analysis.")
 STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
 selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
 
-# This part handles page navigation and remains the same
 if 'page' not in st.session_state:
     st.session_state.page = selection
 
