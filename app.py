@@ -1,11 +1,10 @@
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
 # ==============================================================================
 #  1. PRICING POLICIES ENGINE (Hardcoded as requested)
 # ==============================================================================
-@st.cache_data
+@st.cache_data # Cache the policies so they don't reload every time
 def get_pricing_policies():
     policies_data = [
         {'State': 'OR', 'Min_Miles': 0, 'Max_Miles': 8, 'Base_Price': 35, 'Per_Mile_Rate': 0, 'Extra_Mile_Base': 0},
@@ -25,7 +24,7 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data)
 
 # ==============================================================================
-#  2. THE ANALYSIS ENGINE (Now more powerful)
+#  2. THE ANALYSIS ENGINE
 # ==============================================================================
 def get_policy_price(row, df_policies):
     state_policies = df_policies[df_policies['State'] == row['State']]
@@ -43,8 +42,6 @@ def get_policy_price(row, df_policies):
 
 def analyze_data(df_data, df_policies):
     df = df_data.copy()
-    # Convert date column to datetime objects safely
-    df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
     df['Policy_Price'] = df.apply(get_policy_price, axis=1, df_policies=df_policies)
     df['Total_Cost'] = df['Driver_Pay'] + df['Vehicle_Cost']
     df['Trip_Profit'] = df['Billed_Amount'] - df['Total_Cost']
@@ -54,7 +51,7 @@ def analyze_data(df_data, df_policies):
     return df
 
 # ==============================================================================
-#  3. THE USER INTERFACE (Completely redesigned based on your requests)
+#  3. THE USER INTERFACE
 # ==============================================================================
 st.set_page_config(page_title="Beyond Transportation Analyzer", layout="wide")
 st.title("📊 Beyond Transportation - Performance Analyzer")
@@ -62,7 +59,7 @@ st.title("📊 Beyond Transportation - Performance Analyzer")
 policies = get_pricing_policies()
 
 st.header("Step 1: Import Weekly Trips File")
-st.markdown("Please upload the Excel file containing the weekly trips. The file must be in **.xlsx** format.")
+st.markdown("Please upload the Excel file. The file must have these columns: `Trip_Date`, `State`, `Driver_Name`, `Distance_Miles`, `Billed_Amount`, `Driver_Pay`, `Vehicle_Cost`")
 uploaded_file = st.file_uploader("Choose an .xlsx file", type="xlsx")
 
 if uploaded_file is not None:
@@ -80,25 +77,16 @@ if uploaded_file is not None:
         state_list = ["All States"] + sorted(analyzed_df['State'].unique().tolist())
         selected_state = st.selectbox("Choose a State:", state_list)
 
-        if selected_state == "All States":
-            display_df = analyzed_df
-        else:
-            display_df = analyzed_df[analyzed_df['State'] == selected_state]
+        display_df = analyzed_df if selected_state == "All States" else analyzed_df[analyzed_df['State'] == selected_state]
 
         if not display_df.empty:
             st.subheader(f"Financial Performance Analysis: {selected_state}")
-            total_trips = len(display_df)
-            total_revenue = display_df['Billed_Amount'].sum()
-            total_profit = display_df['Trip_Profit'].sum()
-            avg_profit_per_trip = display_df['Trip_Profit'].mean()
-            total_violations = display_df['Is_Violation'].sum()
-
             col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Total Trips", total_trips)
-            col2.metric("Total Revenue", f"${total_revenue:,.2f}")
-            col3.metric("Total Profit", f"${total_profit:,.2f}")
-            col4.metric("Avg. Profit/Trip", f"${avg_profit_per_trip:,.2f}")
-            col5.metric("Pricing Violations", total_violations)
+            col1.metric("Total Trips", len(display_df))
+            col2.metric("Total Revenue", f"${display_df['Billed_Amount'].sum():,.2f}")
+            col3.metric("Total Profit", f"${display_df['Trip_Profit'].sum():,.2f}")
+            col4.metric("Avg. Profit/Trip", f"${display_df['Trip_Profit'].mean():,.2f}")
+            col5.metric("Pricing Violations", int(display_df['Is_Violation'].sum()))
 
             st.subheader("Pricing Policy Violations (Billed < Policy)")
             violations_df = display_df[display_df['Is_Violation']]
@@ -111,8 +99,10 @@ if uploaded_file is not None:
             driver_list = sorted(display_df['Driver_Name'].unique().tolist())
             if driver_list:
                 selected_driver = st.selectbox("Select a Driver:", driver_list)
-                start_date = st.date_input("Start Date", value=display_df['Trip_Date'].min().date())
-                end_date = st.date_input("End Date", value=display_df['Trip_Date'].max().date())
+                min_date = display_df['Trip_Date'].min().date()
+                max_date = display_df['Trip_Date'].max().date()
+                start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
+                end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
 
                 if st.button(f"Generate Report for {selected_driver}"):
                     driver_df = display_df[(display_df['Driver_Name'] == selected_driver) & (display_df['Trip_Date'].dt.date >= start_date) & (display_df['Trip_Date'].dt.date <= end_date)]
@@ -123,8 +113,9 @@ if uploaded_file is not None:
                         st.metric(f"Total Trips by {selected_driver}", len(driver_df))
                         st.metric(f"Total Pay for {selected_driver}", f"${driver_df['Driver_Pay'].sum():,.2f}")
                         st.dataframe(driver_df[['Trip_Date', 'Distance_Miles', 'Billed_Amount', 'Driver_Pay', 'Trip_Profit']])
+        else:
+            st.warning("No data available for the selected state.")
     except Exception as e:
         st.error(f"An error occurred: {e}")
-        st.warning("Please check if the uploaded Excel file has the correct columns.")
 else:
     st.info("Awaiting file upload to begin analysis...")
