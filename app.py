@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 12.0 - ROBUST FIX)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 13.0 - COLUMN DETECTION)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -77,7 +77,7 @@ def get_policy_driver_pay(row, df_policies):
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
-            extra_miles = max(0, miles - rule['Min_Miles'])
+            extra_miles = max(0, miles - rule['Min_Miles'] or 0)
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
         
@@ -92,16 +92,22 @@ def analyze_data(df_data, df_policies):
         'Trip_Date': ['Trip_Date', 'Date', 'Trip Date'],
         'State': ['State'],
         'Driver_Name': ['Driver_Name', 'Driver', 'Driver Name'],
-        'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles'],
+        'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles', 'Trip_Miles'],
         'Gross_Pay': ['Gross_Pay', 'Gross Pay', 'Gross'],
         'Net_Pay': ['Net_Pay', 'Net Pay', 'Net', 'Paid to Driver']
     }
     
+    # Find and map columns
+    found_cols = []
     for target, options in mapping.items():
         for opt in options:
             if opt in df.columns:
                 df[target] = df[opt]
+                found_cols.append(f"{target} -> {opt}")
                 break
+    
+    # Display found columns for debugging
+    st.info(f"Detected Columns: {', '.join(found_cols)}")
     
     # Ensure numeric conversion
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
