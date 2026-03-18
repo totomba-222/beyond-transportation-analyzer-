@@ -67,7 +67,7 @@ def get_policy_driver_pay(row, df_policies):
             else: return rule['Policy_Pay']
 
     any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
-    rules = any_vehicle_rules[(miles >= any_vehicle_rules['Min_Miles']) & (miles <= any_rules['Max_Miles'])]
+    rules = any_vehicle_rules[(miles >= any_vehicle_rules['Min_Miles']) & (miles <= any_vehicle_rules['Max_Miles'])]
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
@@ -146,22 +146,18 @@ def create_state_page(state_code, state_name):
         st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
         st.header("Pricing Policy Compliance Analysis")
-        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
         
-        if non_compliant_trips.empty:
-            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
-        else:
-            st.subheader("Non-Compliant Trips (Driver Paid > Policy)")
-            display_cols = {
-                'Trip_Date': 'Date', 'Driver_Name': 'Driver',
-                'Distance_Miles': 'Miles', 'Net_Pay': 'Current Driver Pay',
-                'Policy_Driver_Pay': 'Policy Driver Pay', 'Loss_Amount': 'Loss'
-            }
-            if 'Vehicle_Type' in non_compliant_trips.columns and non_compliant_trips['Vehicle_Type'].notna().any():
-                display_cols['Vehicle_Type'] = 'Vehicle'
-            
-            st.dataframe(non_compliant_trips[list(display_cols.keys())].rename(columns=display_cols))
+        # SHOW ALL TRIPS TO COMPARE POLICY PAY
+        st.subheader("All Trips with Policy Comparison")
+        display_cols = {
+            'Trip_Date': 'Date', 'Driver_Name': 'Driver',
+            'Distance_Miles': 'Miles', 'Net_Pay': 'Current Driver Pay',
+            'Policy_Driver_Pay': 'Policy Driver Pay', 'Loss_Amount': 'Loss'
+        }
+        st.dataframe(analyzed_df[list(display_cols.keys())].rename(columns=display_cols))
 
+        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
+        if not non_compliant_trips.empty:
             st.subheader("Compliance Impact Summary")
             total_loss = non_compliant_trips['Loss_Amount'].sum()
             non_compliant_ratio = len(non_compliant_trips) / len(analyzed_df)
@@ -174,6 +170,8 @@ def create_state_page(state_code, state_name):
             kpi_col2.metric(label="Non-Compliant Trips %", value=f"{non_compliant_ratio:.2%}")
             kpi_col1.metric(label="Loss as % of Revenue", value=f"{loss_to_revenue_ratio:.2%}")
             kpi_col2.metric(label="Potential Margin % (if compliant)", value=f"{potential_margin_percent:.2%}", delta=f"{(potential_margin_percent - current_margin_percent):.2%}")
+        else:
+            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
 
 # ==============================================================================
 #  3. MAIN APP ROUTER
