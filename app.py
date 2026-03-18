@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 11.0 - N.CA POLICY PAY FIX)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 12.0 - ROBUST FIX)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -39,8 +39,13 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
-    state = row['State']
-    miles = row['Distance_Miles']
+    # ROBUST COLUMN DETECTION FOR MILES
+    miles = 0
+    if 'Distance_Miles' in row: miles = row['Distance_Miles']
+    elif 'Miles' in row: miles = row['Miles']
+    elif 'Distance' in row: miles = row['Distance']
+    
+    state = row.get('State', 'N.CA')
     
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
     if state == 'N.CA':
@@ -50,9 +55,10 @@ def get_policy_driver_pay(row, df_policies):
             return 42.0
         else:
             # Over 14 miles: (Excess Miles * 1.25) + 38
-            excess_miles = miles - 14
+            excess_miles = max(0, miles - 14)
             return 38.0 + (excess_miles * 1.25)
 
+    # GENERAL LOGIC FOR OTHER STATES
     state_policies = df_policies[df_policies['State'] == state]
     if state_policies.empty: return 0
 
@@ -62,7 +68,7 @@ def get_policy_driver_pay(row, df_policies):
         if not rules.empty:
             rule = rules.iloc[0]
             if rule.get('Per_Mile_Rate', 0) > 0:
-                extra_miles = miles - rule['Min_Miles']
+                extra_miles = max(0, miles - rule['Min_Miles'])
                 return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
             else: return rule['Policy_Pay']
 
@@ -71,7 +77,7 @@ def get_policy_driver_pay(row, df_policies):
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
-            extra_miles = miles - rule['Min_Miles']
+            extra_miles = max(0, miles - rule['Min_Miles'])
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
         
@@ -81,24 +87,42 @@ def analyze_data(df_data, df_policies):
     df = df_data.copy()
     df.columns = df.columns.str.strip()
     
-    required_cols = ['Trip_Date', 'State', 'Driver_Name', 'Distance_Miles', 'Gross_Pay', 'Net_Pay']
-    if not all(col in df.columns for col in required_cols):
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        raise ValueError(f"File is missing required columns: {', '.join(missing_cols)}")
-
-    df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
+    # FLEXIBLE COLUMN MAPPING
+    mapping = {
+        'Trip_Date': ['Trip_Date', 'Date', 'Trip Date'],
+        'State': ['State'],
+        'Driver_Name': ['Driver_Name', 'Driver', 'Driver Name'],
+        'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles'],
+        'Gross_Pay': ['Gross_Pay', 'Gross Pay', 'Gross'],
+        'Net_Pay': ['Net_Pay', 'Net Pay', 'Net', 'Paid to Driver']
+    }
+    
+    for target, options in mapping.items():
+        for opt in options:
+            if opt in df.columns:
+                df[target] = df[opt]
+                break
+    
+    # Ensure numeric conversion
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0.0
+
+    if 'Trip_Date' in df.columns:
+        df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
     
     if 'Vehicle_Type' not in df.columns:
         df['Vehicle_Type'] = None
     else:
         df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
 
+    # APPLY CALCULATION
     df['Policy_Driver_Pay'] = df.apply(get_policy_driver_pay, axis=1, df_policies=df_policies)
     df['Margin'] = df['Gross_Pay'] - df['Net_Pay']
     df['Loss_Amount'] = df.apply(lambda row: row['Net_Pay'] - row['Policy_Driver_Pay'] if row['Net_Pay'] > row['Policy_Driver_Pay'] else 0, axis=1)
-    df['Is_Non_Compliant'] = df['Loss_Amount'] > 0
+    df['Is_Non_Compliant'] = df['Loss_Amount'] > 0.01
     return df
 
 # ==============================================================================
@@ -113,20 +137,15 @@ def create_state_page(state_code, state_name):
     st.table(state_policy_df.drop(columns=['State']))
 
     st.subheader("Upload Trip Data for this State")
-    st.markdown("Required columns: `Trip_Date`, `State`, `Driver_Name`, `Distance_Miles`, `Gross_Pay`, `Net_Pay`")
-    st.markdown("Optional column for AK/CAN: `Vehicle_Type`")
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
 
     if uploaded_file:
         try:
             df = pd.read_excel(uploaded_file, engine='openpyxl')
             st.session_state[f'analyzed_df_{state_code}'] = analyze_data(df, all_policies)
-            st.success("File processed. Analysis is shown below.")
-        except ValueError as ve:
-            st.error(str(ve))
-            return
+            st.success("File processed successfully!")
         except Exception as e:
-            st.error(f"An unexpected error occurred: {e}")
+            st.error(f"Error: {e}")
             return
 
     if f'analyzed_df_{state_code}' in st.session_state:
