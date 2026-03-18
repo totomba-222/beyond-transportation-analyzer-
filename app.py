@@ -20,6 +20,7 @@ def get_pricing_policies():
         # North California
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
         # Alaska (Vehicle-based logic)
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
@@ -47,16 +48,20 @@ def get_policy_driver_pay(row, df_policies):
         if not rules.empty:
             rule = rules.iloc[0]
             if rule.get('Per_Mile_Rate', 0) > 0:
-                extra_miles = row['Distance_Miles'] - rule['Min_Miles']
+                # Use the integer threshold for excess miles calculation if it's a "plus" policy
+                threshold = 14 if row['State'] == 'N.CA' and rule['Min_Miles'] == 14.01 else rule['Min_Miles']
+                extra_miles = row['Distance_Miles'] - threshold
                 return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
             else: return rule['Policy_Pay']
-
+    
     any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
     rules = any_vehicle_rules[(row['Distance_Miles'] >= any_vehicle_rules['Min_Miles']) & (row['Distance_Miles'] <= any_vehicle_rules['Max_Miles'])]
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
-            extra_miles = row['Distance_Miles'] - rule['Min_Miles']
+            # Use the integer threshold for excess miles calculation if it's a "plus" policy
+            threshold = 14 if row['State'] == 'N.CA' and rule['Min_Miles'] == 14.01 else rule['Min_Miles']
+            extra_miles = row['Distance_Miles'] - threshold
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
         
