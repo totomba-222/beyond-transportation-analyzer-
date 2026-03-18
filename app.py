@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 5.0 - N.CA UPDATED)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 6.0 - N.CA POLICY PAY FIX)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -98,7 +98,7 @@ def analyze_data(df_data, df_policies):
     else:
         df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
 
-    # Apply the pricing logic
+    # Apply the pricing logic to calculate Policy_Driver_Pay
     df['Policy_Driver_Pay'] = df.apply(get_policy_driver_pay, axis=1, df_policies=df_policies)
     
     # Financial Calculations
@@ -116,18 +116,17 @@ def create_state_page(state_code, state_name):
     
     st.subheader("Official Pricing Policy")
     all_policies = get_pricing_policies()
-    state_policy_df = all_policies[all_policies['State'] == state_code]
     
     # Display the policy table for the user to see
     if state_code == 'N.CA':
-        # Custom display for N.CA to show the formula clearly
         nca_display = pd.DataFrame([
-            {'Range': '0 - 6 Miles', 'Pay': '$38.00'},
-            {'Range': '6.01 - 14 Miles', 'Pay': '$42.00'},
-            {'Range': 'Over 14 Miles', 'Pay': '$38.00 + ($1.25 per excess mile)'}
+            {'Range': '0 - 6 Miles', 'Policy Pay': '$38.00'},
+            {'Range': '6.01 - 14 Miles', 'Policy Pay': '$42.00'},
+            {'Range': 'Over 14 Miles', 'Policy Pay': '$38.00 + ($1.25 per excess mile over 14)'}
         ])
         st.table(nca_display)
     else:
+        state_policy_df = all_policies[all_policies['State'] == state_code]
         st.table(state_policy_df.drop(columns=['State']))
 
     st.subheader("Upload Trip Data for this State")
@@ -160,19 +159,18 @@ def create_state_page(state_code, state_name):
         st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
         st.header("Pricing Policy Compliance Analysis")
-        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
         
-        if non_compliant_trips.empty:
-            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
-        else:
-            st.subheader("Non-Compliant Trips (Driver Paid > Policy)")
-            display_cols = {
-                'Trip_Date': 'Date', 'Driver_Name': 'Driver',
-                'Distance_Miles': 'Miles', 'Net_Pay': 'Current Driver Pay',
-                'Policy_Driver_Pay': 'Policy Driver Pay', 'Loss_Amount': 'Loss'
-            }
-            st.dataframe(non_compliant_trips[list(display_cols.keys())].rename(columns=display_cols))
+        # Display all trips but highlight the Policy_Driver_Pay clearly
+        st.subheader("All Trips with Policy Comparison")
+        display_cols = {
+            'Trip_Date': 'Date', 'Driver_Name': 'Driver',
+            'Distance_Miles': 'Miles', 'Net_Pay': 'Paid to Driver',
+            'Policy_Driver_Pay': 'Policy Driver Pay (Correct)', 'Loss_Amount': 'Loss'
+        }
+        st.dataframe(analyzed_df[list(display_cols.keys())].rename(columns=display_cols))
 
+        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
+        if not non_compliant_trips.empty:
             st.subheader("Compliance Impact Summary")
             total_loss = non_compliant_trips['Loss_Amount'].sum()
             non_compliant_ratio = len(non_compliant_trips) / len(analyzed_df)
@@ -185,6 +183,8 @@ def create_state_page(state_code, state_name):
             kpi_col2.metric(label="Non-Compliant Trips %", value=f"{non_compliant_ratio:.2%}")
             kpi_col1.metric(label="Loss as % of Revenue", value=f"{loss_to_revenue_ratio:.2%}")
             kpi_col2.metric(label="Potential Margin % (if compliant)", value=f"{potential_margin_percent:.2%}", delta=f"{(potential_margin_percent - current_margin_percent):.2%}")
+        else:
+            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
 
 # ==============================================================================
 #  3. MAIN APP ROUTER
