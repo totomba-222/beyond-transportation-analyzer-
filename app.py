@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 15.0 - WHEELCHAIR POLICY)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 16.0 - WHEELCHAIR POLICY FIX)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -51,7 +51,7 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
-    # ROBUST COLUMN DETECTION FOR MILES
+    # 1. GET BASIC DATA FROM ROW
     miles = 0
     if 'Distance_Miles' in row: miles = row['Distance_Miles']
     elif 'Miles' in row: miles = row['Miles']
@@ -61,13 +61,13 @@ def get_policy_driver_pay(row, df_policies):
     driver_name = str(row.get('Driver_Name', '')).strip()
     gross_pay = row.get('Gross_Pay', 0)
     
-    # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
-    if state == 'N.CA' or state == 'CA':
-        # NEW: Wheelchair policy for specific drivers in N.CA/CA
+    # 2. PRIORITY: WHEELCHAIR POLICY FOR SPECIFIC DRIVERS IN N.CA/CA
+    if (state == 'N.CA' or state == 'CA'):
         if (driver_name == "محمد عمر علي" or driver_name == "محمد البشير") and gross_pay == 100:
             return 75.0
-        
-        # Existing N.CA mileage-based policy
+            
+    # 3. EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA) MILEAGE
+    if state == 'N.CA' or state == 'CA':
         if miles <= 6:
             return 38.0
         elif 6 < miles <= 14:
@@ -77,7 +77,7 @@ def get_policy_driver_pay(row, df_policies):
             excess_miles = max(0, miles - 14)
             return 38.0 + (excess_miles * 1.25)
 
-    # GENERAL LOGIC FOR OTHER STATES
+    # 4. GENERAL LOGIC FOR OTHER STATES
     state_policies = df_policies[df_policies['State'] == state]
     if state_policies.empty: return 0
 
