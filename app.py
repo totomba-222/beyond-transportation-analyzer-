@@ -47,15 +47,17 @@ def get_policy_driver_pay(row, df_policies):
     if 'Distance_Miles' in row: miles = row['Distance_Miles']
     elif 'Miles' in row: miles = row['Miles']
     elif 'Distance' in row: miles = row['Distance']
-      state = row.get(\'State\', \'N.CA\').strip()
-    driver_name = row.get(\'Driver_Name\', \'\').strip()
-    gross_pay = row.get(\'Gross_Pay\', 0)
-
+    
+    state = str(row.get('State', 'N.CA')).strip()
+    driver_name = str(row.get('Driver_Name', '')).strip()
+    gross_pay = row.get('Gross_Pay', 0)
+    
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
     if state == 'N.CA' or state == 'CA':
         # NEW: Wheelchair policy for specific drivers in N.CA/CA
         if driver_name in ["محمد عمر علي", "محمد البشير"] and gross_pay == 100:
             return 75.0
+        
         # Existing N.CA mileage-based policy
         if miles <= 6:
             return 38.0
@@ -85,7 +87,7 @@ def get_policy_driver_pay(row, df_policies):
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
-            extra_miles = max(0, miles - rule['Min_Miles'] or 0)
+            extra_miles = max(0, miles - (rule['Min_Miles'] or 0))
             return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
         else: return rule['Policy_Pay']
         
@@ -98,7 +100,7 @@ def analyze_data(df_data, df_policies):
     # FLEXIBLE COLUMN MAPPING
     mapping = {
         'Trip_Date': ['Trip_Date', 'Date', 'Trip Date'],
-        'State': ['State'],
+        'State': ['State', 'State '],
         'Driver_Name': ['Driver_Name', 'Driver', 'Driver Name'],
         'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles', 'Trip_Miles'],
         'Gross_Pay': ['Gross_Pay', 'Gross Pay', 'Gross'],
@@ -128,7 +130,7 @@ def analyze_data(df_data, df_policies):
         df['Trip_Date'] = pd.to_datetime(df['Trip_Date'], errors='coerce')
     
     if 'Vehicle_Type' not in df.columns:
-        df['Vehicle_Type'] = None
+        df['Vehicle_Type'] = 'ANY'
     else:
         df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
 
@@ -210,6 +212,8 @@ def create_state_page(state_code, state_name):
 #  3. MAIN APP ROUTER
 # ==============================================================================
 st.sidebar.title("Navigation")
-        st.sidebar.markdown("Select a state to begin analysis.")
-        STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
-        selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
+st.sidebar.markdown("Select a state to begin analysis.")
+STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
+selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
+
+create_state_page(selection, STATES[selection])
