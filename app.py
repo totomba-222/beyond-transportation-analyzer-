@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 13.0 - COLUMN DETECTION)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 14.0 - WHEELCHAIR POLICY)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -55,7 +55,8 @@ def get_policy_driver_pay(row, df_policies):
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
     if state == 'N.CA' or state == 'CA':
         # NEW: Wheelchair policy for specific drivers in N.CA/CA
-        if driver_name in ["محمد عمر علي", "محمد البشير"] and gross_pay == 100:
+        # Checking for "محمد عمر علي" and "محمد البشير"
+        if (driver_name == "محمد عمر علي" or driver_name == "محمد البشير") and gross_pay == 100:
             return 75.0
         
         # Existing N.CA mileage-based policy
