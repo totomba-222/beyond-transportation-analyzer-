@@ -19,8 +19,11 @@ def get_pricing_policies():
         {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 15, 'Policy_Pay': 43},
         # North California (UPDATED)
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
         # Alaska (Vehicle-based logic)
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
@@ -45,10 +48,10 @@ def get_policy_driver_pay(row, df_policies):
     elif 'Miles' in row: miles = row['Miles']
     elif 'Distance' in row: miles = row['Distance']
     
-    state = row.get('State', 'N.CA')
+    state = row.get('State', 'N.CA').strip()
     
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
-    if state == 'N.CA':
+    if state == 'N.CA' or state == 'CA':
         if miles <= 6:
             return 38.0
         elif 6 < miles <= 14:
