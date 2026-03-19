@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 14.0 - WHEELCHAIR POLICY)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 15.0 - WHEELCHAIR POLICY)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -17,13 +17,22 @@ def get_pricing_policies():
         {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
         {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
         {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 15, 'Policy_Pay': 43},
+        
         # North California (UPDATED)
+        # Wheelchair Policy for Specific Drivers
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (محمد عمر علي)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (محمد البشير)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (محمد عمر علي)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (محمد البشير)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        
+        # Standard N.CA Policies
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
+        
         # Alaska (Vehicle-based logic)
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
@@ -55,7 +64,6 @@ def get_policy_driver_pay(row, df_policies):
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
     if state == 'N.CA' or state == 'CA':
         # NEW: Wheelchair policy for specific drivers in N.CA/CA
-        # Checking for "محمد عمر علي" and "محمد البشير"
         if (driver_name == "محمد عمر علي" or driver_name == "محمد البشير") and gross_pay == 100:
             return 75.0
         
