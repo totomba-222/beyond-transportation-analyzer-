@@ -47,11 +47,16 @@ def get_policy_driver_pay(row, df_policies):
     if 'Distance_Miles' in row: miles = row['Distance_Miles']
     elif 'Miles' in row: miles = row['Miles']
     elif 'Distance' in row: miles = row['Distance']
-    
-    state = row.get('State', 'N.CA').strip()
-    
+      state = row.get(\'State\', \'N.CA\').strip()
+    driver_name = row.get(\'Driver_Name\', \'\').strip()
+    gross_pay = row.get(\'Gross_Pay\', 0)
+
     # EXPLICIT LOGIC FOR NORTH CALIFORNIA (N.CA)
     if state == 'N.CA' or state == 'CA':
+        # NEW: Wheelchair policy for specific drivers in N.CA/CA
+        if driver_name in ["محمد عمر علي", "محمد البشير"] and gross_pay == 100:
+            return 75.0
+        # Existing N.CA mileage-based policy
         if miles <= 6:
             return 38.0
         elif 6 < miles <= 14:
@@ -205,8 +210,6 @@ def create_state_page(state_code, state_name):
 #  3. MAIN APP ROUTER
 # ==============================================================================
 st.sidebar.title("Navigation")
-st.sidebar.markdown("Select a state to begin analysis.")
-STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
-selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
-
-create_state_page(selection, STATES[selection])
+        st.sidebar.markdown("Select a state to begin analysis.")
+        STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
+        selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
