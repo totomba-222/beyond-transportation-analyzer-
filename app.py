@@ -16,6 +16,10 @@ def get_pricing_policies():
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 1.75, 'Note': 'Base 37 + (Miles - 16.01) * 1.75'},
         
         # --- NORTH CALIFORNIA (N.CA / CA) ---
+        # Wheelchair Policy for Specific Drivers (Priority)
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'If Gross Pay = 100 (Priority)'},
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'If Gross Pay = 100 (Priority)'},
+        # Standard N.CA Policies
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38.0, 'Note': 'Flat Rate'},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42.0, 'Note': 'Flat Rate'},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38.0, 'Per_Mile_Rate': 1.25, 'Note': 'Base 38 + (Miles - 14) * 1.25'},
@@ -69,9 +73,11 @@ def calculate_policy_pay(row, selected_state, df_policies):
     gross_pay = float(row.get('Gross_Pay', 0))
     driver_name = str(row.get('Driver_Name', ''))
 
+    # 1. WHEELCHAIR SPECIAL CASE (N.CA ONLY) - HIGHEST PRIORITY
     if selected_state == 'N.CA' and is_wheelchair_driver(driver_name) and abs(gross_pay - 100.0) < 0.01:
         return 75.0
 
+    # 2. STATE SPECIFIC LOGIC
     if selected_state == 'OR':
         if miles <= 8: return 35.0
         if miles <= 16: return 40.0
@@ -88,9 +94,15 @@ def calculate_policy_pay(row, selected_state, df_policies):
         if miles <= 16: return 43.0
         return 43.0 + (max(0, miles - 16) * 1.25)
 
+    # 3. GENERAL FALLBACK FROM POLICY TABLE
     state_policies = df_policies[df_policies['State'] == selected_state]
     if state_policies.empty: return 0.0
-    match = state_policies[(miles >= state_policies['Min_Miles']) & (miles <= state_policies['Max_Miles'])]
+    
+    # Filter for ANY vehicle type first
+    any_policies = state_policies[state_policies['Vehicle_Type'] == 'ANY']
+    if any_policies.empty: any_policies = state_policies # Fallback if no ANY type defined
+    
+    match = any_policies[(miles >= any_policies['Min_Miles']) & (miles <= any_policies['Max_Miles'])]
     if not match.empty:
         rule = match.iloc[0]
         base = float(rule['Policy_Pay'])
@@ -125,15 +137,8 @@ def analyze_data(df_data, selected_state, df_policies):
     state_min = df_policies[df_policies['State'] == selected_state]['Policy_Pay'].min() if not df_policies[df_policies['State'] == selected_state].empty else 0
     df.loc[(df['Policy_Driver_Pay'] == 0) & (df['Distance_Miles'] > 0), 'Policy_Driver_Pay'] = state_min
 
-    # Loss is only when actual pay > policy pay
     df['Loss_Amount'] = (df['Net_Pay'] - df['Policy_Driver_Pay']).clip(lower=0)
     df['Is_Non_Compliant'] = df['Loss_Amount'] > 0.05
-    
-    # Target Pay for Potential Margin: 
-    # If actual pay > policy pay, we use policy pay (saving the loss).
-    # If actual pay <= policy pay, we keep actual pay (no saving, no loss).
-    df['Target_Driver_Pay'] = df.apply(lambda x: x['Policy_Driver_Pay'] if x['Net_Pay'] > x['Policy_Driver_Pay'] else x['Net_Pay'], axis=1)
-    
     return df
 
 # ==============================================================================
@@ -176,13 +181,11 @@ def create_state_page(state_code, state_name):
         }
         st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
-        # --- COMPLIANCE IMPACT SUMMARY ---
         st.header("Compliance Impact Summary")
         non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
         total_loss = analyzed_df['Loss_Amount'].sum()
         non_compliant_ratio = len(non_compliant_trips) / len(analyzed_df) if len(analyzed_df) > 0 else 0
         
-        # Potential Margin Calculation: Actual Margin + Total Loss
         potential_margin = total_margin + total_loss
         potential_margin_percent = potential_margin / total_revenue if total_revenue > 0 else 0
         
