@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 17.1 - FIX ONLY)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 18.0 - S.CA & ENGLISH NAMES)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -13,17 +13,19 @@ def get_pricing_policies():
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40},
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75},
-
-        # South California
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 15, 'Policy_Pay': 43},
+        
+        # South California (UPDATED)
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 1, 'Max_Miles': 4, 'Policy_Pay': 38},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 5, 'Max_Miles': 8, 'Policy_Pay': 40},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 9, 'Max_Miles': 16, 'Policy_Pay': 43},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 43, 'Per_Mile_Rate': 1.25},
         
         # North California (UPDATED)
-        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohammed Abdelgadir Albashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohammed Abdelgadir Albashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
+        # Wheelchair Policy for Specific Drivers (Visible in Table)
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
         
         # Standard N.CA Policies
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
@@ -33,21 +35,17 @@ def get_pricing_policies():
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
         
-        # Alaska
+        # Alaska (Vehicle-based logic)
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-
-        # Canada
+        # Canada (Example vehicle-based logic)
         {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-
-        # Nebraska
+        # Nebraska (General)
         {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
-
-        # Illinois
+        # Illinois (Inferred from summary data)
         {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-
-        # New Mexico
+        # New Mexico (CORRECTED - Multi-tier policy based on detailed analysis)
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33},
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 12, 'Policy_Pay': 39.50},
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 12.01, 'Max_Miles': 20, 'Policy_Pay': 45},
@@ -55,6 +53,7 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
+    # 1. EXTRACT DATA WITH ROBUST CLEANING
     state = str(row.get('State', 'N.CA')).strip().upper()
     driver_name = str(row.get('Driver_Name', '')).strip()
     gross_pay = float(row.get('Gross_Pay', 0))
@@ -64,29 +63,38 @@ def get_policy_driver_pay(row, df_policies):
     elif 'Miles' in row: miles = float(row['Miles'])
     elif 'Distance' in row: miles = float(row['Distance'])
     
-    # ================================
-    # ✅ FIX: Wheelchair Flat Rate
-    # ================================
+    # 2. ABSOLUTE PRIORITY: WHEELCHAIR POLICY FOR SPECIFIC DRIVERS IN N.CA/CA
+    # This check happens BEFORE any mileage-based logic
     if state in ['N.CA', 'CA']:
-        driver_name_clean = driver_name.lower().strip()
-        wheelchair_drivers = [
-            "mohamed omar ali",
-            "mohammed abdelgadir albashir"
-        ]
-        if any(name in driver_name_clean for name in wheelchair_drivers):
+        target_drivers = ["Mohamed Omar Ali", "Mohamed Elbashir"]
+        if any(target in driver_name for target in target_drivers) and gross_pay == 100.0:
             return 75.0
+            
+    # 3. SOUTH CALIFORNIA (S.CA) MILEAGE-BASED LOGIC
+    if state == 'S.CA':
+        if 1 <= miles <= 4:
+            return 38.0
+        elif 5 <= miles <= 8:
+            return 40.0
+        elif 9 <= miles <= 16:
+            return 43.0
+        else:
+            # Over 16 miles: 43 + (Excess Miles * 1.25)
+            excess_miles = max(0, miles - 16)
+            return 43.0 + (excess_miles * 1.25)
 
-    # N.CA logic (unchanged)
+    # 4. NORTH CALIFORNIA (N.CA) MILEAGE-BASED LOGIC
     if state in ['N.CA', 'CA']:
         if miles <= 6:
             return 38.0
         elif 6 < miles <= 14:
             return 42.0
         else:
+            # Over 14 miles: (Excess Miles * 1.25) + 38
             excess_miles = max(0, miles - 14)
             return 38.0 + (excess_miles * 1.25)
 
-    # GENERAL LOGIC
+    # 5. GENERAL LOGIC FOR OTHER STATES
     state_policies = df_policies[df_policies['State'] == state]
     if state_policies.empty: return 0
 
@@ -115,6 +123,7 @@ def analyze_data(df_data, df_policies):
     df = df_data.copy()
     df.columns = df.columns.str.strip()
     
+    # FLEXIBLE COLUMN MAPPING
     mapping = {
         'Trip_Date': ['Trip_Date', 'Date', 'Trip Date'],
         'State': ['State', 'State '],
@@ -124,6 +133,7 @@ def analyze_data(df_data, df_policies):
         'Net_Pay': ['Net_Pay', 'Net Pay', 'Net', 'Paid to Driver']
     }
     
+    # Find and map columns
     found_cols = []
     for target, options in mapping.items():
         for opt in options:
@@ -132,8 +142,10 @@ def analyze_data(df_data, df_policies):
                 found_cols.append(f"{target} -> {opt}")
                 break
     
+    # Display found columns for debugging
     st.info(f"Detected Columns: {', '.join(found_cols)}")
     
+    # Ensure numeric conversion
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -148,6 +160,7 @@ def analyze_data(df_data, df_policies):
     else:
         df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
 
+    # APPLY CALCULATION
     df['Policy_Driver_Pay'] = df.apply(get_policy_driver_pay, axis=1, df_policies=df_policies)
     df['Margin'] = df['Gross_Pay'] - df['Net_Pay']
     df['Loss_Amount'] = df.apply(lambda row: row['Net_Pay'] - row['Policy_Driver_Pay'] if row['Net_Pay'] > row['Policy_Driver_Pay'] else 0, axis=1)
@@ -155,7 +168,7 @@ def analyze_data(df_data, df_policies):
     return df
 
 # ==============================================================================
-#  UI (UNCHANGED)
+#  2. UI PAGE GENERATOR
 # ==============================================================================
 def create_state_page(state_code, state_name):
     st.title(f"📊 {state_name} - Analysis Dashboard")
@@ -195,6 +208,7 @@ def create_state_page(state_code, state_name):
 
         st.header("Pricing Policy Compliance Analysis")
         
+        # SHOW ALL TRIPS TO COMPARE POLICY PAY
         st.subheader("All Trips with Policy Comparison")
         display_cols = {
             'Trip_Date': 'Date', 'Driver_Name': 'Driver',
@@ -216,11 +230,13 @@ def create_state_page(state_code, state_name):
             kpi_col1.metric(label="Total Loss from Non-Compliance", value=f"${total_loss:,.2f}")
             kpi_col2.metric(label="Non-Compliant Trips %", value=f"{non_compliant_ratio:.2%}")
             kpi_col1.metric(label="Loss as % of Revenue", value=f"{loss_to_revenue_ratio:.2%}")
-            kpi_col2.metric(label="Potential Margin % (if compliant)", value=f"{potential_margin_percent:.2%}", delta=f"{(potential_margin_percent - current_margin_percent):.2%}")
+            kpi_col2.metric(label="Potential Margin % (if compliant)", value=f"{(potential_margin_percent):.2%}", delta=f"{(potential_margin_percent - current_margin_percent):.2%}")
         else:
-            st.success("✅ Full Compliance!")
+            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
 
-# ROUTER
+# ==============================================================================
+#  3. MAIN APP ROUTER
+# ==============================================================================
 st.sidebar.title("Navigation")
 st.sidebar.markdown("Select a state to begin analysis.")
 STATES = {"OR": "Oregon", "S.CA": "South California", "N.CA": "North California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
