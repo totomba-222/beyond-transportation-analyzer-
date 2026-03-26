@@ -2,26 +2,26 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 18.0 - S.CA & ENGLISH NAMES)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 19.0 - ALL POLICIES FIXED)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
 @st.cache_data
 def get_pricing_policies():
     policies_data = [
-        # Oregon
+        # --- OREGON (OR) ---
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
         {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40},
-        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75, 'Note': '37 + (Miles - 16.01) * 1.75'},
         
-        # South California (UPDATED)
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 1, 'Max_Miles': 4, 'Policy_Pay': 38},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 5, 'Max_Miles': 8, 'Policy_Pay': 40},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 9, 'Max_Miles': 16, 'Policy_Pay': 43},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 43, 'Per_Mile_Rate': 1.25},
+        # --- SOUTH CALIFORNIA (S.CA) ---
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 43},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 43, 'Per_Mile_Rate': 1.25, 'Note': '43 + (Miles - 16) * 1.25'},
         
-        # North California (UPDATED)
-        # Wheelchair Policy for Specific Drivers (Visible in Table)
+        # --- NORTH CALIFORNIA (N.CA / CA) ---
+        # Wheelchair Policy for Specific Drivers
         {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
         {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
         {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
@@ -32,20 +32,16 @@ def get_pricing_policies():
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
         {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
         {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
-        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
-        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25, 'Note': '38 + (Miles - 14) * 1.25'},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25, 'Note': '38 + (Miles - 14) * 1.25'},
         
-        # Alaska (Vehicle-based logic)
+        # --- OTHER STATES ---
         {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-        # Canada (Example vehicle-based logic)
         {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
         {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-        # Nebraska (General)
         {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
-        # Illinois (Inferred from summary data)
         {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        # New Mexico (CORRECTED - Multi-tier policy based on detailed analysis)
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33},
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 12, 'Policy_Pay': 39.50},
         {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 12.01, 'Max_Miles': 20, 'Policy_Pay': 45},
@@ -53,7 +49,7 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
-    # 1. EXTRACT DATA WITH ROBUST CLEANING
+    # 1. EXTRACT DATA
     state = str(row.get('State', 'N.CA')).strip().upper()
     driver_name = str(row.get('Driver_Name', '')).strip()
     gross_pay = float(row.get('Gross_Pay', 0))
@@ -63,50 +59,50 @@ def get_policy_driver_pay(row, df_policies):
     elif 'Miles' in row: miles = float(row['Miles'])
     elif 'Distance' in row: miles = float(row['Distance'])
     
-    # 2. ABSOLUTE PRIORITY: WHEELCHAIR POLICY FOR SPECIFIC DRIVERS IN N.CA/CA
-    # This check happens BEFORE any mileage-based logic
+    # 2. WHEELCHAIR POLICY (N.CA / CA ONLY)
     if state in ['N.CA', 'CA']:
         target_drivers = ["Mohamed Omar Ali", "Mohamed Elbashir"]
         if any(target in driver_name for target in target_drivers) and gross_pay == 100.0:
             return 75.0
             
-    # 3. SOUTH CALIFORNIA (S.CA) MILEAGE-BASED LOGIC
-    if state == 'S.CA':
-        if 1 <= miles <= 4:
-            return 38.0
-        elif 5 <= miles <= 8:
+    # 3. OREGON (OR) LOGIC
+    if state == 'OR':
+        if miles <= 8:
+            return 35.0
+        elif 8 < miles <= 16:
             return 40.0
-        elif 9 <= miles <= 16:
+        else:
+            # Over 16 miles: 37 + (Miles - 16.01) * 1.75
+            excess_miles = max(0, miles - 16.01)
+            return 37.0 + (excess_miles * 1.75)
+
+    # 4. SOUTH CALIFORNIA (S.CA) LOGIC
+    if state == 'S.CA':
+        if miles <= 4:
+            return 38.0
+        elif 4 < miles <= 8:
+            return 40.0
+        elif 8 < miles <= 16:
             return 43.0
         else:
-            # Over 16 miles: 43 + (Excess Miles * 1.25)
+            # Over 16 miles: 43 + (Miles - 16) * 1.25
             excess_miles = max(0, miles - 16)
             return 43.0 + (excess_miles * 1.25)
 
-    # 4. NORTH CALIFORNIA (N.CA) MILEAGE-BASED LOGIC
+    # 5. NORTH CALIFORNIA (N.CA / CA) LOGIC
     if state in ['N.CA', 'CA']:
         if miles <= 6:
             return 38.0
         elif 6 < miles <= 14:
             return 42.0
         else:
-            # Over 14 miles: (Excess Miles * 1.25) + 38
+            # Over 14 miles: 38 + (Miles - 14) * 1.25
             excess_miles = max(0, miles - 14)
             return 38.0 + (excess_miles * 1.25)
 
-    # 5. GENERAL LOGIC FOR OTHER STATES
+    # 6. GENERAL LOGIC FOR OTHER STATES
     state_policies = df_policies[df_policies['State'] == state]
     if state_policies.empty: return 0
-
-    if 'Vehicle_Type' in row and pd.notna(row['Vehicle_Type']):
-        vehicle_specific_rules = state_policies[state_policies['Vehicle_Type'] == row['Vehicle_Type']]
-        rules = vehicle_specific_rules[(miles >= vehicle_specific_rules['Min_Miles']) & (miles <= vehicle_specific_rules['Max_Miles'])]
-        if not rules.empty:
-            rule = rules.iloc[0]
-            if rule.get('Per_Mile_Rate', 0) > 0:
-                extra_miles = max(0, miles - rule['Min_Miles'])
-                return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
-            else: return rule['Policy_Pay']
 
     any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
     rules = any_vehicle_rules[(miles >= any_vehicle_rules['Min_Miles']) & (miles <= any_vehicle_rules['Max_Miles'])]
