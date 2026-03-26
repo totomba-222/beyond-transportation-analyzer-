@@ -73,11 +73,9 @@ def calculate_policy_pay(row, selected_state, df_policies):
     gross_pay = float(row.get('Gross_Pay', 0))
     driver_name = str(row.get('Driver_Name', ''))
 
-    # 1. WHEELCHAIR SPECIAL CASE (N.CA ONLY) - HIGHEST PRIORITY
     if selected_state == 'N.CA' and is_wheelchair_driver(driver_name) and abs(gross_pay - 100.0) < 0.01:
         return 75.0
 
-    # 2. STATE SPECIFIC LOGIC
     if selected_state == 'OR':
         if miles <= 8: return 35.0
         if miles <= 16: return 40.0
@@ -94,13 +92,11 @@ def calculate_policy_pay(row, selected_state, df_policies):
         if miles <= 16: return 43.0
         return 43.0 + (max(0, miles - 16) * 1.25)
 
-    # 3. GENERAL FALLBACK FROM POLICY TABLE
     state_policies = df_policies[df_policies['State'] == selected_state]
     if state_policies.empty: return 0.0
     
-    # Filter for ANY vehicle type first
     any_policies = state_policies[state_policies['Vehicle_Type'] == 'ANY']
-    if any_policies.empty: any_policies = state_policies # Fallback if no ANY type defined
+    if any_policies.empty: any_policies = state_policies
     
     match = any_policies[(miles >= any_policies['Min_Miles']) & (miles <= any_policies['Max_Miles'])]
     if not match.empty:
@@ -154,6 +150,7 @@ def create_state_page(state_code, state_name):
     st.table(state_policy_df[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Note']])
 
     st.subheader("Upload Trip Data")
+    # Use a dynamic key for the file uploader based on the state to reset it when switching states
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
 
     if uploaded_file:
@@ -217,5 +214,22 @@ def create_state_page(state_code, state_name):
 # ==============================================================================
 st.sidebar.title("Navigation")
 STATES = {"OR": "Oregon", "N.CA": "North California", "S.CA": "South California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
-selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
+
+# Logic to clear session state when switching states
+if 'current_state' not in st.session_state:
+    st.session_state['current_state'] = None
+
+def on_state_change():
+    # Clear all analyzed data from session state when switching
+    for key in list(st.session_state.keys()):
+        if key.startswith('analyzed_df_'):
+            del st.session_state[key]
+
+selection = st.sidebar.radio(
+    "States", 
+    list(STATES.keys()), 
+    format_func=lambda x: STATES[x],
+    on_change=on_state_change
+)
+
 create_state_page(selection, STATES[selection])
