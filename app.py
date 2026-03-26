@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL VERSION 19.0 - ALL POLICIES FIXED)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL AUDITED VERSION 20.0)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -10,41 +10,50 @@ st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 def get_pricing_policies():
     policies_data = [
         # --- OREGON (OR) ---
-        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35},
-        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40},
-        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37, 'Per_Mile_Rate': 1.75, 'Note': '37 + (Miles - 16.01) * 1.75'},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 8, 'Policy_Pay': 35.0, 'Note': 'Flat Rate'},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 40.0, 'Note': 'Flat Rate'},
+        {'State': 'OR', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 1.75, 'Note': 'Base 37 + (Miles - 16.01) * 1.75'},
         
         # --- SOUTH CALIFORNIA (S.CA) ---
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 43},
-        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 43, 'Per_Mile_Rate': 1.25, 'Note': '43 + (Miles - 16) * 1.25'},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 4, 'Policy_Pay': 38.0, 'Note': 'Flat Rate'},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 4.01, 'Max_Miles': 8, 'Policy_Pay': 40.0, 'Note': 'Flat Rate'},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 8.01, 'Max_Miles': 16, 'Policy_Pay': 43.0, 'Note': 'Flat Rate'},
+        {'State': 'S.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 999, 'Policy_Pay': 43.0, 'Per_Mile_Rate': 1.25, 'Note': 'Base 43 + (Miles - 16) * 1.25'},
         
         # --- NORTH CALIFORNIA (N.CA / CA) ---
-        # Wheelchair Policy for Specific Drivers
-        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
-        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
-        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
-        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75, 'Note': 'Gross Pay = 100'},
+        # Wheelchair Policy for Specific Drivers (English Names)
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'Gross Pay = 100'},
+        {'State': 'N.CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Omar Ali)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'Gross Pay = 100'},
+        {'State': 'CA', 'Vehicle_Type': 'Wheelchair (Mohamed Elbashir)', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'Gross Pay = 100'},
         
         # Standard N.CA Policies
-        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
-        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38},
-        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
-        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42},
-        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25, 'Note': '38 + (Miles - 14) * 1.25'},
-        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38, 'Per_Mile_Rate': 1.25, 'Note': '38 + (Miles - 14) * 1.25'},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38.0, 'Note': 'Flat Rate'},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 38.0, 'Note': 'Flat Rate'},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42.0, 'Note': 'Flat Rate'},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 42.0, 'Note': 'Flat Rate'},
+        {'State': 'N.CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38.0, 'Per_Mile_Rate': 1.25, 'Note': 'Base 38 + (Miles - 14) * 1.25'},
+        {'State': 'CA', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 999, 'Policy_Pay': 38.0, 'Per_Mile_Rate': 1.25, 'Note': 'Base 38 + (Miles - 14) * 1.25'},
         
-        # --- OTHER STATES ---
-        {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
-        {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-        {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40},
-        {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35},
-        {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30},
-        {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75},
-        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33},
-        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 12, 'Policy_Pay': 39.50},
-        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 12.01, 'Max_Miles': 20, 'Policy_Pay': 45},
+        # --- ALASKA (AK) ---
+        {'State': 'AK', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40.0, 'Note': 'Flat Rate'},
+        {'State': 'AK', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35.0, 'Note': 'Flat Rate'},
+        
+        # --- CANADA (CAN) ---
+        {'State': 'CAN', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 40.0, 'Note': 'Flat Rate'},
+        {'State': 'CAN', 'Vehicle_Type': 'Sedan', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 35.0, 'Note': 'Flat Rate'},
+        
+        # --- NEBRASKA (NE) ---
+        {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 30.0, 'Note': 'Flat Rate'},
+        
+        # --- ILLINOIS (IL) ---
+        {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 999, 'Policy_Pay': 75.0, 'Note': 'Flat Rate'},
+        
+        # --- NEW MEXICO (NM) ---
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33.0, 'Note': 'Flat Rate'},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 12, 'Policy_Pay': 39.50, 'Note': 'Flat Rate'},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 12.01, 'Max_Miles': 20, 'Policy_Pay': 45.0, 'Note': 'Flat Rate'},
+        {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 20.01, 'Max_Miles': 999, 'Policy_Pay': 45.0, 'Note': 'Flat Rate (TBD)'},
     ]
     return pd.DataFrame(policies_data).fillna(0)
 
@@ -59,10 +68,10 @@ def get_policy_driver_pay(row, df_policies):
     elif 'Miles' in row: miles = float(row['Miles'])
     elif 'Distance' in row: miles = float(row['Distance'])
     
-    # 2. WHEELCHAIR POLICY (N.CA / CA ONLY)
+    # 2. WHEELCHAIR POLICY (N.CA / CA ONLY) - ABSOLUTE PRIORITY
     if state in ['N.CA', 'CA']:
         target_drivers = ["Mohamed Omar Ali", "Mohamed Elbashir"]
-        if any(target in driver_name for target in target_drivers) and gross_pay == 100.0:
+        if any(target.lower() in driver_name.lower() for target in target_drivers) and gross_pay == 100.0:
             return 75.0
             
     # 3. OREGON (OR) LOGIC
@@ -100,18 +109,30 @@ def get_policy_driver_pay(row, df_policies):
             excess_miles = max(0, miles - 14)
             return 38.0 + (excess_miles * 1.25)
 
-    # 6. GENERAL LOGIC FOR OTHER STATES
+    # 6. GENERAL LOGIC FOR OTHER STATES (NM, AK, CAN, NE, IL)
     state_policies = df_policies[df_policies['State'] == state]
     if state_policies.empty: return 0
 
-    any_vehicle_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
-    rules = any_vehicle_rules[(miles >= any_vehicle_rules['Min_Miles']) & (miles <= any_vehicle_rules['Max_Miles'])]
+    # Try vehicle specific first
+    if 'Vehicle_Type' in row and pd.notna(row['Vehicle_Type']):
+        v_rules = state_policies[state_policies['Vehicle_Type'] == row['Vehicle_Type']]
+        rules = v_rules[(miles >= v_rules['Min_Miles']) & (miles <= v_rules['Max_Miles'])]
+        if not rules.empty:
+            rule = rules.iloc[0]
+            if rule.get('Per_Mile_Rate', 0) > 0:
+                extra = max(0, miles - rule['Min_Miles'])
+                return rule['Policy_Pay'] + (extra * rule['Per_Mile_Rate'])
+            return rule['Policy_Pay']
+
+    # Fallback to ANY vehicle
+    any_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
+    rules = any_rules[(miles >= any_rules['Min_Miles']) & (miles <= any_rules['Max_Miles'])]
     if not rules.empty:
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
-            extra_miles = max(0, miles - (rule['Min_Miles'] or 0))
-            return rule['Policy_Pay'] + (extra_miles * rule['Per_Mile_Rate'])
-        else: return rule['Policy_Pay']
+            extra = max(0, miles - (rule['Min_Miles'] or 0))
+            return rule['Policy_Pay'] + (extra * rule['Per_Mile_Rate'])
+        return rule['Policy_Pay']
         
     return 0
 
@@ -172,7 +193,11 @@ def create_state_page(state_code, state_name):
     st.subheader("Official Pricing Policy")
     all_policies = get_pricing_policies()
     state_policy_df = all_policies[all_policies['State'] == state_code]
-    st.table(state_policy_df.drop(columns=['State']))
+    
+    # Clean display for the table
+    display_df = state_policy_df.drop(columns=['State']).copy()
+    display_df = display_df[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Note']]
+    st.table(display_df)
 
     st.subheader("Upload Trip Data for this State")
     uploaded_file = st.file_uploader(f"Upload {state_code} .xlsx file", type="xlsx", key=f"uploader_{state_code}")
