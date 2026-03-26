@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL AUDITED VERSION 20.0)
+#  1. PRICING POLICIES & ANALYSIS ENGINE (FINAL ROBUST VERSION 21.0)
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -58,15 +58,25 @@ def get_pricing_policies():
     return pd.DataFrame(policies_data).fillna(0)
 
 def get_policy_driver_pay(row, df_policies):
-    # 1. EXTRACT DATA
-    state = str(row.get('State', 'N.CA')).strip().upper()
-    driver_name = str(row.get('Driver_Name', '')).strip()
-    gross_pay = float(row.get('Gross_Pay', 0))
+    # 1. EXTRACT DATA WITH ROBUST CLEANING
+    # Clean state: remove spaces and convert to upper
+    state_val = row.get('State', 'N.CA')
+    state = str(state_val).strip().upper() if pd.notna(state_val) else 'N.CA'
     
-    miles = 0
-    if 'Distance_Miles' in row: miles = float(row['Distance_Miles'])
-    elif 'Miles' in row: miles = float(row['Miles'])
-    elif 'Distance' in row: miles = float(row['Distance'])
+    # Clean driver name: remove spaces
+    driver_val = row.get('Driver_Name', '')
+    driver_name = str(driver_val).strip() if pd.notna(driver_val) else ''
+    
+    # Clean gross pay
+    gross_val = row.get('Gross_Pay', 0)
+    gross_pay = float(gross_val) if pd.notna(gross_val) else 0.0
+    
+    # Clean miles
+    miles_val = 0
+    if 'Distance_Miles' in row: miles_val = row['Distance_Miles']
+    elif 'Miles' in row: miles_val = row['Miles']
+    elif 'Distance' in row: miles_val = row['Distance']
+    miles = float(miles_val) if pd.notna(miles_val) else 0.0
     
     # 2. WHEELCHAIR POLICY (N.CA / CA ONLY) - ABSOLUTE PRIORITY
     if state in ['N.CA', 'CA']:
@@ -111,18 +121,18 @@ def get_policy_driver_pay(row, df_policies):
 
     # 6. GENERAL LOGIC FOR OTHER STATES (NM, AK, CAN, NE, IL)
     state_policies = df_policies[df_policies['State'] == state]
-    if state_policies.empty: return 0
+    if state_policies.empty: return 0.0
 
     # Try vehicle specific first
-    if 'Vehicle_Type' in row and pd.notna(row['Vehicle_Type']):
-        v_rules = state_policies[state_policies['Vehicle_Type'] == row['Vehicle_Type']]
-        rules = v_rules[(miles >= v_rules['Min_Miles']) & (miles <= v_rules['Max_Miles'])]
-        if not rules.empty:
-            rule = rules.iloc[0]
-            if rule.get('Per_Mile_Rate', 0) > 0:
-                extra = max(0, miles - rule['Min_Miles'])
-                return rule['Policy_Pay'] + (extra * rule['Per_Mile_Rate'])
-            return rule['Policy_Pay']
+    v_type = str(row.get('Vehicle_Type', 'ANY')).strip()
+    v_rules = state_policies[state_policies['Vehicle_Type'] == v_type]
+    rules = v_rules[(miles >= v_rules['Min_Miles']) & (miles <= v_rules['Max_Miles'])]
+    if not rules.empty:
+        rule = rules.iloc[0]
+        if rule.get('Per_Mile_Rate', 0) > 0:
+            extra = max(0, miles - rule['Min_Miles'])
+            return float(rule['Policy_Pay']) + (extra * float(rule['Per_Mile_Rate']))
+        return float(rule['Policy_Pay'])
 
     # Fallback to ANY vehicle
     any_rules = state_policies[state_policies['Vehicle_Type'] == 'ANY']
@@ -131,19 +141,20 @@ def get_policy_driver_pay(row, df_policies):
         rule = rules.iloc[0]
         if rule.get('Per_Mile_Rate', 0) > 0:
             extra = max(0, miles - (rule['Min_Miles'] or 0))
-            return rule['Policy_Pay'] + (extra * rule['Per_Mile_Rate'])
-        return rule['Policy_Pay']
+            return float(rule['Policy_Pay']) + (extra * float(rule['Per_Mile_Rate']))
+        return float(rule['Policy_Pay'])
         
-    return 0
+    return 0.0
 
 def analyze_data(df_data, df_policies):
     df = df_data.copy()
+    # Clean column names: remove spaces and special characters
     df.columns = df.columns.str.strip()
     
     # FLEXIBLE COLUMN MAPPING
     mapping = {
         'Trip_Date': ['Trip_Date', 'Date', 'Trip Date'],
-        'State': ['State', 'State '],
+        'State': ['State', 'State ', 'State\xa0'], # Handle non-breaking space
         'Driver_Name': ['Driver_Name', 'Driver', 'Driver Name'],
         'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles', 'Trip_Miles'],
         'Gross_Pay': ['Gross_Pay', 'Gross Pay', 'Gross'],
@@ -165,7 +176,7 @@ def analyze_data(df_data, df_policies):
     # Ensure numeric conversion
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         else:
             df[col] = 0.0
 
@@ -175,12 +186,12 @@ def analyze_data(df_data, df_policies):
     if 'Vehicle_Type' not in df.columns:
         df['Vehicle_Type'] = 'ANY'
     else:
-        df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('Unknown')
+        df['Vehicle_Type'] = df['Vehicle_Type'].astype(str).fillna('ANY')
 
     # APPLY CALCULATION
     df['Policy_Driver_Pay'] = df.apply(get_policy_driver_pay, axis=1, df_policies=df_policies)
     df['Margin'] = df['Gross_Pay'] - df['Net_Pay']
-    df['Loss_Amount'] = df.apply(lambda row: row['Net_Pay'] - row['Policy_Driver_Pay'] if row['Net_Pay'] > row['Policy_Driver_Pay'] else 0, axis=1)
+    df['Loss_Amount'] = df.apply(lambda row: row['Net_Pay'] - row['Policy_Driver_Pay'] if row['Net_Pay'] > row['Policy_Driver_Pay'] else 0.0, axis=1)
     df['Is_Non_Compliant'] = df['Loss_Amount'] > 0.01
     return df
 
