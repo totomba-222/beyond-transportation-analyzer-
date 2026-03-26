@@ -3,7 +3,7 @@ import streamlit as st
 import re
 
 # ==============================================================================
-#  1. CONFIGURATION & POLICIES (UPDATED WITH NEW RATES)
+#  1. CONFIGURATION & POLICIES
 # ==============================================================================
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout="wide")
 
@@ -58,11 +58,7 @@ def clean_text(text):
 
 def is_wheelchair_driver(driver_name):
     cleaned_name = clean_text(driver_name)
-    targets = [
-        "mohamed omar ali", "mohamed elbashir", 
-        "محمد عمر علي", "محمد البشير",
-        "mohammed omar ali", "mohammed elbashir"
-    ]
+    targets = ["mohamed omar ali", "mohamed elbashir", "محمد عمر علي", "محمد البشير", "mohammed omar ali", "mohammed elbashir"]
     for target in targets:
         if target in cleaned_name:
             return True
@@ -73,11 +69,9 @@ def calculate_policy_pay(row, selected_state, df_policies):
     gross_pay = float(row.get('Gross_Pay', 0))
     driver_name = str(row.get('Driver_Name', ''))
 
-    # 1. WHEELCHAIR SPECIAL CASE (N.CA ONLY) - HIGHEST PRIORITY
     if selected_state == 'N.CA' and is_wheelchair_driver(driver_name) and abs(gross_pay - 100.0) < 0.01:
         return 75.0
 
-    # 2. STATE SPECIFIC LOGIC (AS PER USER REQUEST)
     if selected_state == 'OR':
         if miles <= 8: return 35.0
         if miles <= 16: return 40.0
@@ -94,11 +88,8 @@ def calculate_policy_pay(row, selected_state, df_policies):
         if miles <= 16: return 43.0
         return 43.0 + (max(0, miles - 16) * 1.25)
 
-    # 3. GENERAL FALLBACK FROM POLICY TABLE
     state_policies = df_policies[df_policies['State'] == selected_state]
-    if state_policies.empty:
-        return 0.0
-
+    if state_policies.empty: return 0.0
     match = state_policies[(miles >= state_policies['Min_Miles']) & (miles <= state_policies['Max_Miles'])]
     if not match.empty:
         rule = match.iloc[0]
@@ -108,46 +99,45 @@ def calculate_policy_pay(row, selected_state, df_policies):
             extra = max(0, miles - float(rule['Min_Miles']))
             return base + (extra * rate)
         return base
-
     return float(state_policies.iloc[0]['Policy_Pay'])
 
 def analyze_data(df_data, selected_state, df_policies):
     df = df_data.copy()
     df.columns = df.columns.str.strip()
-    
     mapping = {
         'Driver_Name': ['Driver_Name', 'Driver', 'Driver Name', 'اسم السائق'],
         'Distance_Miles': ['Distance_Miles', 'Miles', 'Distance', 'Trip Miles', 'Trip_Miles', 'المسافة'],
         'Gross_Pay': ['Gross_Pay', 'Gross Pay', 'Gross', 'إجمالي الدفع'],
         'Net_Pay': ['Net_Pay', 'Net Pay', 'Net', 'Paid to Driver', 'صافي الدفع']
     }
-    
     for target, options in mapping.items():
         for opt in options:
             if opt in df.columns:
                 df[target] = df[opt]
                 break
-    
     for col in ['Distance_Miles', 'Gross_Pay', 'Net_Pay']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         else:
             df[col] = 0.0
 
-    # Calculate Policy Pay
     df['Policy_Driver_Pay'] = df.apply(calculate_policy_pay, axis=1, selected_state=selected_state, df_policies=df_policies)
-    
-    # Safety Net: Ensure no zeros if miles > 0
     state_min = df_policies[df_policies['State'] == selected_state]['Policy_Pay'].min() if not df_policies[df_policies['State'] == selected_state].empty else 0
     df.loc[(df['Policy_Driver_Pay'] == 0) & (df['Distance_Miles'] > 0), 'Policy_Driver_Pay'] = state_min
 
+    # Loss is only when actual pay > policy pay
     df['Loss_Amount'] = (df['Net_Pay'] - df['Policy_Driver_Pay']).clip(lower=0)
     df['Is_Non_Compliant'] = df['Loss_Amount'] > 0.05
+    
+    # Target Pay for Potential Margin: 
+    # If actual pay > policy pay, we use policy pay (saving the loss).
+    # If actual pay <= policy pay, we keep actual pay (no saving, no loss).
+    df['Target_Driver_Pay'] = df.apply(lambda x: x['Policy_Driver_Pay'] if x['Net_Pay'] > x['Policy_Driver_Pay'] else x['Net_Pay'], axis=1)
     
     return df
 
 # ==============================================================================
-#  3. UI INTERFACE (PREVIOUS STYLE)
+#  3. UI INTERFACE
 # ==============================================================================
 
 def create_state_page(state_code, state_name):
@@ -186,9 +176,29 @@ def create_state_page(state_code, state_name):
         }
         st.table(pd.DataFrame(summary_data).set_index('Metric'))
 
-        st.header("Pricing Policy Compliance Analysis")
+        # --- COMPLIANCE IMPACT SUMMARY ---
+        st.header("Compliance Impact Summary")
+        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
+        total_loss = analyzed_df['Loss_Amount'].sum()
+        non_compliant_ratio = len(non_compliant_trips) / len(analyzed_df) if len(analyzed_df) > 0 else 0
         
-        # Display Columns as requested
+        # Potential Margin Calculation: Actual Margin + Total Loss
+        potential_margin = total_margin + total_loss
+        potential_margin_percent = potential_margin / total_revenue if total_revenue > 0 else 0
+        
+        kpi_col1, kpi_col2 = st.columns(2)
+        kpi_col1.metric(label="Total Loss from Non-Compliance", value=f"${total_loss:,.2f}")
+        kpi_col2.metric(label="Non-Compliant Trips %", value=f"{non_compliant_ratio:.2%}")
+        
+        st.subheader("Potential Profit Analysis")
+        profit_data = {
+            'Scenario': ['Current Margin (Actual)', 'Potential Margin (If Compliant)', 'Profit Increase'],
+            'Amount': [f"${total_margin:,.2f}", f"${potential_margin:,.2f}", f"${total_loss:,.2f}"],
+            'Margin %': [f"{current_margin_percent:.2%}", f"{potential_margin_percent:.2%}", f"+{(potential_margin_percent - current_margin_percent):.2%}"]
+        }
+        st.table(pd.DataFrame(profit_data).set_index('Scenario'))
+
+        st.header("Detailed Trip Analysis")
         display_cols = {
             'Driver_Name': 'Driver',
             'Distance_Miles': 'Miles', 
@@ -197,20 +207,7 @@ def create_state_page(state_code, state_name):
             'Policy_Driver_Pay': 'POLICY DRIVER PAY', 
             'Loss_Amount': 'Loss'
         }
-        
-        st.subheader("All Trips with Policy Comparison")
         st.dataframe(analyzed_df[list(display_cols.keys())].rename(columns=display_cols))
-
-        non_compliant_trips = analyzed_df[analyzed_df['Is_Non_Compliant']]
-        if not non_compliant_trips.empty:
-            st.subheader("Compliance Impact Summary")
-            total_loss = non_compliant_trips['Loss_Amount'].sum()
-            
-            kpi_col1, kpi_col2 = st.columns(2)
-            kpi_col1.metric(label="Total Loss from Non-Compliance", value=f"${total_loss:,.2f}")
-            kpi_col2.metric(label="Non-Compliant Trips %", value=f"{len(non_compliant_trips)/len(analyzed_df):.2%}")
-        else:
-            st.success("✅ Full Compliance! No trips found with driver pay higher than the policy.")
 
 # ==============================================================================
 #  4. MAIN APP ROUTER
@@ -218,5 +215,4 @@ def create_state_page(state_code, state_name):
 st.sidebar.title("Navigation")
 STATES = {"OR": "Oregon", "N.CA": "North California", "S.CA": "South California", "AK": "Alaska", "IL": "Illinois", "NM": "New Mexico", "NE": "Nebraska", "CAN": "Canada"}
 selection = st.sidebar.radio("States", list(STATES.keys()), format_func=lambda x: STATES[x])
-
 create_state_page(selection, STATES[selection])
