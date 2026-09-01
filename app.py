@@ -61,11 +61,6 @@ POLICIES = [
  {'State':'CAN','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':9999,'Policy_Pay':0.0,'Per_Mile_Rate':0,'Note':'Not supplied'},
 ]
 POLICY_DF = pd.DataFrame(POLICIES)
-LEGACY_OREGON_POLICIES = pd.DataFrame([
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':8,'Policy_Pay':35.0,'Per_Mile_Rate':0,'Note':'Legacy/previous version: 1–8 miles'},
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':8.01,'Max_Miles':16,'Policy_Pay':40.0,'Per_Mile_Rate':0,'Note':'Legacy/previous version: 9–16 miles'},
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':16.01,'Max_Miles':9999,'Policy_Pay':37.0,'Per_Mile_Rate':1.75,'Note':'Legacy/previous version: $37 + $1.75 above 16'},
-])
 
 def init_db():
     with sqlite3.connect(DB_FILE) as c:
@@ -163,9 +158,7 @@ def state_page(code,name):
     st.subheader('Official Pricing Policy')
     st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
     if code == 'OR':
-        st.warning('Oregon active rates use the supplied 1–6 / 7–10 / 11–14 / >14 schedule. The old 35 / 40 / 37 table is shown as legacy and is not applied.')
-        st.subheader('Legacy Oregon schedule — not active')
-        st.table(LEGACY_OREGON_POLICIES[['Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
+        st.success('Oregon uses the new supplied pricing schedule only.')
     st.subheader('All supplied cities and operating data')
     st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
     st.subheader('Upload weekly reports')
