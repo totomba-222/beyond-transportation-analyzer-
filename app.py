@@ -153,33 +153,81 @@ def save_history(state,df):
     if df.empty:return
     with sqlite3.connect(DB_FILE) as c: c.execute('INSERT INTO weekly_summary VALUES(NULL,?,?,?,?,?,?,?,?)',(datetime.now().strftime('%Y-%m-%d'),state,str(df.Trip_Date.min().date()),str(df.Trip_Date.max().date()),len(df),float(df.Gross_Pay.sum()),float(df.Actual_Pay.sum()),float(df.Margin.sum()),float(df.Loss_Amount.sum())))
 
+def show_metrics_and_tables(view, code, name, key_prefix):
+    if view.empty:
+        st.warning(f'No {name} trips were detected in the uploaded reports.')
+        return
+    total_revenue=float(view.Gross_Pay.sum()); total_actual=float(view.Actual_Pay.sum()); total_margin=total_revenue-total_actual
+    compliant=int((view.Policy_Status=='Matched').sum() - view.Is_Non_Compliant.sum())
+    non_compliant=int(view.Is_Non_Compliant.sum()); total=len(view)
+    a,b,c,d,e=st.columns(5); a.metric('Trips',total); b.metric('Revenue',f'${total_revenue:,.2f}'); c.metric('Actual Pay',f'${total_actual:,.2f}'); d.metric('Margin',f'${total_margin:,.2f}'); e.metric('Non-compliant %',f'{non_compliant/total:.1%}' if total else '0.0%')
+    st.subheader('Compliance Summary')
+    st.dataframe(pd.DataFrame({'Metric':['Compliant trips','Non-compliant trips','Trips without a matching policy'],'Count':[compliant,non_compliant,int((view.Policy_Status!='Matched').sum())],'Percentage':[f'{compliant/total:.1%}' if total else '0.0%',f'{non_compliant/total:.1%}' if total else '0.0%',f'{(view.Policy_Status!="Matched").sum()/total:.1%}' if total else '0.0%']}),use_container_width=True,hide_index=True)
+    st.subheader('By City'); st.dataframe(view.groupby(['Source','City']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Loss_Amount','sum')).reset_index(),use_container_width=True)
+    st.subheader('By Driver'); st.dataframe(view.groupby(['Source','Driver_Name']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Loss_Amount','sum')).reset_index(),use_container_width=True)
+    st.subheader('Per-trip comparison: contracted vs actual paid')
+    st.dataframe(view[['Source','Trip_Date','Trip_ID','Trip_Name','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Loss_Amount','Policy_Status']],use_container_width=True)
+    out=io.BytesIO()
+    with pd.ExcelWriter(out,engine='openpyxl') as w:
+        view.to_excel(w,sheet_name='Trips',index=False)
+        POLICY_DF[POLICY_DF.State==code].to_excel(w,sheet_name='Policy',index=False)
+    st.download_button('Download report',out.getvalue(),f'{key_prefix}_{code}_report.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'dl_{key_prefix}_{code}')
+
+def company_page(company):
+    st.title(f'{company} Reports')
+    st.caption('Upload company reports here. Results are stored and displayed inside the matching state pages.')
+    if company == 'First':
+        files=st.file_uploader('First Excel reports — select one or more files',type=['xlsx'],accept_multiple_files=True,key='company_first_upload')
+    else:
+        files=st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key='company_ever_upload')
+    if files:
+        try:
+            df=combine([io.BytesIO(f.getvalue()) for f in files],None) if company=='First' else combine(None,[io.BytesIO(f.getvalue()) for f in files])
+            st.session_state[f'{company}_df']=df
+            st.success(f'Loaded {len(df):,} trips from {len(files)} file(s).')
+        except Exception as e:
+            st.error(f'Could not read the {company} files: {e}'); return
+    df=st.session_state.get(f'{company}_df',pd.DataFrame())
+    if df.empty: st.info('Upload one or more files to begin.'); return
+    if company=='First': df=df[df.State.isin(['OR','N.CA','S.CA','SAC','NM','IL','AK'])]
+    else: df=df[df.State.isin(['NE','KS'])]
+    state=st.selectbox('Choose state',sorted(df.State.dropna().unique()),key=f'{company}_state_filter') if not df.empty else None
+    view=df[df.State==state] if state else df
+    show_metrics_and_tables(view,state or 'ALL',company,f'{company.lower()}_company')
+
 def state_page(code,name):
-    st.title(f'{name} — Analysis Dashboard'); st.tabs(['Weekly Analysis','Historical Performance'])
+    st.title(f'{name} — Analysis Dashboard')
     st.subheader('Official Pricing Policy')
     st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
-    if code == 'OR':
-        st.success('Oregon uses the new supplied pricing schedule only.')
-    st.subheader('All supplied cities and operating data')
-    st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
-    st.subheader('Upload weekly reports')
-    if code == 'AK':
-        st.caption('Alaska / Cross Border is Beyond with First only. EverDriven is not used for Alaska.')
-    first=st.file_uploader('First Excel reports — select one or more files',type=['xlsx'],accept_multiple_files=True,key=f'first_{code}')
-    ever=None if code == 'AK' else st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key=f'ever_{code}')
-    if not first and not ever: st.info('Upload one or more First and/or EverDriven reports to generate the weekly state report.'); return
-    try: df=combine([io.BytesIO(item.getvalue()) for item in first] if first else None,[io.BytesIO(item.getvalue()) for item in ever] if ever else None)
-    except Exception as e: st.error(f'Could not read report: {e}'); return
-    view=df[df.State==code].copy()
-    st.session_state[f'df_{code}']=view
-    if view.empty: st.warning(f'No {name} trips were detected in the uploaded reports.'); return
-    a,b,c,d=st.columns(4); a.metric('Trips',len(view)); b.metric('Gross Revenue',f'${view.Gross_Pay.sum():,.2f}'); c.metric('Actual Net Pay',f'${view.Actual_Pay.sum():,.2f}'); d.metric('Non-compliant',int(view.Is_Non_Compliant.sum()))
-    st.subheader('By City'); st.dataframe(view.groupby(['Source','City']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Gross=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Loss=('Loss_Amount','sum')).reset_index(),use_container_width=True)
-    st.subheader('By Driver'); st.dataframe(view.groupby(['Source','Driver_Name']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Gross=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Loss=('Loss_Amount','sum')).reset_index(),use_container_width=True)
-    st.subheader('Per-trip actual payment'); st.dataframe(view[['Source','Trip_Date','Trip_ID','Trip_Name','City','Driver_Name','Miles','Gross_Pay','Actual_Pay','Policy_Driver_Pay','Loss_Amount','Policy_Status']],use_container_width=True)
-    if st.button('Save weekly analysis to history',key=f'save_{code}'): save_history(code,view); st.success('Saved.')
-    out=io.BytesIO()
-    with pd.ExcelWriter(out,engine='openpyxl') as w: view.to_excel(w,sheet_name='Trips',index=False); POLICY_DF[POLICY_DF.State==code].to_excel(w,sheet_name='Policy',index=False)
-    st.download_button('Download state report',out.getvalue(),f'{code}_weekly_report.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'dl_{code}')
+    st.subheader('Upload state report for the original financial analysis')
+    state_files=st.file_uploader(f'{name} state Excel report',type=['xlsx'],accept_multiple_files=True,key=f'state_{code}')
+    if state_files:
+        try:
+            state_df=combine([io.BytesIO(f.getvalue()) for f in state_files],None)
+            state_view=state_df[state_df.State==code]
+            st.session_state[f'state_df_{code}']=state_view
+        except Exception as e: st.error(f'Could not read state report: {e}'); return
+    state_view=st.session_state.get(f'state_df_{code}',pd.DataFrame())
+    company_frames=[]
+    for source in ['First','EverDriven']:
+        stored=st.session_state.get(f'{source}_df',pd.DataFrame())
+        if not stored.empty: company_frames.append(stored[stored.State==code])
+    if not state_view.empty:
+        st.header('Original State Analysis')
+        show_metrics_and_tables(state_view,code,name,f'state_{code}')
+    if company_frames:
+        company_view=pd.concat(company_frames,ignore_index=True)
+        if not company_view.empty:
+            st.header('Company payment comparison added to this state')
+            st.caption('Contracted price comes from the state policy; Actual Pay comes from First or EverDriven.')
+            show_metrics_and_tables(company_view,code,name,f'company_state_{code}')
+    if state_view.empty and not company_frames: st.info('Upload the state report here, or upload First/EverDriven reports from their sidebar pages first.')
 
 st.set_page_config(page_title="Hatem's B.T. Analyzer",layout='wide')
-st.sidebar.title('Navigation'); selected=st.sidebar.radio('States',list(STATES),format_func=lambda x:STATES[x]); state_page(selected,STATES[selected])
+st.sidebar.title('Navigation')
+menu=st.sidebar.radio('Choose section',['State Reports','First Reports','EverDriven Reports'])
+if menu=='First Reports': company_page('First')
+elif menu=='EverDriven Reports': company_page('EverDriven')
+else:
+    selected=st.sidebar.selectbox('Choose state',list(STATES),format_func=lambda x:STATES[x])
+    state_page(selected,STATES[selected])
