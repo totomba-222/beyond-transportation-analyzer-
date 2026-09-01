@@ -8,12 +8,34 @@ import streamlit as st
 DB_FILE = 'history.db'
 STATES = {
     'OR': 'Oregon', 'N.CA': 'North California', 'S.CA': 'South California',
-    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska', 'CAN': 'Canada'
+    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska', 'KS': 'Kansas', 'SAC': 'Sacramento', 'CAN': 'Canada'
 }
 CITIES = {
     'OR': ['Portland','Gresham','Tigard','Salem','McMinnville','Wilsonville','Roseburg','Molalla','Lincoln City','North Bend','Newberg','Gladstone','Troutdale','Woodburn','West Linn','Milwaukie','Clackamas'],
     'N.CA': ['Benicia','Berkeley','Richmond','San Leandro'], 'S.CA': ['San Diego','Los Angeles','Richmond'],
-    'AK': ['Anchorage'], 'NE': ['Lincoln'], 'IL': ['Elgin','Carol Stream','Chicago'], 'NM': [], 'CAN': []
+    'AK': ['Anchorage'], 'NE': ['Lincoln'], 'KS': [], 'IL': ['Elgin','Carol Stream','Chicago'], 'NM': [], 'CAN': []
+}
+CITY_MASTER = {
+ 'N.CA': [
+  {'City':'Benicia','Pricing':'$38 all trips','Drivers':'Not supplied'},
+  {'City':'Berkeley','Pricing':'1–6 $38; 7–16 $42','Drivers':'Ali Hassan; Mohamed Hussein Altayeb Abdalla'},
+  {'City':'Richmond','Pricing':'1–6 $38; 7–11 $42; WC $75','Drivers':'Snose'},
+  {'City':'San Leandro','Pricing':'1–6 $38; 7–16 $43; >16 +$1.30/mile','Drivers':'Amer Ali Alabshalah; Nagi Alnaeem; Siddieg Basher Khair; Ahmed Musaad Almakkawi'}],
+ 'SAC': [{'City':'Sacramento','Pricing':'First 1–8 $34; 9–16 $37; extra +$1.00; Sedan 1–6 $38, 7–14 $42, extra +$0.80; Minivan 1–6 $43, 7–14 $48','Drivers':'Not supplied'}],
+ 'OR': [
+  {'City':'McMinnville','Pricing':'Oregon policy','Drivers':'Katy Martinez'}, {'City':'Wilsonville','Pricing':'Oregon policy','Drivers':'Julie Hussein'},
+  {'City':'Portland','Pricing':'Driver target 1–6 $30; general 1–6 $33, 7–10 $36, 11–14 $38, extra +$1.25','Drivers':'Hussein Ibrahim Alsheikh; Hasan Ammar Alkadi; Nasri; Abdoun; Issa'},
+  {'City':'Gresham','Pricing':'Driver target 1–6 $30; general Oregon policy','Drivers':'Emad Zaki; Kassaye Medhin; Alaa Alhalaqi; Yaser A Aldabh; Wesal M Alemam'},
+  {'City':'Tigard','Pricing':'Oregon policy','Drivers':'Ayad Alabbasi'}, {'City':'Salem','Pricing':'Oregon policy','Drivers':'Doangjok Otan; Leandro Ramirez Bueno; جمال للان'},
+  {'City':'Gladstone','Pricing':'Oregon policy','Drivers':'Bashka Hussein Abdirahman'}, {'City':'Troutdale','Pricing':'Oregon policy','Drivers':'Adham Hammadeh; Waeel Al Auosh'},
+  {'City':'Corvallis','Pricing':'Oregon policy','Drivers':'Douglas Giron'}, {'City':'Woodburn','Pricing':'Oregon policy','Drivers':'Hashmatullah Alam'},
+  {'City':'Clackamas','Pricing':'Oregon policy','Drivers':'Aicha Orabi; Hadeel M Al Imam'}, {'City':'West Linn','Pricing':'Oregon policy','Drivers':'Zainab Gheni; M Alakraa'},
+  {'City':'Milwaukie','Pricing':'Oregon policy','Drivers':'Basem Chami'}, {'City':'Roseburg','Pricing':'Oregon policy','Drivers':'Not supplied'}, {'City':'Molalla','Pricing':'Oregon policy','Drivers':'Not supplied'}, {'City':'Lincoln City','Pricing':'Oregon policy','Drivers':'Not supplied'}, {'City':'North Bend','Pricing':'Oregon policy','Drivers':'Not supplied'}, {'City':'Newberg','Pricing':'Oregon policy','Drivers':'Not supplied'}],
+ 'NE': [{'City':'Lincoln','Pricing':'EverDriven $30 through 16 miles; >16 +$1.50/mile','Drivers':'From EverDriven report'}],
+ 'KS': [{'City':'Not supplied','Pricing':'EverDriven / Net Pay; rate not supplied','Drivers':'Not supplied'}],
+ 'NM': [{'City':'Not supplied','Pricing':'First revenue 1–6 $48 / pay $33; 7–14 $48 / pay $37; >14 revenue +$2.25 / pay +$1.50','Drivers':'Not supplied'}],
+ 'IL': [{'City':'Elgin','Pricing':'First revenue $98.25; pay $75','Drivers':'From First report'}, {'City':'Carol Stream','Pricing':'First revenue $103.50; pay $85','Drivers':'From First report'}, {'City':'Unknown','Pricing':'Winston Knolls revenue $105.25; pay $85','Drivers':'From First report'}],
+ 'AK': [{'City':'Anchorage','Pricing':'Cross Border = Beyond revenue; Sedan 1–8 $35, 9–16 $37; Minivan 1–8 $40, 9–16 $42','Drivers':'From report; >16 rule not supplied'}]
 }
 
 POLICIES = [
@@ -59,6 +81,7 @@ def state_from(name, company=''):
     if 'PORTLAND' in s or 'GRESHAM' in s or 'SALEM' in s or 'OREGON' in s: return 'OR'
     if 'BERKELEY' in s or 'RICHMOND' in s or 'SAN LEANDRO' in s: return 'N.CA'
     if 'SAN DIEGO' in s or 'LOS ANGELES' in s: return 'S.CA'
+    if 'SACRAMENTO' in s: return 'SAC'
     if 'ILLINOIS' in s or ' IL' in s: return 'IL'
     return 'Unknown'
 def policy_pay(state, miles, vehicle='Unknown'):
@@ -122,6 +145,8 @@ def save_history(state,df):
 def state_page(code,name):
     st.title(f'{name} — Analysis Dashboard'); st.tabs(['Weekly Analysis','Historical Performance'])
     st.subheader('Official Pricing Policy'); st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
+    st.subheader('All supplied cities and operating data')
+    st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
     st.subheader('Upload weekly reports'); first=st.file_uploader('First Excel report',type=['xlsx'],key=f'first_{code}'); ever=st.file_uploader('EverDriven PDF report',type=['pdf'],key=f'ever_{code}')
     if not first and not ever: st.info('Upload First and/or EverDriven reports to generate the weekly state report.'); return
     try: df=combine(io.BytesIO(first.getvalue()) if first else None,io.BytesIO(ever.getvalue()) if ever else None)
