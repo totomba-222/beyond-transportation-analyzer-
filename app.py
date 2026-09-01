@@ -1,10 +1,14 @@
 from __future__ import annotations
 import io, re, sqlite3, subprocess, tempfile, zipfile
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
@@ -189,6 +193,8 @@ def combine(first,ever):
         frames.append(read_ever(item))
     return pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
 def pdf_report(view, code, name):
+    if not REPORTLAB_AVAILABLE:
+        return None
     out=io.BytesIO()
     doc=SimpleDocTemplate(out,pagesize=landscape(letter),rightMargin=0.35*inch,leftMargin=0.35*inch,topMargin=0.35*inch,bottomMargin=0.35*inch)
     styles=getSampleStyleSheet(); story=[Paragraph(f'{name} — Beyond Transportation Report',styles['Title']),Spacer(1,8)]
@@ -234,7 +240,11 @@ def show_metrics_and_tables(view, code, name, key_prefix):
         POLICY_DF[POLICY_DF.State==code].to_excel(w,sheet_name='Policy',index=False)
     st.download_button('Download report — Excel',out.getvalue(),f'{key_prefix}_{code}_report.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'dl_xlsx_{key_prefix}_{code}')
     st.download_button('Download report — CSV',view.to_csv(index=False).encode('utf-8-sig'),f'{key_prefix}_{code}_report.csv','text/csv',key=f'dl_csv_{key_prefix}_{code}')
-    st.download_button('Download report — PDF',pdf_report(view,code,name),f'{key_prefix}_{code}_report.pdf','application/pdf',key=f'dl_pdf_{key_prefix}_{code}')
+    pdf_bytes=pdf_report(view,code,name)
+    if pdf_bytes:
+        st.download_button('Download report — PDF',pdf_bytes,f'{key_prefix}_{code}_report.pdf','application/pdf',key=f'dl_pdf_{key_prefix}_{code}')
+    else:
+        st.warning('PDF download is unavailable until reportlab is installed. Add reportlab to requirements.txt and reboot the app.')
 
 def company_page(company):
     st.title(f'{company} Reports')
