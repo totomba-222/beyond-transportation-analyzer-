@@ -1,5 +1,10 @@
 from __future__ import annotations
-import io, re, sqlite3, subprocess, tempfile
+import io, re, sqlite3, subprocess, tempfile, zipfile
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
@@ -128,6 +133,29 @@ def read_first(file):
     book=pd.ExcelFile(file,engine='openpyxl'); sheet='SP ITEMIZED REPORT' if 'SP ITEMIZED REPORT' in book.sheet_names else book.sheet_names[0]; x=pd.read_excel(file,sheet_name=sheet,engine='openpyxl'); x.columns=[str(c).strip() for c in x.columns]
     d=pd.DataFrame(index=x.index); d['Source']='First'; d['Source Company']=x.get('SP COMPANY',''); d['Driver_Name']=x.get('DRIVER NAME','Unknown'); d['Trip_Date']=pd.to_datetime(x.get('DATE'),errors='coerce'); d['Trip_ID']=x.get('TRIP CODE',''); d['Trip_Name']=x.get('TRIP NAME',''); d['Miles']=x.get('TOTAL MILES',x.get('MILES',0)); d['Gross_Pay']=x.get('GROSS PAY',0); d['Net_Pay']=x.get('NET PAY',0); d['Vehicle']=d.Trip_Name.map(vehicle_from); d['State']=d.apply(lambda r:state_from(r.Trip_Name,r['Source Company']),axis=1); d['City']=d.Trip_Name.map(city_from); return finish(d)
 
+def read_csv(file, source='First'):
+    x=pd.read_csv(file)
+    x.columns=[str(c).strip() for c in x.columns]
+    d=pd.DataFrame(index=x.index); d['Source']=source; d['Source Company']=x.get('SP COMPANY',x.get('COMPANY',''))
+    d['Driver_Name']=x.get('DRIVER NAME',x.get('DRIVER','Unknown')); d['Trip_Date']=pd.to_datetime(x.get('DATE',x.get('TRIP DATE')),errors='coerce')
+    d['Trip_ID']=x.get('TRIP CODE',x.get('TRIP ID',x.get('TRIP_ID',''))); d['Trip_Name']=x.get('TRIP NAME',x.get('NAME',''))
+    d['Miles']=x.get('TOTAL MILES',x.get('MILES',0)); d['Gross_Pay']=x.get('GROSS PAY',x.get('GROSS',0)); d['Net_Pay']=x.get('NET PAY',x.get('NET',x.get('ACTUAL PAY',0)))
+    d['Vehicle']=d.Trip_Name.map(vehicle_from); d['State']=d.apply(lambda r:state_from(r.Trip_Name,r['Source Company']),axis=1); d['City']=d.Trip_Name.map(city_from)
+    return finish(d)
+
+def read_any(file, source='First'):
+    name=str(getattr(file,'name','')).lower()
+    if name.endswith('.pdf'):
+        return read_ever(file) if source == 'EverDriven' else read_ever(file)
+    if name.endswith('.csv'):
+        return read_csv(file,source)
+    if name.endswith('.xls') and not name.endswith('.xlsx'):
+        x=pd.read_excel(file)
+        x.columns=[str(c).strip() for c in x.columns]
+        # Reuse the standard First normalizer through an in-memory xlsx-compatible path where possible.
+        d=pd.DataFrame(index=x.index); d['Source']=source; d['Source Company']=x.get('SP COMPANY',x.get('COMPANY','')); d['Driver_Name']=x.get('DRIVER NAME',x.get('DRIVER','Unknown')); d['Trip_Date']=pd.to_datetime(x.get('DATE',x.get('TRIP DATE')),errors='coerce'); d['Trip_ID']=x.get('TRIP CODE',x.get('TRIP ID','')); d['Trip_Name']=x.get('TRIP NAME',x.get('NAME','')); d['Miles']=x.get('TOTAL MILES',x.get('MILES',0)); d['Gross_Pay']=x.get('GROSS PAY',x.get('GROSS',0)); d['Net_Pay']=x.get('NET PAY',x.get('NET',0)); d['Vehicle']=d.Trip_Name.map(vehicle_from); d['State']=d.apply(lambda r:state_from(r.Trip_Name,r['Source Company']),axis=1); d['City']=d.Trip_Name.map(city_from); return finish(d)
+    return read_first(file) if source == 'First' else read_ever(file)
+
 def pdf_text(file):
     payload = file.read() if hasattr(file, 'read') else Path(file).read_bytes()
     try:
@@ -160,6 +188,28 @@ def combine(first,ever):
     for item in ever_files:
         frames.append(read_ever(item))
     return pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
+def pdf_report(view, code, name):
+    out=io.BytesIO()
+    doc=SimpleDocTemplate(out,pagesize=landscape(letter),rightMargin=0.35*inch,leftMargin=0.35*inch,topMargin=0.35*inch,bottomMargin=0.35*inch)
+    styles=getSampleStyleSheet(); story=[Paragraph(f'{name} — Beyond Transportation Report',styles['Title']),Spacer(1,8)]
+    summary=[['Trips','Revenue','Actual Pay','Contracted','Difference'],[str(len(view)),f"${view.Gross_Pay.sum():,.2f}",f"${view.Actual_Pay.sum():,.2f}",f"${view.Policy_Driver_Pay.sum():,.2f}",f"${view.Loss_Amount.sum():,.2f}"]]
+    t=Table(summary,colWidths=[1.1*inch]*5); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1f4e78')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.5,colors.grey),('ALIGN',(0,0),(-1,-1),'CENTER'),('FONTNAME',(0,0),(-1,-1),'Helvetica')]))
+    story += [t,Spacer(1,10)]
+    cols=['Source','Trip_Date','Trip_ID','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Loss_Amount','Policy_Status']
+    data=[cols]
+    for _,r in view[cols].fillna('').iterrows():
+        data.append([str(r[c])[:42] for c in cols])
+    detail=Table(data,repeatRows=1,colWidths=[0.65*inch,0.75*inch,0.9*inch,0.8*inch,1.25*inch,0.55*inch,0.75*inch,0.85*inch,0.75*inch,0.7*inch,0.9*inch])
+    detail.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1f4e78')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.25,colors.grey),('FONTSIZE',(0,0),(-1,-1),6),('VALIGN',(0,0),(-1,-1),'TOP')]))
+    story.append(detail); doc.build(story); return out.getvalue()
+
+def originals_zip(files):
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+        for name,payload in files:
+            z.writestr(name,payload)
+    return out.getvalue()
+
 def save_history(state,df):
     if df.empty:return
     with sqlite3.connect(DB_FILE) as c: c.execute('INSERT INTO weekly_summary VALUES(NULL,?,?,?,?,?,?,?,?)',(datetime.now().strftime('%Y-%m-%d'),state,str(df.Trip_Date.min().date()),str(df.Trip_Date.max().date()),len(df),float(df.Gross_Pay.sum()),float(df.Actual_Pay.sum()),float(df.Margin.sum()),float(df.Loss_Amount.sum())))
@@ -182,19 +232,22 @@ def show_metrics_and_tables(view, code, name, key_prefix):
     with pd.ExcelWriter(out,engine='openpyxl') as w:
         view.to_excel(w,sheet_name='Trips',index=False)
         POLICY_DF[POLICY_DF.State==code].to_excel(w,sheet_name='Policy',index=False)
-    st.download_button('Download report',out.getvalue(),f'{key_prefix}_{code}_report.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'dl_{key_prefix}_{code}')
+    st.download_button('Download report — Excel',out.getvalue(),f'{key_prefix}_{code}_report.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key=f'dl_xlsx_{key_prefix}_{code}')
+    st.download_button('Download report — CSV',view.to_csv(index=False).encode('utf-8-sig'),f'{key_prefix}_{code}_report.csv','text/csv',key=f'dl_csv_{key_prefix}_{code}')
+    st.download_button('Download report — PDF',pdf_report(view,code,name),f'{key_prefix}_{code}_report.pdf','application/pdf',key=f'dl_pdf_{key_prefix}_{code}')
 
 def company_page(company):
     st.title(f'{company} Reports')
     st.caption('Upload company reports here. Results are stored and displayed inside the matching state pages.')
     if company == 'First':
-        files=st.file_uploader('First Excel reports — select one or more files',type=['xlsx'],accept_multiple_files=True,key='company_first_upload')
+        files=st.file_uploader('First reports — any file format (Excel, CSV, PDF, TXT)',type=None,accept_multiple_files=True,key='company_first_upload')
     else:
-        files=st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key='company_ever_upload')
+        files=st.file_uploader('EverDriven reports — any file format (Excel, CSV, PDF, TXT)',type=None,accept_multiple_files=True,key='company_ever_upload')
     if files:
         try:
-            df=combine([io.BytesIO(f.getvalue()) for f in files],None) if company=='First' else combine(None,[io.BytesIO(f.getvalue()) for f in files])
+            df=pd.concat([read_any(f,company) for f in files],ignore_index=True)
             st.session_state[f'{company}_df']=df
+            st.session_state[f'{company}_files']=[(f.name,f.getvalue()) for f in files]
             st.success(f'Loaded {len(df):,} trips from {len(files)} file(s).')
         except Exception as e:
             st.error(f'Could not read the {company} files: {e}'); return
@@ -205,18 +258,22 @@ def company_page(company):
     state=st.selectbox('Choose state',sorted(df.State.dropna().unique()),key=f'{company}_state_filter') if not df.empty else None
     view=df[df.State==state] if state else df
     show_metrics_and_tables(view,state or 'ALL',company,f'{company.lower()}_company')
+    original_files=st.session_state.get(f'{company}_files',[])
+    if original_files:
+        st.download_button('Download original uploaded files — ZIP',originals_zip(original_files),f'{company.lower()}_original_files.zip','application/zip',key=f'zip_{company.lower()}')
 
 def state_page(code,name):
     st.title(f'{name} — Analysis Dashboard')
     st.subheader('Official Pricing Policy')
     st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
     st.subheader('Upload state report for the original financial analysis')
-    state_files=st.file_uploader(f'{name} state Excel report',type=['xlsx'],accept_multiple_files=True,key=f'state_{code}')
+    state_files=st.file_uploader(f'{name} state reports — any file format',type=None,accept_multiple_files=True,key=f'state_{code}')
     if state_files:
         try:
-            state_df=combine([io.BytesIO(f.getvalue()) for f in state_files],None)
+            state_df=pd.concat([read_any(f,'First') for f in state_files],ignore_index=True)
             state_view=state_df[state_df.State==code]
             st.session_state[f'state_df_{code}']=state_view
+            st.session_state[f'state_files_{code}']=[(f.name,f.getvalue()) for f in state_files]
         except Exception as e: st.error(f'Could not read state report: {e}'); return
     state_view=st.session_state.get(f'state_df_{code}',pd.DataFrame())
     company_frames=[]
@@ -233,6 +290,9 @@ def state_page(code,name):
             st.caption('Contracted price comes from the state policy; Actual Pay comes from First or EverDriven.')
             show_metrics_and_tables(company_view,code,name,f'company_state_{code}')
     if state_view.empty and not company_frames: st.info('Upload the state report here, or upload First/EverDriven reports from their sidebar pages first.')
+    state_originals=st.session_state.get(f'state_files_{code}',[])
+    if state_originals:
+        st.download_button('Download original state files — ZIP',originals_zip(state_originals),f'{code}_original_state_files.zip','application/zip',key=f'zip_state_{code}')
 
 st.set_page_config(page_title="Hatem's B.T. Analyzer",layout='wide')
 st.sidebar.title('Navigation')
