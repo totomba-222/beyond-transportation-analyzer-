@@ -164,13 +164,13 @@ def pdf_text(file):
     payload = file.read() if hasattr(file, 'read') else Path(file).read_bytes()
     try:
         from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError('PDF reader is not installed. Add pypdf to requirements.txt, commit it, and reboot the Streamlit app.') from exc
+    try:
         reader = PdfReader(io.BytesIO(payload))
         return '\\n'.join(page.extract_text() or '' for page in reader.pages)
-    except Exception:
-        with tempfile.NamedTemporaryFile(suffix='.pdf',delete=False) as f:
-            f.write(payload); name=f.name
-        try: return subprocess.run(['pdftotext','-layout',name,'-'],capture_output=True,text=True,check=True).stdout
-        finally: Path(name).unlink(missing_ok=True)
+    except Exception as exc:
+        raise RuntimeError(f'Could not extract text from PDF: {exc}') from exc
 def read_ever(file):
     text=pdf_text(file); rows=[]; driver='Unknown'; date=pd.NaT
     rx=re.compile(r'^\s*(?:(?P<driver>[A-Za-z][A-Za-z .\'-]+)\s+\d{5,}\s+)?(?:(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+)?(?P<key>\d{6,})\s+(?P<name>.+?)\s+(?P<miles>\d+(?:\.\d+)?)\s+\$(?P<gross>[\d,]+\.\d{2})\s+\$(?P<net>[\d,]+\.\d{2})\s*$')
