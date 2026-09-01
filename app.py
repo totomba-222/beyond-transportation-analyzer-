@@ -137,7 +137,7 @@ def read_ever(file):
         g=m.groupdict()
         if g['driver']: driver=g['driver'].strip()
         if g['date']: date=pd.to_datetime(g['date'],format='%m/%d/%Y',errors='coerce')
-        rows.append({'Source':'EverDriven','Source Company':'Beyond Transportation (IL)','Driver_Name':driver,'Trip_Date':date,'Trip_ID':g['key'],'Trip_Name':g['name'].strip(),'Miles':float(g['miles']),'Gross_Pay':float(g['gross'].replace(',','')),'Net_Pay':float(g['net'].replace(',','')),'Vehicle':'Unknown','State':state_from(g['name'],'Beyond Transportation (IL)'),'City':city_from(g['name'])})
+        rows.append({'Source':'EverDriven','Source Company':'Beyond Transportation (IL)','Driver_Name':driver,'Trip_Date':date,'Trip_ID':g['key'],'Trip_Name':g['name'].strip(),'Miles':float(g['miles']),'Gross_Pay':float(g['gross'].replace(',','')),'Net_Pay':float(g['net'].replace(',','')),'Vehicle':'Unknown','State':('Unknown' if 'CROSS BORDER' in g['name'].upper() else state_from(g['name'],'Beyond Transportation (IL)')),'City':city_from(g['name'])})
     return finish(pd.DataFrame(rows))
 
 def combine(first,ever):
@@ -162,8 +162,10 @@ def state_page(code,name):
     st.subheader('All supplied cities and operating data')
     st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
     st.subheader('Upload weekly reports')
+    if code == 'AK':
+        st.caption('Alaska / Cross Border is Beyond with First only. EverDriven is not used for Alaska.')
     first=st.file_uploader('First Excel reports — select one or more files',type=['xlsx'],accept_multiple_files=True,key=f'first_{code}')
-    ever=st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key=f'ever_{code}')
+    ever=None if code == 'AK' else st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key=f'ever_{code}')
     if not first and not ever: st.info('Upload one or more First and/or EverDriven reports to generate the weekly state report.'); return
     try: df=combine([io.BytesIO(item.getvalue()) for item in first] if first else None,[io.BytesIO(item.getvalue()) for item in ever] if ever else None)
     except Exception as e: st.error(f'Could not read report: {e}'); return
