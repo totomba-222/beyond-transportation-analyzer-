@@ -39,9 +39,12 @@ CITY_MASTER = {
 }
 
 POLICIES = [
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':8,'Policy_Pay':35.0,'Per_Mile_Rate':0,'Note':'1–8 miles'},
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':8.01,'Max_Miles':16,'Policy_Pay':40.0,'Per_Mile_Rate':0,'Note':'9–16 miles'},
- {'State':'OR','Vehicle_Type':'ANY','Min_Miles':16.01,'Max_Miles':9999,'Policy_Pay':37.0,'Per_Mile_Rate':1.75,'Note':'$37 + $1.75 per mile above 16'},
+ # Oregon rates from the supplied Oregon pricing note/image. The old 35/40/37 table is kept below as legacy, not active.
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':6,'Policy_Pay':33.0,'Per_Mile_Rate':0,'Note':'Supplied Oregon schedule: 1–6 miles; confirmation pending'},
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':6.01,'Max_Miles':10,'Policy_Pay':36.0,'Per_Mile_Rate':0,'Note':'Supplied Oregon schedule: 7–10 miles; confirmation pending'},
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':10.01,'Max_Miles':14,'Policy_Pay':38.0,'Per_Mile_Rate':0,'Note':'Supplied Oregon schedule: 11–14 miles; confirmation pending'},
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':14.01,'Max_Miles':9999,'Policy_Pay':38.0,'Per_Mile_Rate':1.25,'Note':'Supplied Oregon schedule: +$1.25 per mile above 14; confirmation pending'},
+
  {'State':'N.CA','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':6,'Policy_Pay':38.0,'Per_Mile_Rate':0,'Note':'1–6 miles'},
  {'State':'N.CA','Vehicle_Type':'ANY','Min_Miles':6.01,'Max_Miles':16,'Policy_Pay':42.0,'Per_Mile_Rate':0,'Note':'7–16 miles'},
  {'State':'S.CA','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':4,'Policy_Pay':38.0,'Per_Mile_Rate':0,'Note':'1–4 miles'},
@@ -58,6 +61,11 @@ POLICIES = [
  {'State':'CAN','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':9999,'Policy_Pay':0.0,'Per_Mile_Rate':0,'Note':'Not supplied'},
 ]
 POLICY_DF = pd.DataFrame(POLICIES)
+LEGACY_OREGON_POLICIES = pd.DataFrame([
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':8,'Policy_Pay':35.0,'Per_Mile_Rate':0,'Note':'Legacy/previous version: 1–8 miles'},
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':8.01,'Max_Miles':16,'Policy_Pay':40.0,'Per_Mile_Rate':0,'Note':'Legacy/previous version: 9–16 miles'},
+ {'State':'OR','Vehicle_Type':'ANY','Min_Miles':16.01,'Max_Miles':9999,'Policy_Pay':37.0,'Per_Mile_Rate':1.75,'Note':'Legacy/previous version: $37 + $1.75 above 16'},
+])
 
 def init_db():
     with sqlite3.connect(DB_FILE) as c:
@@ -68,6 +76,8 @@ def clean(x): return re.sub(r'\s+',' ',str(x or '').strip()).lower()
 def city_from(name):
     s=clean(name).upper()
     if 'LINC ' in s or 'LINCOLN' in s or 'BRYAN' in s: return 'Lincoln'
+    for city in ['McMinnville','Wilsonville','Portland','Gresham','Tigard','Roseburg','Molalla','Lincoln City','North Bend','Newberg','Salem','Gladstone','Troutdale','Corvallis','Woodburn','Clackamas','West Linn','Milwaukie']:
+        if city.upper() in s: return city
     if 'ELGIN' in s: return 'Elgin'
     if 'CAROL STREAM' in s: return 'Carol Stream'
     if 'RICHMOND' in s: return 'Richmond'
@@ -76,6 +86,8 @@ def city_from(name):
     return 'Unknown'
 def state_from(name, company=''):
     s=f'{name} {company}'.upper()
+    # Use every supplied Oregon city/region as an explicit state mapping.
+    if any(city.upper() in s for city in CITIES.get('OR', [])) or any(city.upper() in s for city in ['DAMASCUS','CLACKAMAS','TROUTDALE','GLADSTONE','CORVALLIS','WOODBURN','WEST LINN','MILWAUKIE']): return 'OR'
     if 'CROSS BORDER' in s or 'ALASKA' in s or 'ANCHORAGE' in s: return 'AK'
     if 'LINCOLN' in s or 'LINC ' in s or 'BRYAN' in s or 'NEBRASKA' in s: return 'NE'
     if 'PORTLAND' in s or 'GRESHAM' in s or 'SALEM' in s or 'OREGON' in s: return 'OR'
@@ -144,7 +156,12 @@ def save_history(state,df):
 
 def state_page(code,name):
     st.title(f'{name} — Analysis Dashboard'); st.tabs(['Weekly Analysis','Historical Performance'])
-    st.subheader('Official Pricing Policy'); st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
+    st.subheader('Official Pricing Policy')
+    st.table(POLICY_DF[POLICY_DF.State==code][['Vehicle_Type','Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
+    if code == 'OR':
+        st.warning('Oregon active rates use the supplied 1–6 / 7–10 / 11–14 / >14 schedule. The old 35 / 40 / 37 table is shown as legacy and is not applied.')
+        st.subheader('Legacy Oregon schedule — not active')
+        st.table(LEGACY_OREGON_POLICIES[['Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
     st.subheader('All supplied cities and operating data')
     st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
     st.subheader('Upload weekly reports'); first=st.file_uploader('First Excel report',type=['xlsx'],key=f'first_{code}'); ever=st.file_uploader('EverDriven PDF report',type=['pdf'],key=f'ever_{code}')
