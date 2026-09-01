@@ -147,8 +147,12 @@ def read_ever(file):
 
 def combine(first,ever):
     frames=[]
-    if first is not None: frames.append(read_first(first))
-    if ever is not None: frames.append(read_ever(ever))
+    first_files = first if isinstance(first, (list, tuple)) else ([first] if first is not None else [])
+    ever_files = ever if isinstance(ever, (list, tuple)) else ([ever] if ever is not None else [])
+    for item in first_files:
+        frames.append(read_first(item))
+    for item in ever_files:
+        frames.append(read_ever(item))
     return pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
 def save_history(state,df):
     if df.empty:return
@@ -164,9 +168,11 @@ def state_page(code,name):
         st.table(LEGACY_OREGON_POLICIES[['Min_Miles','Max_Miles','Policy_Pay','Per_Mile_Rate','Note']])
     st.subheader('All supplied cities and operating data')
     st.dataframe(pd.DataFrame(CITY_MASTER.get(code, [{'City':'Not supplied','Pricing':'Not supplied','Drivers':'Not supplied'}])), use_container_width=True, hide_index=True)
-    st.subheader('Upload weekly reports'); first=st.file_uploader('First Excel report',type=['xlsx'],key=f'first_{code}'); ever=st.file_uploader('EverDriven PDF report',type=['pdf'],key=f'ever_{code}')
-    if not first and not ever: st.info('Upload First and/or EverDriven reports to generate the weekly state report.'); return
-    try: df=combine(io.BytesIO(first.getvalue()) if first else None,io.BytesIO(ever.getvalue()) if ever else None)
+    st.subheader('Upload weekly reports')
+    first=st.file_uploader('First Excel reports — select one or more files',type=['xlsx'],accept_multiple_files=True,key=f'first_{code}')
+    ever=st.file_uploader('EverDriven PDF reports — select one or more files',type=['pdf'],accept_multiple_files=True,key=f'ever_{code}')
+    if not first and not ever: st.info('Upload one or more First and/or EverDriven reports to generate the weekly state report.'); return
+    try: df=combine([io.BytesIO(item.getvalue()) for item in first] if first else None,[io.BytesIO(item.getvalue()) for item in ever] if ever else None)
     except Exception as e: st.error(f'Could not read report: {e}'); return
     view=df[df.State==code].copy()
     st.session_state[f'df_{code}']=view
