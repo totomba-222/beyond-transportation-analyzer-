@@ -8,12 +8,12 @@ import streamlit as st
 DB_FILE = 'history.db'
 STATES = {
     'OR': 'Oregon', 'N.CA': 'North California', 'S.CA': 'South California',
-    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska', 'KS': 'Kansas', 'SAC': 'Sacramento', 'CAN': 'Canada'
+    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska', 'KS': 'Kansas', 'SAC': 'Sacramento', 'MON': 'Monterey', 'CAN': 'Canada'
 }
 CITIES = {
     'OR': ['Portland','Gresham','Tigard','Salem','McMinnville','Wilsonville','Roseburg','Molalla','Lincoln City','North Bend','Newberg','Gladstone','Troutdale','Woodburn','West Linn','Milwaukie','Clackamas'],
     'N.CA': ['Benicia','Berkeley','Richmond','San Leandro'], 'S.CA': ['San Diego','Los Angeles','Richmond'],
-    'AK': ['Anchorage'], 'NE': ['Lincoln'], 'KS': [], 'IL': ['Elgin','Carol Stream','Chicago'], 'NM': [], 'CAN': []
+    'AK': ['Anchorage'], 'NE': ['Lincoln'], 'KS': [], 'IL': ['Elgin','Carol Stream','Chicago'], 'NM': [], 'MON': ['Monterey'], 'CAN': []
 }
 CITY_MASTER = {
  'N.CA': [
@@ -35,7 +35,8 @@ CITY_MASTER = {
  'KS': [{'City':'Not supplied','Pricing':'EverDriven / Net Pay; rate not supplied','Drivers':'Not supplied'}],
  'NM': [{'City':'Not supplied','Pricing':'First revenue 1–6 $48 / pay $33; 7–14 $48 / pay $37; >14 revenue +$2.25 / pay +$1.50','Drivers':'Not supplied'}],
  'IL': [{'City':'Elgin','Pricing':'First revenue $98.25; pay $75','Drivers':'From First report'}, {'City':'Carol Stream','Pricing':'First revenue $103.50; pay $85','Drivers':'From First report'}, {'City':'Unknown','Pricing':'Winston Knolls revenue $105.25; pay $85','Drivers':'From First report'}],
- 'AK': [{'City':'Anchorage','Pricing':'Cross Border = Beyond revenue; Sedan 1–8 $35, 9–16 $37; Minivan 1–8 $40, 9–16 $42','Drivers':'From report; >16 rule not supplied'}]
+ 'AK': [{'City':'Anchorage','Pricing':'Cross Border = Beyond revenue; Sedan 1–8 $35, 9–16 $37; Minivan 1–8 $40, 9–16 $42','Drivers':'From report; >16 rule not supplied'}],
+ 'MON': [{'City':'Monterey','Pricing':'Sedan 1–6 $38; 7–14 $42; >14 +$0.80/mile. Minivan 1–6 $43; 7–14 $48; >14 +$0.80/mile','Drivers':'Khalid Wahab'}]
 }
 
 POLICIES = [
@@ -54,6 +55,12 @@ POLICIES = [
  {'State':'AK','Vehicle_Type':'Sedan','Min_Miles':8.01,'Max_Miles':16,'Policy_Pay':37.0,'Per_Mile_Rate':0,'Note':'Sedan 9–16'},
  {'State':'AK','Vehicle_Type':'Minivan','Min_Miles':0,'Max_Miles':8,'Policy_Pay':40.0,'Per_Mile_Rate':0,'Note':'Minivan 1–8'},
  {'State':'AK','Vehicle_Type':'Minivan','Min_Miles':8.01,'Max_Miles':16,'Policy_Pay':42.0,'Per_Mile_Rate':0,'Note':'Minivan 9–16'},
+ {'State':'MON','Vehicle_Type':'Sedan','Min_Miles':0,'Max_Miles':6,'Policy_Pay':38.0,'Per_Mile_Rate':0,'Note':'Sedan 1–6'},
+ {'State':'MON','Vehicle_Type':'Sedan','Min_Miles':6.01,'Max_Miles':14,'Policy_Pay':42.0,'Per_Mile_Rate':0,'Note':'Sedan 7–14'},
+ {'State':'MON','Vehicle_Type':'Sedan','Min_Miles':14.01,'Max_Miles':9999,'Policy_Pay':42.0,'Per_Mile_Rate':0.80,'Note':'Sedan 42 + $0.80 per mile above 14'},
+ {'State':'MON','Vehicle_Type':'Minivan','Min_Miles':0,'Max_Miles':6,'Policy_Pay':43.0,'Per_Mile_Rate':0,'Note':'Minivan 1–6'},
+ {'State':'MON','Vehicle_Type':'Minivan','Min_Miles':6.01,'Max_Miles':14,'Policy_Pay':48.0,'Per_Mile_Rate':0,'Note':'Minivan 7–14'},
+ {'State':'MON','Vehicle_Type':'Minivan','Min_Miles':14.01,'Max_Miles':9999,'Policy_Pay':48.0,'Per_Mile_Rate':0.80,'Note':'Minivan 48 + $0.80 per mile above 14'},
  {'State':'NE','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':16,'Policy_Pay':30.0,'Per_Mile_Rate':0,'Note':'$30 through 16 miles'},
  {'State':'NE','Vehicle_Type':'ANY','Min_Miles':16.01,'Max_Miles':9999,'Policy_Pay':30.0,'Per_Mile_Rate':1.50,'Note':'$30 + $1.50 per mile above 16'},
  {'State':'IL','Vehicle_Type':'ANY','Min_Miles':0,'Max_Miles':9999,'Policy_Pay':0.0,'Per_Mile_Rate':0,'Note':'Not supplied'},
@@ -68,6 +75,9 @@ def init_db():
 init_db()
 
 def clean(x): return re.sub(r'\s+',' ',str(x or '').strip()).lower()
+def vehicle_from(name):
+    s=clean(name).upper()
+    return 'Minivan' if 'MINIVAN' in s or 'M-VAN' in s else 'Sedan'
 def city_from(name):
     s=clean(name).upper()
     if 'LINC ' in s or 'LINCOLN' in s or 'BRYAN' in s: return 'Lincoln'
@@ -83,6 +93,7 @@ def state_from(name, company=''):
     s=f'{name} {company}'.upper()
     # Use every supplied Oregon city/region as an explicit state mapping.
     if any(city.upper() in s for city in CITIES.get('OR', [])) or any(city.upper() in s for city in ['DAMASCUS','CLACKAMAS','TROUTDALE','GLADSTONE','CORVALLIS','WOODBURN','WEST LINN','MILWAUKIE']): return 'OR'
+    if 'MONTEREY' in s: return 'MON'
     if 'CROSS BORDER' in s or 'ALASKA' in s or 'ANCHORAGE' in s: return 'AK'
     if 'LINCOLN' in s or 'LINC ' in s or 'BRYAN' in s or 'NEBRASKA' in s: return 'NE'
     if 'PORTLAND' in s or 'GRESHAM' in s or 'SALEM' in s or 'OREGON' in s: return 'OR'
@@ -93,7 +104,7 @@ def state_from(name, company=''):
     return 'Unknown'
 def policy_pay(state, miles, vehicle='Unknown'):
     miles=float(miles or 0); v=str(vehicle or 'Unknown').title(); rules=POLICY_DF[(POLICY_DF.State==state)&(POLICY_DF.Min_Miles<=miles)&(POLICY_DF.Max_Miles>=miles)]
-    if state=='AK' and v in ('Sedan','Minivan'):
+    if state in ('AK','MON') and v in ('Sedan','Minivan'):
         exact=rules[rules.Vehicle_Type==v]
         if not exact.empty: rules=exact
     if rules.empty: return 0.0,'No policy'
@@ -115,7 +126,7 @@ def finish(df):
 
 def read_first(file):
     book=pd.ExcelFile(file,engine='openpyxl'); sheet='SP ITEMIZED REPORT' if 'SP ITEMIZED REPORT' in book.sheet_names else book.sheet_names[0]; x=pd.read_excel(file,sheet_name=sheet,engine='openpyxl'); x.columns=[str(c).strip() for c in x.columns]
-    d=pd.DataFrame(index=x.index); d['Source']='First'; d['Source Company']=x.get('SP COMPANY',''); d['Driver_Name']=x.get('DRIVER NAME','Unknown'); d['Trip_Date']=pd.to_datetime(x.get('DATE'),errors='coerce'); d['Trip_ID']=x.get('TRIP CODE',''); d['Trip_Name']=x.get('TRIP NAME',''); d['Miles']=x.get('TOTAL MILES',x.get('MILES',0)); d['Gross_Pay']=x.get('GROSS PAY',0); d['Net_Pay']=x.get('NET PAY',0); d['Vehicle']='Unknown'; d['State']=d.apply(lambda r:state_from(r.Trip_Name,r['Source Company']),axis=1); d['City']=d.Trip_Name.map(city_from); return finish(d)
+    d=pd.DataFrame(index=x.index); d['Source']='First'; d['Source Company']=x.get('SP COMPANY',''); d['Driver_Name']=x.get('DRIVER NAME','Unknown'); d['Trip_Date']=pd.to_datetime(x.get('DATE'),errors='coerce'); d['Trip_ID']=x.get('TRIP CODE',''); d['Trip_Name']=x.get('TRIP NAME',''); d['Miles']=x.get('TOTAL MILES',x.get('MILES',0)); d['Gross_Pay']=x.get('GROSS PAY',0); d['Net_Pay']=x.get('NET PAY',0); d['Vehicle']=d.Trip_Name.map(vehicle_from); d['State']=d.apply(lambda r:state_from(r.Trip_Name,r['Source Company']),axis=1); d['City']=d.Trip_Name.map(city_from); return finish(d)
 
 def pdf_text(file):
     payload = file.read() if hasattr(file, 'read') else Path(file).read_bytes()
@@ -137,7 +148,7 @@ def read_ever(file):
         g=m.groupdict()
         if g['driver']: driver=g['driver'].strip()
         if g['date']: date=pd.to_datetime(g['date'],format='%m/%d/%Y',errors='coerce')
-        rows.append({'Source':'EverDriven','Source Company':'Beyond Transportation (IL)','Driver_Name':driver,'Trip_Date':date,'Trip_ID':g['key'],'Trip_Name':g['name'].strip(),'Miles':float(g['miles']),'Gross_Pay':float(g['gross'].replace(',','')),'Net_Pay':float(g['net'].replace(',','')),'Vehicle':'Unknown','State':('Unknown' if 'CROSS BORDER' in g['name'].upper() else state_from(g['name'],'Beyond Transportation (IL)')),'City':city_from(g['name'])})
+        rows.append({'Source':'EverDriven','Source Company':'Beyond Transportation (IL)','Driver_Name':driver,'Trip_Date':date,'Trip_ID':g['key'],'Trip_Name':g['name'].strip(),'Miles':float(g['miles']),'Gross_Pay':float(g['gross'].replace(',','')),'Net_Pay':float(g['net'].replace(',','')),'Vehicle':vehicle_from(g['name']),'State':('Unknown' if 'CROSS BORDER' in g['name'].upper() else state_from(g['name'],'Beyond Transportation (IL)')),'City':city_from(g['name'])})
     return finish(pd.DataFrame(rows))
 
 def combine(first,ever):
@@ -189,7 +200,7 @@ def company_page(company):
             st.error(f'Could not read the {company} files: {e}'); return
     df=st.session_state.get(f'{company}_df',pd.DataFrame())
     if df.empty: st.info('Upload one or more files to begin.'); return
-    if company=='First': df=df[df.State.isin(['OR','N.CA','S.CA','SAC','NM','IL','AK'])]
+    if company=='First': df=df[df.State.isin(['OR','N.CA','S.CA','SAC','NM','IL','AK','MON'])]
     else: df=df[df.State.isin(['NE','KS'])]
     state=st.selectbox('Choose state',sorted(df.State.dropna().unique()),key=f'{company}_state_filter') if not df.empty else None
     view=df[df.State==state] if state else df
