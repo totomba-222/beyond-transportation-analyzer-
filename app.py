@@ -78,6 +78,44 @@ POLICIES = [
 ]
 POLICY_DF = pd.DataFrame(POLICIES)
 
+# City-level contract rates override the state-level fallback when supplied.
+# Each rule returns the contracted driver pay for one trip.
+CITY_POLICIES = {
+    'Benicia': [{'min': 0, 'max': 9999, 'base': 38.0, 'per_mile': 0.0, 'note': 'Benicia: $38 all trips'}],
+    'Berkeley': [
+        {'min': 0, 'max': 6, 'base': 38.0, 'per_mile': 0.0, 'note': 'Berkeley: 1–6 miles'},
+        {'min': 6.01, 'max': 16, 'base': 42.0, 'per_mile': 0.0, 'note': 'Berkeley: 7–16 miles'},
+    ],
+    'Richmond': [
+        {'min': 0, 'max': 6, 'base': 38.0, 'per_mile': 0.0, 'note': 'Richmond: 1–6 miles'},
+        {'min': 6.01, 'max': 11, 'base': 42.0, 'per_mile': 0.0, 'note': 'Richmond: 7–11 miles'},
+    ],
+    'San Leandro': [
+        {'min': 0, 'max': 6, 'base': 38.0, 'per_mile': 0.0, 'note': 'San Leandro: 1–6 miles'},
+        {'min': 6.01, 'max': 16, 'base': 43.0, 'per_mile': 0.0, 'note': 'San Leandro: 7–16 miles'},
+        {'min': 16.01, 'max': 9999, 'base': 43.0, 'per_mile': 1.30, 'note': 'San Leandro: $43 + $1.30 per mile above 16'},
+    ],
+    'Lincoln': [
+        {'min': 0, 'max': 16, 'base': 30.0, 'per_mile': 0.0, 'note': 'Lincoln: $30 through 16 miles'},
+        {'min': 16.01, 'max': 9999, 'base': 30.0, 'per_mile': 1.50, 'note': 'Lincoln: $30 + $1.50 per mile above 16'},
+    ],
+    'Elgin': [{'min': 0, 'max': 9999, 'base': 75.0, 'per_mile': 0.0, 'note': 'Elgin: driver pay $75'}],
+    'Carol Stream': [{'min': 0, 'max': 9999, 'base': 85.0, 'per_mile': 0.0, 'note': 'Carol Stream: driver pay $85'}],
+}
+
+SACRAMENTO_POLICIES = {
+    'Sedan': [
+        {'min': 0, 'max': 6, 'base': 38.0, 'per_mile': 0.0, 'note': 'Sacramento Sedan: 1–6 miles'},
+        {'min': 6.01, 'max': 14, 'base': 42.0, 'per_mile': 0.0, 'note': 'Sacramento Sedan: 7–14 miles'},
+        {'min': 14.01, 'max': 9999, 'base': 42.0, 'per_mile': 0.80, 'note': 'Sacramento Sedan: $42 + $0.80 per mile above 14'},
+    ],
+    'Minivan': [
+        {'min': 0, 'max': 6, 'base': 43.0, 'per_mile': 0.0, 'note': 'Sacramento Minivan: 1–6 miles'},
+        {'min': 6.01, 'max': 14, 'base': 48.0, 'per_mile': 0.0, 'note': 'Sacramento Minivan: 7–14 miles'},
+        {'min': 14.01, 'max': 9999, 'base': 48.0, 'per_mile': 0.80, 'note': 'Sacramento Minivan: $48 + $0.80 per mile above 14'},
+    ],
+}
+
 def init_db():
     with sqlite3.connect(DB_FILE) as c:
         c.execute('''CREATE TABLE IF NOT EXISTS weekly_summary (id INTEGER PRIMARY KEY AUTOINCREMENT, analysis_date TEXT, state TEXT, week_start_date TEXT, week_end_date TEXT, total_trips INTEGER, total_revenue REAL, total_driver_cost REAL, total_margin REAL, total_loss REAL)''')
@@ -88,15 +126,21 @@ def vehicle_from(name):
     s=clean(name).upper()
     return 'Minivan' if 'MINIVAN' in s or 'M-VAN' in s else 'Sedan'
 def city_from(name):
-    s=clean(name).upper()
-    if 'LINC ' in s or 'LINCOLN' in s or 'BRYAN' in s: return 'Lincoln'
-    for city in ['McMinnville','Wilsonville','Portland','Gresham','Tigard','Roseburg','Molalla','Lincoln City','North Bend','Newberg','Salem','Gladstone','Troutdale','Corvallis','Woodburn','Clackamas','West Linn','Milwaukie']:
-        if city.upper() in s: return city
-    if 'ELGIN' in s: return 'Elgin'
-    if 'CAROL STREAM' in s: return 'Carol Stream'
-    if 'RICHMOND' in s: return 'Richmond'
-    if 'BERKELEY' in s: return 'Berkeley'
-    if 'PORTLAND' in s: return 'Portland'
+    s = clean(name).upper()
+    if 'LINC ' in s or 'LINCOLN' in s or 'BRYAN' in s:
+        return 'Lincoln'
+    cities = [
+        'McMinnville', 'Wilsonville', 'Portland', 'Gresham', 'Tigard',
+        'Roseburg', 'Molalla', 'Lincoln City', 'North Bend', 'Newberg',
+        'Salem', 'Gladstone', 'Troutdale', 'Corvallis', 'Woodburn',
+        'Clackamas', 'West Linn', 'Milwaukie', 'Benicia', 'Berkeley',
+        'Richmond', 'San Leandro', 'Sacramento', 'San Diego',
+        'Los Angeles', 'Anchorage', 'Monterey', 'Elgin', 'Carol Stream',
+        'Chicago',
+    ]
+    for city in cities:
+        if city.upper() in s:
+            return city
     return 'Unknown'
 def state_from(name, company=''):
     s=f'{name} {company}'.upper()
@@ -111,26 +155,56 @@ def state_from(name, company=''):
     if 'SACRAMENTO' in s: return 'SAC'
     if 'ILLINOIS' in s or ' IL' in s: return 'IL'
     return 'Unknown'
-def policy_pay(state, miles, vehicle='Unknown'):
-    miles=float(miles or 0); v=str(vehicle or 'Unknown').title(); rules=POLICY_DF[(POLICY_DF.State==state)&(POLICY_DF.Min_Miles<=miles)&(POLICY_DF.Max_Miles>=miles)]
-    if state in ('AK','MON') and v in ('Sedan','Minivan'):
-        exact=rules[rules.Vehicle_Type==v]
-        if not exact.empty: rules=exact
-    if rules.empty: return 0.0,'No policy'
-    r=rules.iloc[0]
-    if state=='AK' and miles>16: return 0.0,'Alaska >16-mile rule needed'
-    if float(r.Per_Mile_Rate)>0: return round(float(r.Policy_Pay)+(miles-16)*float(r.Per_Mile_Rate),2),'Matched'
-    return float(r.Policy_Pay),'Matched'
+def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
+    """Return the contracted driver pay using city/vehicle rules first, then state rules."""
+    miles = float(miles or 0)
+    vehicle = str(vehicle or 'Unknown').title()
+    city = str(city or 'Unknown').strip()
+
+    # City rules are the primary source whenever a city-specific contract exists.
+    city_rules = CITY_POLICIES.get(city, [])
+    if state == 'SAC' and city == 'Sacramento':
+        city_rules = SACRAMENTO_POLICIES.get(vehicle, [])
+    for rule in city_rules:
+        if rule['min'] <= miles <= rule['max']:
+            amount = rule['base']
+            if rule['per_mile']:
+                amount += max(0.0, miles - rule.get('over', rule['min'] - 0.01)) * rule['per_mile']
+            return round(amount, 2), f"Matched — {rule['note']}"
+
+    # If there is no city-specific rate, use the state-level policy table.
+    rules = POLICY_DF[
+        (POLICY_DF.State == state)
+        & (POLICY_DF.Min_Miles <= miles)
+        & (POLICY_DF.Max_Miles >= miles)
+    ]
+    if state in ('AK', 'MON') and vehicle in ('Sedan', 'Minivan'):
+        exact = rules[rules.Vehicle_Type == vehicle]
+        if not exact.empty:
+            rules = exact
+    if rules.empty:
+        return 0.0, 'No policy'
+    rule = rules.iloc[0]
+    if state == 'AK' and miles > 16:
+        return 0.0, 'Alaska >16-mile rule needed'
+    if float(rule.Per_Mile_Rate) > 0:
+        return round(float(rule.Policy_Pay) + (miles - 16) * float(rule.Per_Mile_Rate), 2), 'Matched — state policy'
+    return float(rule.Policy_Pay), 'Matched — state policy'
 
 def finish(df):
-    if df.empty: return df
-    for c in ['Miles','Gross_Pay','Net_Pay']:
-        df[c]=pd.to_numeric(df.get(c,0),errors='coerce').fillna(0.0)
-    p=df.apply(lambda r: policy_pay(r.State,r.Miles,r.Vehicle),axis=1)
-    df['Policy_Driver_Pay']=p.map(lambda x:x[0]); df['Policy_Status']=p.map(lambda x:x[1])
-    df['Actual_Pay']=df['Net_Pay']; df['Loss_Amount']=(df['Actual_Pay']-df['Policy_Driver_Pay']).clip(lower=0)
-    df['Is_Non_Compliant']=(df['Policy_Status']=='Matched')&(df['Loss_Amount']>0.05)
-    df['Margin']=df['Gross_Pay']-df['Actual_Pay']
+    if df.empty:
+        return df
+    for column in ['Miles', 'Gross_Pay', 'Net_Pay']:
+        df[column] = pd.to_numeric(df.get(column, 0), errors='coerce').fillna(0.0)
+    calculated = df.apply(lambda row: policy_pay(row.State, row.Miles, row.Vehicle, row.City), axis=1)
+    df['Policy_Driver_Pay'] = calculated.map(lambda result: result[0])
+    df['Policy_Status'] = calculated.map(lambda result: result[1])
+    df['Actual_Pay'] = df['Net_Pay']
+    # Positive difference means the actual driver payment exceeded the contract rate.
+    df['Difference_Actual_vs_Contract'] = df['Actual_Pay'] - df['Policy_Driver_Pay']
+    df['Loss_Amount'] = df['Difference_Actual_vs_Contract'].clip(lower=0)
+    df['Is_Non_Compliant'] = (df['Policy_Status'].str.startswith('Matched')) & (df['Difference_Actual_vs_Contract'] > 0.05)
+    df['Margin'] = df['Gross_Pay'] - df['Actual_Pay']
     return df
 
 def read_first(file):
@@ -238,10 +312,10 @@ def pdf_report(view, code, name):
     out=io.BytesIO()
     doc=SimpleDocTemplate(out,pagesize=landscape(letter),rightMargin=0.35*inch,leftMargin=0.35*inch,topMargin=0.35*inch,bottomMargin=0.35*inch)
     styles=getSampleStyleSheet(); story=[Paragraph(f'{name} — Beyond Transportation Report',styles['Title']),Spacer(1,8)]
-    summary=[['Trips','Revenue','Actual Pay','Contracted','Difference'],[str(len(view)),f"${view.Gross_Pay.sum():,.2f}",f"${view.Actual_Pay.sum():,.2f}",f"${view.Policy_Driver_Pay.sum():,.2f}",f"${view.Loss_Amount.sum():,.2f}"]]
+    summary=[['Trips','Revenue','Actual Pay','Contracted','Difference'],[str(len(view)),f"${view.Gross_Pay.sum():,.2f}",f"${view.Actual_Pay.sum():,.2f}",f"${view.Policy_Driver_Pay.sum():,.2f}",f"${view.Difference_Actual_vs_Contract.sum():,.2f}"]]
     t=Table(summary,colWidths=[1.1*inch]*5); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1f4e78')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.5,colors.grey),('ALIGN',(0,0),(-1,-1),'CENTER'),('FONTNAME',(0,0),(-1,-1),'Helvetica')]))
     story += [t,Spacer(1,10)]
-    cols=['Source','Trip_Date','Trip_ID','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Loss_Amount','Policy_Status']
+    cols=['Source','Trip_Date','Trip_ID','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Difference_Actual_vs_Contract','Policy_Status']
     data=[cols]
     for _,r in view[cols].fillna('').iterrows():
         data.append([str(r[c])[:42] for c in cols])
@@ -265,15 +339,15 @@ def show_metrics_and_tables(view, code, name, key_prefix):
         st.warning(f'No {name} trips were detected in the uploaded reports.')
         return
     total_revenue=float(view.Gross_Pay.sum()); total_actual=float(view.Actual_Pay.sum()); total_margin=total_revenue-total_actual
-    compliant=int((view.Policy_Status=='Matched').sum() - view.Is_Non_Compliant.sum())
+    compliant=int(view.Policy_Status.str.startswith('Matched').sum() - view.Is_Non_Compliant.sum())
     non_compliant=int(view.Is_Non_Compliant.sum()); total=len(view)
     a,b,c,d,e=st.columns(5); a.metric('Trips',total); b.metric('Revenue',f'${total_revenue:,.2f}'); c.metric('Actual Pay',f'${total_actual:,.2f}'); d.metric('Margin',f'${total_margin:,.2f}'); e.metric('Non-compliant %',f'{non_compliant/total:.1%}' if total else '0.0%')
     st.subheader('Compliance Summary')
-    st.dataframe(pd.DataFrame({'Metric':['Compliant trips','Non-compliant trips','Trips without a matching policy'],'Count':[compliant,non_compliant,int((view.Policy_Status!='Matched').sum())],'Percentage':[f'{compliant/total:.1%}' if total else '0.0%',f'{non_compliant/total:.1%}' if total else '0.0%',f'{(view.Policy_Status!="Matched").sum()/total:.1%}' if total else '0.0%']}),use_container_width=True,hide_index=True)
-    st.subheader('By City'); st.dataframe(view.groupby(['Source','City']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Loss_Amount','sum')).reset_index(),use_container_width=True)
-    st.subheader('By Driver'); st.dataframe(view.groupby(['Source','Driver_Name']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Loss_Amount','sum')).reset_index(),use_container_width=True)
+    st.dataframe(pd.DataFrame({'Metric':['Compliant trips','Non-compliant trips','Trips without a matching policy'],'Count':[compliant,non_compliant,int((~view.Policy_Status.str.startswith('Matched')).sum())],'Percentage':[f'{compliant/total:.1%}' if total else '0.0%',f'{non_compliant/total:.1%}' if total else '0.0%',f'{(~view.Policy_Status.str.startswith("Matched")).sum()/total:.1%}' if total else '0.0%']}),use_container_width=True,hide_index=True)
+    st.subheader('By City'); st.dataframe(view.groupby(['Source','City']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Difference_Actual_vs_Contract','sum')).reset_index(),use_container_width=True)
+    st.subheader('By Driver'); st.dataframe(view.groupby(['Source','Driver_Name']).agg(Trips=('Trip_ID','count'),Miles=('Miles','sum'),Revenue=('Gross_Pay','sum'),Actual_Pay=('Actual_Pay','sum'),Contracted=('Policy_Driver_Pay','sum'),Difference=('Difference_Actual_vs_Contract','sum')).reset_index(),use_container_width=True)
     st.subheader('Per-trip comparison: contracted vs actual paid')
-    st.dataframe(view[['Source','Trip_Date','Trip_ID','Trip_Name','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Loss_Amount','Policy_Status']],use_container_width=True)
+    st.dataframe(view[['Source','Trip_Date','Trip_ID','Trip_Name','City','Driver_Name','Miles','Gross_Pay','Policy_Driver_Pay','Actual_Pay','Difference_Actual_vs_Contract','Policy_Status']],use_container_width=True)
     out=io.BytesIO()
     with pd.ExcelWriter(out,engine='openpyxl') as w:
         view.to_excel(w,sheet_name='Trips',index=False)
@@ -326,20 +400,27 @@ def state_page(code,name):
             st.session_state[f'state_files_{code}']=[(f.name,f.getvalue()) for f in state_files]
         except Exception as e: st.error(f'Could not read state report: {e}'); return
     state_view=st.session_state.get(f'state_df_{code}',pd.DataFrame())
-    company_frames=[]
-    for source in ['First','EverDriven']:
-        stored=st.session_state.get(f'{source}_df',pd.DataFrame())
-        if not stored.empty: company_frames.append(stored[stored.State==code])
+    has_company_data = False
     if not state_view.empty:
         st.header('Original State Analysis')
-        show_metrics_and_tables(state_view,code,name,f'state_{code}')
-    if company_frames:
-        company_view=pd.concat(company_frames,ignore_index=True)
-        if not company_view.empty:
-            st.header('Company payment comparison added to this state')
-            st.caption('Contracted price comes from the state policy; Actual Pay comes from First or EverDriven.')
-            show_metrics_and_tables(company_view,code,name,f'company_state_{code}')
-    if state_view.empty and not company_frames: st.info('Upload the state report here, or upload First/EverDriven reports from their sidebar pages first.')
+        show_metrics_and_tables(state_view, code, name, f'state_{code}')
+
+    # Keep each company completely separate. Each one is compared with the
+    # contract policy for this state/city, never with the other company.
+    for source in ['First', 'EverDriven']:
+        stored = st.session_state.get(f'{source}_df', pd.DataFrame())
+        if stored.empty:
+            continue
+        company_view = stored[stored.State == code].copy()
+        if company_view.empty:
+            continue
+        has_company_data = True
+        st.header(f'{source} — Contract Rate Comparison')
+        st.caption('Actual Pay = Net Pay from this company report. Difference = Actual Pay − Contract Rate for this state/city.')
+        show_metrics_and_tables(company_view, code, name, f'{source.lower()}_state_{code}')
+
+    if state_view.empty and not has_company_data:
+        st.info('Upload the state report here, or upload First/EverDriven reports from their sidebar pages first.')
     state_originals=st.session_state.get(f'state_files_{code}',[])
     if state_originals:
         st.download_button('Download original state files — ZIP',originals_zip(state_originals),f'{code}_original_state_files.zip','application/zip',key=f'zip_state_{code}')
