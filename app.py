@@ -168,7 +168,7 @@ def pdf_text(file):
         raise RuntimeError('PDF reader is not installed. Add pypdf to requirements.txt, commit it, and reboot the Streamlit app.') from exc
     try:
         reader = PdfReader(io.BytesIO(payload))
-        return '\\n'.join(page.extract_text() or '' for page in reader.pages)
+        return '\n'.join(page.extract_text() or '' for page in reader.pages)
     except Exception as exc:
         raise RuntimeError(f'Could not extract text from PDF: {exc}') from exc
 def read_ever(file):
