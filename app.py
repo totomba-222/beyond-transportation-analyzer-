@@ -168,19 +168,59 @@ def pdf_text(file):
         raise RuntimeError('PDF reader is not installed. Add pypdf to requirements.txt, commit it, and reboot the Streamlit app.') from exc
     try:
         reader = PdfReader(io.BytesIO(payload))
-        return '\n'.join(page.extract_text() or '' for page in reader.pages)
+        return '\n'.join(page.extract_text(extraction_mode='layout') or '' for page in reader.pages)
     except Exception as exc:
         raise RuntimeError(f'Could not extract text from PDF: {exc}') from exc
 def read_ever(file):
-    text=pdf_text(file); rows=[]; driver='Unknown'; date=pd.NaT
-    rx=re.compile(r'^\s*(?:(?P<driver>[A-Za-z][A-Za-z .\'-]+)\s+\d{5,}\s+)?(?:(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+)?(?P<key>\d{6,})\s+(?P<name>.+?)\s+(?P<miles>\d+(?:\.\d+)?)\s+\$(?P<gross>[\d,]+\.\d{2})\s+\$(?P<net>[\d,]+\.\d{2})\s*$')
-    for line in text.splitlines():
-        m=rx.match(line)
-        if not m: continue
-        g=m.groupdict()
-        if g['driver']: driver=g['driver'].strip()
-        if g['date']: date=pd.to_datetime(g['date'],format='%m/%d/%Y',errors='coerce')
-        rows.append({'Source':'EverDriven','Source Company':'Beyond Transportation (IL)','Driver_Name':driver,'Trip_Date':date,'Trip_ID':g['key'],'Trip_Name':g['name'].strip(),'Miles':float(g['miles']),'Gross_Pay':float(g['gross'].replace(',','')),'Net_Pay':float(g['net'].replace(',','')),'Vehicle':vehicle_from(g['name']),'State':('Unknown' if 'CROSS BORDER' in g['name'].upper() else state_from(g['name'],'Beyond Transportation (IL)')),'City':city_from(g['name'])})
+    """Read EverDriven/Beyond Cashiering Receipt PDF detail rows.
+
+    The receipt places the driver and date only on the first row of a group;
+    continuation rows contain only the trip key. Therefore the current driver
+    and date are carried forward while each detail row is parsed independently.
+    """
+    text = pdf_text(file)
+    rows = []
+    current_driver = 'Unknown'
+    current_date = pd.NaT
+    row_rx = re.compile(
+        r'^\s*'
+        r'(?:(?P<driver>[A-Za-z][A-Za-z .\'-]+?)\s+(?P<code>\d{5,6})\s+)?'
+        r'(?:(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+)?'
+        r'(?P<key>\d{6,})\s+'
+        r'(?P<name>.+?)\s+'
+        r'(?P<miles>\d+(?:\.\d+)?)\s+'
+        r'\$(?P<gross>[\d,]+\.\d{2})\s+'
+        r'\$(?P<net>[\d,]+\.\d{2})\s*$'
+    )
+
+    for raw_line in text.splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if not line or line.startswith(('Cashiering Receipt', 'BEYOND TRANSPORTATION', '(Formerly', 'Cashiering Dates:', 'Details', 'Person ', 'Subtotal')):
+            continue
+        match = row_rx.match(line)
+        if not match:
+            continue
+        data = match.groupdict()
+        if data['driver']:
+            current_driver = data['driver'].strip()
+        if data['date']:
+            current_date = pd.to_datetime(data['date'], format='%m/%d/%Y', errors='coerce')
+        trip_name = data['name'].strip()
+        rows.append({
+            'Source': 'EverDriven',
+            'Source Company': 'Beyond Transportation (IL)',
+            'Driver_Name': current_driver,
+            'Trip_Date': current_date,
+            'Trip_ID': data['key'],
+            'Trip_Name': trip_name,
+            'Miles': float(data['miles']),
+            'Gross_Pay': float(data['gross'].replace(',', '')),
+            'Net_Pay': float(data['net'].replace(',', '')),
+            'Vehicle': vehicle_from(trip_name),
+            'State': 'NE',  # This CashieringReceipt is a Nebraska report; all rows belong to Nebraska.
+            'City': city_from(trip_name),
+        })
+
     return finish(pd.DataFrame(rows))
 
 def combine(first,ever):
