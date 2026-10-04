@@ -313,35 +313,134 @@ def iso_week(dt):
         return 0
 
 
+def _read_report_table(file_obj, preferred_sheet=None):
+    """Read a report even when Excel has title rows above the real header."""
+    name = str(getattr(file_obj, 'name', '')).lower()
+    if name.endswith('.csv'):
+        candidates = [pd.read_csv(file_obj, header=0)]
+    else:
+        book = pd.ExcelFile(file_obj, engine='openpyxl')
+        sheets = ([preferred_sheet] if preferred_sheet in book.sheet_names else []) + [
+            sh for sh in book.sheet_names if sh != preferred_sheet]
+        candidates = [pd.read_excel(file_obj, sheet_name=sh, header=0, engine='openpyxl')
+                      for sh in sheets]
+        # If the first pass did not find a useful header, inspect the first 20 rows.
+        for sh in sheets[:3]:
+            raw = pd.read_excel(file_obj, sheet_name=sh, header=None, engine='openpyxl')
+            for i in range(min(20, len(raw))):
+                vals = {clean(v).upper() for v in raw.iloc[i].tolist()}
+                if vals & {'DRIVER NAME', 'DRIVER', 'TRIP NAME', 'REVENUE', 'NET PAY',
+                           'TOTAL MILES', 'MILES'}:
+                    candidates.append(pd.read_excel(file_obj, sheet_name=sh, header=i,
+                                                    engine='openpyxl'))
+                    break
+    wanted = {'DRIVER NAME', 'DRIVER', 'TRIP NAME', 'REVENUE', 'NET PAY', 'TOTAL MILES', 'MILES'}
+    for frame in candidates:
+        frame = frame.copy()
+        frame.columns = [str(c).strip() for c in frame.columns]
+        upper = {str(c).strip().upper() for c in frame.columns}
+        if upper & wanted:
+            return frame
+    return candidates[0] if candidates else pd.DataFrame()
+
+
+def _normal_key(v):
+    if pd.isna(v):
+        return ''
+    return re.sub(r'[^a-z0-9]+', ' ', str(v).lower()).strip()
+
+
+def _date_key(v):
+    dt = pd.to_datetime(v, errors='coerce')
+    return '' if pd.isna(dt) else dt.strftime('%Y-%m-%d')
+
+
+def _price_column(up):
+    for n in ['REVENUE', 'NET PAY', 'DRIVER PAY', 'DRIVER RATE', 'CONTRACT PRICE',
+              'PRICE', 'RATE', 'PAYMENT', 'AMOUNT', 'TOTAL PAY', 'TOTAL', 'GROSS PAY']:
+        if n in up:
+            return up[n]
+    return None
+
+
+def _number_series(values):
+    """Parse currency/numeric cells such as '$1,234.50' reliably."""
+    return pd.to_numeric(values.astype(str).str.replace(r'[$,()]', '', regex=True)
+                         .str.replace('-', '-', regex=False), errors='coerce')
+
+
+def _state_code_from_text(text):
+    """State detection with token-aware matching (avoids OR matching words)."""
+    s = re.sub(r'[^A-Z0-9]+', ' ', str(text).upper()).strip()
+    if 'NEW MEXICO' in s or re.search(r'(^| )NM( |$)', s) or 'ABQ' in s:
+        return 'NM'
+    if 'NORTH CA' in s or 'NORTHCAROLINA' in s or re.search(r'(^| )N CA( |$)', s):
+        return 'N.CA'
+    if 'SOUTH CA' in s or re.search(r'(^| )S CA( |$)', s):
+        return 'S.CA'
+    if 'OREGON' in s or re.search(r'(^| )OR( |$)', s):
+        return 'OR'
+    if 'ALASKA' in s or 'ANCHORAGE' in s or re.search(r'(^| )AK( |$)', s):
+        return 'AK'
+    if 'CROSS BORDER' in s or ('RS' in s and 'AZ' in s):
+        return 'RS&AZ'
+    if 'ARIZONA' in s or re.search(r'(^| )AZ( |$)', s):
+        return 'AZ'
+    if 'SACRAMENTO' in s or re.search(r'(^| )SAC( |$)', s):
+        return 'SAC'
+    if 'MONTEREY' in s or re.search(r'(^| )MON( |$)', s):
+        return 'MON'
+    if 'ILLINOIS' in s or re.search(r'(^| )IL( |$)', s):
+        return 'IL'
+    return 'Unknown'
+
+
+def state_code_from_name(fname):
+    return _state_code_from_text(fname)
+
+
+def _normalise_state_rows(x, code, source_file):
+    x = x.copy()
+    x.columns = [str(c).strip() for c in x.columns]
+    up = {c.upper(): c for c in x.columns}
+    price_col = _price_column(up)
+    if not price_col:
+        return pd.DataFrame()
+    out = pd.DataFrame(index=x.index)
+    out['State'] = code
+    out['Driver_Key'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], '').map(_normal_key)
+    out['Trip_Key'] = _pick(x, up, ['TRIP NAME', 'NAME', 'TRIP'], '').map(_normal_key)
+    out['Date_Key'] = _pick(x, up, ['DATE', 'TRIP DATE'], '').map(_date_key)
+    out['Miles_Key'] = pd.to_numeric(_pick(x, up, ['TOTAL MILES', 'MILES'], 0), errors='coerce').fillna(0).round(2)
+    out['State_Price'] = _number_series(x[price_col])
+    out['Source_File'] = source_file
+    out = out[out['State_Price'].notna()].copy()
+    # Remove report totals and blank lines, but keep legitimate zero-price rows out.
+    out = out[(out['Driver_Key'] != 'total') & (out['Trip_Key'] != 'total')]
+    return out.reset_index(drop=True)
+
+
 def read_first(files):
-    """Read one or more First 'SP ITEMIZED REPORT' files into one trip-level frame.
-    Each run is attributed to a state from the driver name (built-in roster)."""
+    """Read First reports into trip-level rows; First remains the revenue source."""
     frames = []
     for f in files:
-        name = str(getattr(f, 'name', '')).lower()
-        if name.endswith('.csv'):
-            x = pd.read_csv(f)
-        else:
-            book = pd.ExcelFile(f, engine='openpyxl')
-            sheet = ('SP ITEMIZED REPORT' if 'SP ITEMIZED REPORT' in book.sheet_names
-                     else book.sheet_names[0])
-            x = pd.read_excel(f, sheet_name=sheet, engine='openpyxl')
+        preferred = 'SP ITEMIZED REPORT'
+        x = _read_report_table(f, preferred)
         x.columns = [str(c).strip() for c in x.columns]
         up = {c.upper(): c for c in x.columns}
         d = pd.DataFrame(index=x.index)
         d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
         d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
         d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
-        d['Miles'] = pd.to_numeric(_pick(x, up, ['TOTAL MILES', 'MILES'], 0), errors='coerce').fillna(0.0)
-        d['Revenue'] = pd.to_numeric(_pick(x, up, ['REVENUE', 'NET PAY', 'NET'], 0), errors='coerce').fillna(0.0)
-        d['First_Gross'] = pd.to_numeric(_pick(x, up, ['GROSS PAY', 'GROSS'], 0), errors='coerce').fillna(0.0)
+        d['Miles'] = _number_series(_pick(x, up, ['TOTAL MILES', 'MILES'], pd.Series(0, index=x.index))).fillna(0.0)
+        d['Revenue'] = _number_series(_pick(x, up, ['REVENUE', 'NET PAY', 'NET'], pd.Series(0, index=x.index))).fillna(0.0)
+        d['First_Gross'] = _number_series(_pick(x, up, ['GROSS PAY', 'GROSS'], pd.Series(0, index=x.index))).fillna(0.0)
         d['Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
         d['Source_File'] = getattr(f, 'name', '')
         frames.append(d)
     if not frames:
         return pd.DataFrame()
     d = pd.concat(frames, ignore_index=True)
-    # keep real trip rows only (drop blank / total rows)
     bad = {'', 'nan', 'total', 'totals', 'grand total'}
     keep = d['Driver_Name'].map(lambda v: clean(v) not in bad) & (
         (d['Revenue'] != 0) | (d['Trip_Name'].map(lambda v: clean(v) not in {'', 'nan'})))
@@ -353,36 +452,119 @@ def read_first(files):
     pol = d.apply(lambda r: policy_pay(r['State'], r['Miles'], r['Vehicle'], r['City']), axis=1)
     d['Policy_Pay'] = [p[0] for p in pol]
     d['Policy_Note'] = [p[1] for p in pol]
-    checked = d['State'].map(has_policy) & (d['Policy_Pay'] > 0)
-    d['Checked'] = checked
-    d['Policy_Pay'] = d['Policy_Pay'].where(checked, other=pd.NA)
-    d['Profit'] = (d['Revenue'] - d['Policy_Pay']).where(checked, other=pd.NA)
-    d['Non_Compliant'] = checked & (d['Revenue'] < d['Policy_Pay'] - 0.01)
+    d['State_Price'] = pd.NA
+    d['Price_Difference'] = pd.NA
+    d['Price_Source'] = 'Built-in policy'
+    return _recalculate(d)
+
+
+def _recalculate(d):
+    """Recalculate compliance after state prices are matched to First rows."""
+    state_price = pd.to_numeric(d['State_Price'], errors='coerce')
+    policy_price = pd.to_numeric(d['Policy_Pay'], errors='coerce')
+    d['Price_Difference'] = state_price - d['Revenue']
+    effective = state_price.notna() | (d['State'].map(has_policy) & policy_price.gt(0))
+    d['Checked'] = effective
+    d['Policy_Pay'] = policy_price.where(effective, other=pd.NA)
+    d.loc[state_price.notna(), 'Policy_Pay'] = state_price[state_price.notna()]
+    d.loc[state_price.notna(), 'Policy_Note'] = 'Matched - state report (contract price)'
+    d.loc[state_price.notna(), 'Price_Source'] = 'State report'
+    d['Profit'] = (d['Revenue'] - d['Policy_Pay']).where(effective, other=pd.NA)
+    d['Non_Compliant'] = effective & (d['Revenue'] < d['Policy_Pay'] - 0.01)
     d['Loss'] = (d['Policy_Pay'] - d['Revenue']).where(d['Non_Compliant'], other=0.0)
     return d
 
 
 def read_state_origin(files):
-    """Optional: read weekly STATE reports to get the ORIGIN (agreed) price per state."""
+    """Read state reports as trip-level contract prices, not one state total."""
     rows = {}
     for f in files:
         code = state_code_from_name(getattr(f, 'name', ''))
-        name = str(getattr(f, 'name', '')).lower()
         try:
-            if name.endswith('.csv'):
-                x = pd.read_csv(f)
-            else:
-                book = pd.ExcelFile(f, engine='openpyxl')
-                x = pd.read_excel(f, sheet_name=book.sheet_names[0], engine='openpyxl')
+            x = _read_report_table(f)
+            part = _normalise_state_rows(x, code, getattr(f, 'name', ''))
         except Exception:
             continue
-        x.columns = [str(c).strip() for c in x.columns]
-        up = {c.upper(): c for c in x.columns}
-        rev = pd.to_numeric(_pick(x, up, ['REVENUE', 'REVENUE ', 'NET PAY'], 0), errors='coerce').fillna(0.0)
-        runs = int((rev != 0).sum()) or int(len(x))
-        prev = rows.get(code, {'origin': 0.0, 'runs': 0})
-        rows[code] = {'origin': prev['origin'] + float(rev.sum()), 'runs': prev['runs'] + runs}
-    return rows
+        if part.empty:
+            continue
+        if code == 'Unknown':
+            driver_state_normalized = {_normal_key(name): state for name, state in DRIVER_STATE.items()}
+            inferred = part['Driver_Key'].map(lambda n: driver_state_normalized.get(n, 'Unknown'))
+            known = inferred[inferred != 'Unknown']
+            if not known.empty:
+                code = known.mode().iloc[0]
+                part['State'] = code
+        prev = rows.get(code, {'rows': []})
+        prev['rows'].append(part)
+        rows[code] = prev
+    result = {}
+    for code, info in rows.items():
+        all_rows = pd.concat(info['rows'], ignore_index=True)
+        result[code] = {'rows': all_rows, 'origin': float(all_rows['State_Price'].sum()),
+                        'runs': int(len(all_rows))}
+    return result
+
+
+def apply_state_prices(d, origin):
+    """Match state rows to First rows, preserving duplicate trips by occurrence."""
+    if d.empty or not origin:
+        return d
+    d = d.copy()
+    d['_driver_key'] = d['Driver_Name'].map(_normal_key)
+    d['_trip_key'] = d['Trip_Name'].map(_normal_key)
+    d['_date_key'] = d['Trip_Date'].map(_date_key)
+    d['_miles_key'] = pd.to_numeric(d['Miles'], errors='coerce').fillna(0).round(2)
+    d['_occ'] = d.groupby(['State', '_driver_key', '_trip_key', '_date_key', '_miles_key'], dropna=False).cumcount()
+    def usable(value):
+        return bool(value not in ('', '0', 0) and not pd.isna(value))
+
+    def assign_by_keys(first, state_rows, key_pairs):
+        """Assign prices using the strongest available key, one occurrence at a time."""
+        for first_cols, state_cols in key_pairs:
+            if not all(c in first.columns for c in first_cols):
+                continue
+            if not all(c in state_rows.columns for c in state_cols):
+                continue
+            available = state_rows.copy()
+            available['_used'] = False
+            for idx, row in first.iterrows():
+                if pd.notna(first.at[idx, 'State_Price']):
+                    continue
+                values = [row[c] for c in first_cols]
+                if not all(usable(v) for v in values):
+                    continue
+                mask = ~available['_used']
+                for col, value in zip(state_cols, values):
+                    mask &= available[col].eq(value)
+                hits = available.index[mask]
+                if len(hits):
+                    hit = hits[0]
+                    first.at[idx, 'State_Price'] = available.at[hit, 'State_Price']
+                    available.at[hit, '_used'] = True
+            if first['State_Price'].notna().all():
+                break
+
+    for code, info in origin.items():
+        if code == 'Unknown' or 'rows' not in info:
+            continue
+        r = info['rows'].copy()
+        mask = d['State'].eq(code)
+        first = d.loc[mask].copy()
+        # Try exact trip identity first, then gracefully handle reports without
+        # date/miles/driver columns. Every state row is used at most once.
+        assign_by_keys(first, r, [
+            (['_driver_key', '_trip_key', '_date_key', '_miles_key'],
+             ['Driver_Key', 'Trip_Key', 'Date_Key', 'Miles_Key']),
+            (['_driver_key', '_trip_key', '_date_key'],
+             ['Driver_Key', 'Trip_Key', 'Date_Key']),
+            (['_driver_key', '_trip_key'], ['Driver_Key', 'Trip_Key']),
+            (['_trip_key', '_date_key', '_miles_key'], ['Trip_Key', 'Date_Key', 'Miles_Key']),
+            (['_trip_key', '_miles_key'], ['Trip_Key', 'Miles_Key']),
+            (['_driver_key'], ['Driver_Key']),
+        ])
+        d.loc[mask, 'State_Price'] = first['State_Price']
+    d = _recalculate(d)
+    return d.drop(columns=['_driver_key', '_trip_key', '_date_key', '_miles_key', '_occ'])
 
 # ---------------------------------------------------------------------------
 # AGGREGATION & REPORT BUILDERS
@@ -521,11 +703,15 @@ def origin_vs_first(d_state, code, origin):
     info = origin.get(code)
     if not info:
         return None
-    first_paid = float(d_state['Revenue'].sum())
+    matched = d_state[d_state['State_Price'].notna()] if 'State_Price' in d_state else d_state.iloc[0:0]
+    first_paid = float(matched['Revenue'].sum())
+    matched_origin = float(matched['State_Price'].sum())
     return {
         'State': STATES.get(code, code), 'Origin_Runs': info['runs'],
-        'First_Runs': int(len(d_state)), 'Origin_Price': info['origin'],
-        'First_Paid': first_paid, 'Difference': info['origin'] - first_paid,
+        'First_Runs': int(len(d_state)), 'Origin_Price': matched_origin,
+        'First_Paid': first_paid, 'Difference': matched_origin - first_paid,
+        'Matched_Runs': int(len(matched)),
+        'Unmatched_First_Runs': int(len(d_state) - len(matched)),
     }
 
 
@@ -618,6 +804,12 @@ def state_page(df, code, origin):
     st.subheader('Weekly report')
     st.dataframe(rep, use_container_width=True)
 
+    price_cols = ['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
+                  'State_Price', 'Price_Difference', 'Price_Source']
+    with st.expander('Matched contract prices from state report'):
+        st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
+        st.caption('Price difference = contracted state-report price minus what First paid. For example, $45.00 - $42.50 = $2.50 per trip; the total is the sum of all matched trips.')
+
     if has_policy(code) and total['non_compliant']:
         st.warning(f"{total['non_compliant']} loss-making run(s): First paid less than the "
                    f"policy driver pay. Total loss ${total['loss']:,.2f}. If every run were "
@@ -625,10 +817,10 @@ def state_page(df, code, origin):
                    f"({_pct(total['margin_if'])}) instead of ${total['profit']:,.2f} "
                    f"({_pct(total['margin'])}).")
         bad = d[d['Non_Compliant']][['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles',
-                                     'Revenue', 'Policy_Pay', 'Loss']].sort_values('Loss', ascending=False)
+                                     'Revenue', 'Policy_Pay', 'State_Price', 'Price_Difference', 'Price_Source', 'Loss']].sort_values('Loss', ascending=False)
         with st.expander(f'Show {len(bad)} loss-making runs'):
-            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}',
-                                           'Loss': '${:,.2f}'}),
+            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
+                                           'Price_Difference': '${:,.2f}', 'Loss': '${:,.2f}'}),
                          use_container_width=True, hide_index=True)
 
     ov = origin_vs_first(d, code, origin)
@@ -666,11 +858,13 @@ with st.sidebar:
                                        accept_multiple_files=True, key='state_up')
         if state_files:
             st.session_state['origin'] = read_state_origin(state_files)
-            st.success('Origin prices loaded for: ' +
+            st.success('State contract prices loaded for: ' +
                        ', '.join(STATES.get(k, k) for k in st.session_state['origin']))
 
 df = st.session_state.get('first_df', pd.DataFrame())
 origin = st.session_state.get('origin', {})
+if not df.empty and origin:
+    df = apply_state_prices(df, origin)
 
 if df.empty:
     st.title("Hatem's B.T. Analyzer")
@@ -697,4 +891,3 @@ else:
                             'Source_File']], use_container_width=True, hide_index=True)
         else:
             state_page(df, code, origin)
-
