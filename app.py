@@ -1,17 +1,7 @@
 from __future__ import annotations
-import io, re, sqlite3, zipfile
-
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import landscape, letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
-
+import io, re, sqlite3
 from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
@@ -93,6 +83,8 @@ def state_code_from_name(fname):
         return 'NM'
     if 'NORTH CA' in s or 'N.CA' in s or 'NORTHCA' in s:
         return 'N.CA'
+    if 'SOUTH CA' in s or 'S.CA' in s or 'SAN DIEGO' in s or 'LOS ANGELES' in s:
+        return 'S.CA'
     if 'OREGON' in s or ' OR ' in s:
         return 'OR'
     if 'ALASKA' in s or ' AK' in s or s.startswith('AK'):
@@ -180,8 +172,9 @@ def init_db():
 
 init_db()
 
+
 def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
-    """Return the contracted driver pay using city/vehicle rules first, then state rules."""
+    """Contracted driver pay from city/vehicle rules first, then state rules."""
     miles = float(miles or 0)
     vehicle = str(vehicle or 'Unknown').title()
     city = str(city or 'Unknown').strip()
@@ -205,36 +198,9 @@ def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
     rule = rules.iloc[0]
     if 'Not supplied' in str(rule.Note):
         return 0.0, 'No policy supplied'
-    if state == 'AK' and miles > 16:
-        return 0.0, 'Alaska >16-mile rule needed'
     if float(rule.Per_Mile_Rate) > 0:
-        return round(float(rule.Policy_Pay) + (miles - 16) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
+        return round(float(rule.Policy_Pay) + max(0.0, miles - 16) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
     return float(rule.Policy_Pay), 'Matched - state policy'
-
-
-def finish(df):
-    if df.empty:
-        return df
-    # Drop totals / summary rows (no driver and no trip name) often appended at the
-    # bottom of First reports; otherwise their grand-total revenue is double counted.
-    if 'Driver_Name' in df.columns and 'Trip_Name' in df.columns:
-        drv = df['Driver_Name'].map(lambda v: clean(v).lower() not in ('', 'nan', 'unknown', 'total', 'totals', 'grand total'))
-        trp = df['Trip_Name'].map(lambda v: clean(v).lower() not in ('', 'nan'))
-        df = df[drv | trp].copy()
-    if df.empty:
-        return df
-    for column in ['Miles', 'Gross_Pay', 'Net_Pay']:
-        df[column] = pd.to_numeric(df.get(column, 0), errors='coerce').fillna(0.0)
-    calculated = df.apply(lambda row: policy_pay(row.State, row.Miles, row.Vehicle, row.City), axis=1)
-    df['Policy_Driver_Pay'] = calculated.map(lambda result: result[0])
-    df['Policy_Status'] = calculated.map(lambda result: result[1])
-    # First NET PAY (new files: 'Revenue' column) = Beyond revenue from First.
-    df['Revenue'] = df['Net_Pay']
-    df['Difference_vs_Contract'] = df['Revenue'] - df['Policy_Driver_Pay']
-    df['Loss_Amount'] = df['Difference_vs_Contract'].clip(lower=0)
-    df['Is_Non_Compliant'] = (df['Policy_Status'].str.startswith('Matched')) & (df['Difference_vs_Contract'] > 0.05)
-    df['Margin'] = df['Revenue'] - df['Policy_Driver_Pay']
-    return df
 
 
 def _pick(x, up, names, default=0):
@@ -244,89 +210,130 @@ def _pick(x, up, names, default=0):
     return pd.Series([default] * len(x), index=x.index)
 
 
-def read_first(file):
-    book = pd.ExcelFile(file, engine='openpyxl')
-    sheet = 'SP ITEMIZED REPORT' if 'SP ITEMIZED REPORT' in book.sheet_names else book.sheet_names[0]
-    x = pd.read_excel(file, sheet_name=sheet, engine='openpyxl')
-    x.columns = [str(c).strip() for c in x.columns]
-    up = {c.upper(): c for c in x.columns}
-    d = pd.DataFrame(index=x.index)
-    d['Source'] = 'First'
-    d['Source Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
-    d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
-    d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
-    d['Trip_ID'] = _pick(x, up, ['TRIP CODE', 'TRIP ID'], '')
-    d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
-    d['Miles'] = _pick(x, up, ['TOTAL MILES', 'MILES'], 0)
-    d['Gross_Pay'] = _pick(x, up, ['GROSS PAY', 'GROSS'], 0)
-    d['Net_Pay'] = _pick(x, up, ['NET PAY', 'REVENUE', 'NET'], 0)
-    d['Vehicle'] = d.Trip_Name.map(vehicle_from)
-    d['State'] = d.apply(lambda r: state_from(r.Trip_Name, r['Source Company']), axis=1)
-    d['City'] = d.Trip_Name.map(city_from)
-    return finish(d)
+def max_fixed_policy(state):
+    """Highest supplied driver-pay value for a state (used when miles are missing)."""
+    vals = []
+    for _, r in POLICY_DF[POLICY_DF.State == state].iterrows():
+        if 'Not supplied' not in str(r.Note) and float(r.Policy_Pay) > 0:
+            vals.append(float(r.Policy_Pay))
+    for cty in CITIES.get(state, []):
+        for rule in CITY_POLICIES.get(cty, []):
+            vals.append(float(rule['base']))
+    if state == 'SAC':
+        for rules in SACRAMENTO_POLICIES.values():
+            for rule in rules:
+                vals.append(float(rule['base']))
+    return max(vals) if vals else 0.0
+
+def finish_state(d):
+    """Add policy pay, margin and compliance to a state report dataframe."""
+    cols = ['Policy_Driver_Pay', 'Policy_Status', 'Margin', 'Loss_Amount',
+            'Is_Non_Compliant', 'WhatIf_Margin']
+    if d.empty:
+        for c in cols:
+            d[c] = pd.Series(dtype='float64' if c != 'Policy_Status' else 'object')
+        return d
+    state = str(d['State'].iloc[0])
+    maxp = max_fixed_policy(state)
+    has_policy = maxp > 0
+
+    def comp(row):
+        if not has_policy:
+            return float(row.get('Driver_Pay') or 0.0), 'No policy supplied'
+        miles = row.get('Miles')
+        if pd.notna(miles) and float(miles) > 0:
+            ppay, status = policy_pay(state, miles, row.get('Vehicle'), row.get('City'))
+            if ppay <= 0:
+                return maxp, 'Checked vs top policy value'
+            return ppay, status
+        return maxp, 'Checked vs top policy value (no miles in report)'
+
+    res = d.apply(comp, axis=1)
+    d['Policy_Driver_Pay'] = [r[0] for r in res]
+    d['Policy_Status'] = [r[1] for r in res]
+    d['Margin'] = d['Revenue'] - d['Driver_Pay']
+    d['Loss_Amount'] = (d['Driver_Pay'] - d['Policy_Driver_Pay']).clip(lower=0)
+    d['Is_Non_Compliant'] = bool(has_policy) & (d['Loss_Amount'] > 0.05)
+    if has_policy:
+        d['WhatIf_Margin'] = d['Revenue'] - d[['Driver_Pay', 'Policy_Driver_Pay']].min(axis=1)
+    else:
+        d['WhatIf_Margin'] = d['Margin']
+    return d
 
 
-def read_csv(file):
-    x = pd.read_csv(file)
-    x.columns = [str(c).strip() for c in x.columns]
-    up = {c.upper(): c for c in x.columns}
-    d = pd.DataFrame(index=x.index)
-    d['Source'] = 'First'
-    d['Source Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
-    d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
-    d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
-    d['Trip_ID'] = _pick(x, up, ['TRIP CODE', 'TRIP ID'], '')
-    d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
-    d['Miles'] = _pick(x, up, ['TOTAL MILES', 'MILES'], 0)
-    d['Gross_Pay'] = _pick(x, up, ['GROSS PAY', 'GROSS'], 0)
-    d['Net_Pay'] = _pick(x, up, ['NET PAY', 'REVENUE', 'NET'], 0)
-    d['Vehicle'] = d.Trip_Name.map(vehicle_from)
-    d['State'] = d.apply(lambda r: state_from(r.Trip_Name, r['Source Company']), axis=1)
-    d['City'] = d.Trip_Name.map(city_from)
-    return finish(d)
-
-
-def read_any(file, source='First'):
+def read_state(file, code):
+    """Read a weekly state report in ANY common layout (flexible column names)."""
     name = str(getattr(file, 'name', '')).lower()
     if name.endswith('.csv'):
-        return read_csv(file)
-    return read_first(file)
+        x = pd.read_csv(file)
+    else:
+        x = pd.read_excel(file, engine='openpyxl')
+    x.columns = [str(c).strip() for c in x.columns]
+    up = {c.upper(): c for c in x.columns}
+    d = pd.DataFrame(index=x.index)
+    d['State'] = code
+    d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER', 'NAME'], 'Unknown')
+    d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'SCHOOL', 'ROUTE'], '')
+    d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
+    d['Miles'] = pd.to_numeric(_pick(x, up, ['TOTAL MILES', 'MILES'], None), errors='coerce')
+    d['Revenue'] = pd.to_numeric(_pick(x, up, ['REVENUE', 'NET PAY', 'NET'], 0), errors='coerce').fillna(0.0)
+    d['Driver_Pay'] = pd.to_numeric(_pick(x, up, ['PAY', 'PAYMENT', 'DRIVER PAY'], 0), errors='coerce').fillna(0.0)
+    d['Vehicle'] = d['Trip_Name'].map(vehicle_from)
+    d['City'] = d['Trip_Name'].map(city_from)
+    keep = (d['Driver_Name'].map(lambda v: clean(v) not in ('', 'nan')) |
+            (d['Revenue'] != 0) | (d['Driver_Pay'] != 0))
+    d = d[keep].copy()
+    return finish_state(d)
 
 
-def build_roster(weekly_files):
-    """Learn which driver belongs to which state from weekly state reports."""
+def read_first(file):
+    """Read a First itemized report (used only to compare actual vs agreed price)."""
+    name = str(getattr(file, 'name', '')).lower()
+    if name.endswith('.csv'):
+        x = pd.read_csv(file)
+    else:
+        book = pd.ExcelFile(file, engine='openpyxl')
+        sheet = 'SP ITEMIZED REPORT' if 'SP ITEMIZED REPORT' in book.sheet_names else book.sheet_names[0]
+        x = pd.read_excel(file, sheet_name=sheet, engine='openpyxl')
+    x.columns = [str(c).strip() for c in x.columns]
+    up = {c.upper(): c for c in x.columns}
+    d = pd.DataFrame(index=x.index)
+    d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
+    d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
+    d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
+    d['Miles'] = pd.to_numeric(_pick(x, up, ['TOTAL MILES', 'MILES'], 0), errors='coerce').fillna(0.0)
+    d['First_Revenue'] = pd.to_numeric(_pick(x, up, ['NET PAY', 'REVENUE', 'NET'], 0), errors='coerce').fillna(0.0)
+    d['Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
+    d['State'] = d.apply(lambda r: state_from(r['Trip_Name'], r['Company']), axis=1)
+    keep = (d['Driver_Name'].map(lambda v: clean(v) not in ('', 'nan', 'total', 'totals', 'grand total')) |
+            d['Trip_Name'].map(lambda v: clean(v) not in ('', 'nan')))
+    return d[keep].copy()
+
+
+def roster_from_states(states):
     roster = {}
-    for f in weekly_files:
-        code = state_code_from_name(getattr(f, 'name', ''))
-        try:
-            df = pd.read_excel(f)
-        except Exception:
-            continue
-        df.columns = [str(c).strip() for c in df.columns]
-        up = {c.upper(): c for c in df.columns}
-        dcol = up.get('DRIVER NAME') or up.get('DRIVER')
-        if not dcol:
-            continue
-        for v in df[dcol].dropna():
-            key = clean(v)
-            if key and key != 'nan':
-                roster[key] = code
+    for code, df in states.items():
+        for v in df.get('Driver_Name', []):
+            k = clean(v)
+            if k and k != 'nan':
+                roster[k] = code
     return roster
 
 
-def apply_roster(df, roster):
-    if roster and not df.empty:
-        mapped = df['Driver_Name'].map(lambda n: roster.get(clean(n)))
-        df['State'] = mapped.where(mapped.notna(), df['State'])
-    return df
+def attribute_first(first, roster):
+    if first.empty:
+        return first
+    first = first.copy()
+    mapped = first['Driver_Name'].map(lambda n: roster.get(clean(n)))
+    first['State'] = mapped.where(mapped.notna(), first['State'])
+    return first
 
 
-def originals_zip(files):
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-        for name, payload in files:
-            z.writestr(name, payload)
-    return out.getvalue()
+def all_states_df():
+    states = st.session_state.get('states', {})
+    if not states:
+        return pd.DataFrame()
+    return pd.concat(states.values(), ignore_index=True)
 
 
 def save_history(state, df):
@@ -337,338 +344,239 @@ def save_history(state, df):
                   (datetime.now().strftime('%Y-%m-%d'), state,
                    str(df.Trip_Date.min().date()) if df.Trip_Date.notna().any() else '',
                    str(df.Trip_Date.max().date()) if df.Trip_Date.notna().any() else '',
-                   len(df), float(df.Revenue.sum()), float(df.Policy_Driver_Pay.sum()),
+                   len(df), float(df.Revenue.sum()), float(df.Driver_Pay.sum()),
                    float(df.Margin.sum()), float(df.Loss_Amount.sum())))
 
+def state_summary_row(code, df):
+    revenue = float(df.Revenue.sum())
+    pay = float(df.Driver_Pay.sum())
+    margin = revenue - pay
+    whatif = float(df.WhatIf_Margin.sum())
+    nc = int(df.Is_Non_Compliant.sum())
+    loss = float(df.Loss_Amount.sum())
+    return {
+        'State': code, 'State_Name': STATES.get(code, code), 'Trips': int(len(df)),
+        'Revenue': revenue, 'Payments': pay, 'Margin': margin,
+        'Margin_%': round(margin / revenue * 100, 1) if revenue else 0.0,
+        'Violations': nc,
+        'Violation_%': round(nc / len(df) * 100, 1) if len(df) else 0.0,
+        'Loss': loss, 'Margin_if_Compliant': whatif,
+        'Margin_%_if_Compliant': round(whatif / revenue * 100, 1) if revenue else 0.0,
+    }
 
-def pdf_report(view, code, name):
-    if not REPORTLAB_AVAILABLE:
-        return None
-    out = io.BytesIO()
-    doc = SimpleDocTemplate(out, pagesize=landscape(letter), rightMargin=0.35 * inch,
-                            leftMargin=0.35 * inch, topMargin=0.35 * inch, bottomMargin=0.35 * inch)
-    styles = getSampleStyleSheet()
-    story = [Paragraph(f'{name} - Beyond Transportation Report', styles['Title']), Spacer(1, 8)]
-    summary = [['Trips', 'Revenue (First)', 'Driver Pay (policy)', 'Margin'],
-               [str(len(view)), f"${view.Revenue.sum():,.2f}",
-                f"${view.Policy_Driver_Pay.sum():,.2f}", f"${view.Margin.sum():,.2f}"]]
-    t = Table(summary, colWidths=[1.4 * inch] * 4)
-    t.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4e78')),
-                           ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                           ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                           ('ALIGN', (0, 0), (-1, -1), 'CENTER')]))
-    story += [t, Spacer(1, 10)]
-    cols = ['Trip_Date', 'Trip_ID', 'City', 'Driver_Name', 'Miles', 'Revenue',
-            'Policy_Driver_Pay', 'Margin', 'Policy_Status']
-    data = [cols]
-    for _, r in view[cols].fillna('').iterrows():
-        data.append([str(r[c])[:40] for c in cols])
-    detail = Table(data, repeatRows=1)
-    detail.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4e78')),
-                                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                                ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-                                ('FONTSIZE', (0, 0), (-1, -1), 6),
-                                ('VALIGN', (0, 0), (-1, -1), 'TOP')]))
-    story.append(detail)
-    doc.build(story)
-    return out.getvalue()
 
-def show_metrics_and_tables(view, code, name, key_prefix):
-    if view.empty:
-        st.warning(f'No {name} trips were detected in the uploaded reports.')
-        return
-    total_revenue = float(view.Revenue.sum())
-    total_driver = float(view.Policy_Driver_Pay.sum())
-    total_margin = total_revenue - total_driver
-    total = len(view)
-    non_compliant = int(view.Is_Non_Compliant.sum())
-    matched = int(view.Policy_Status.str.startswith('Matched').sum())
-    compliant = matched - non_compliant
-    no_policy = int((~view.Policy_Status.str.startswith('Matched')).sum())
+def first_vs_agreed(states, first_df):
+    """Agreed price (state report Revenue) vs what First actually pays."""
+    if not states or first_df.empty:
+        return pd.DataFrame()
+    roster = roster_from_states(states)
+    fa = attribute_first(first_df, roster)
+    rows = []
+    for code, df in states.items():
+        agreed = float(df.Revenue.sum())
+        fsub = fa[fa.State == code]
+        first_rev = float(fsub.First_Revenue.sum())
+        rows.append({
+            'State': code, 'State_Name': STATES.get(code, code),
+            'Agreed_Trips': int(len(df)), 'First_Trips': int(len(fsub)),
+            'Agreed_Revenue': agreed, 'First_Revenue': first_rev,
+            'Difference': agreed - first_rev,
+        })
+    return pd.DataFrame(rows)
 
-    a, b, c, d, e = st.columns(5)
-    a.metric('Trips', total)
-    b.metric('Revenue (First)', f'${total_revenue:,.2f}')
-    c.metric('Driver Pay (policy)', f'${total_driver:,.2f}')
-    d.metric('Margin', f'${total_margin:,.2f}')
-    e.metric('Margin %', f'{total_margin/total_revenue:.1%}' if total_revenue else '0.0%')
 
-    st.subheader('Policy compliance summary')
-    st.dataframe(pd.DataFrame({
-        'Metric': ['Trips paid within policy', 'Trips above policy (overpaid)',
-                   'Trips without a supplied policy'],
-        'Count': [compliant, non_compliant, no_policy],
-        'Percentage': [f'{compliant/total:.1%}' if total else '0.0%',
-                       f'{non_compliant/total:.1%}' if total else '0.0%',
-                       f'{no_policy/total:.1%}' if total else '0.0%'],
-    }), use_container_width=True, hide_index=True)
-    if non_compliant:
-        over_rev = float(view[view.Is_Non_Compliant].Revenue.sum())
-        over_loss = float(view[view.Is_Non_Compliant].Loss_Amount.sum())
-        st.warning(f'{non_compliant} trip(s) exceeded the pricing policy '
-                   f'({non_compliant/total:.1%} of trips, {over_rev/total_revenue:.1%} of revenue). '
-                   f'Extra amount above policy: ${over_loss:,.2f}. '
-                   f'If the policy had been applied, margin would be ${total_margin + over_loss:,.2f}.')
-
-    st.subheader('By City')
-    st.dataframe(view.groupby(['City']).agg(
-        Trips=('Trip_ID', 'count'), Miles=('Miles', 'sum'), Revenue=('Revenue', 'sum'),
-        Driver_Pay=('Policy_Driver_Pay', 'sum'), Margin=('Margin', 'sum')).reset_index(),
-        use_container_width=True)
-    st.subheader('By Driver')
-    st.dataframe(view.groupby(['Driver_Name']).agg(
-        Trips=('Trip_ID', 'count'), Miles=('Miles', 'sum'), Revenue=('Revenue', 'sum'),
-        Driver_Pay=('Policy_Driver_Pay', 'sum'), Margin=('Margin', 'sum')).reset_index(),
-        use_container_width=True)
-    st.subheader('Per-trip detail: revenue vs policy driver pay')
-    st.dataframe(view[['Trip_Date', 'Trip_ID', 'Trip_Name', 'City', 'Driver_Name', 'Miles',
-                       'Revenue', 'Policy_Driver_Pay', 'Margin', 'Difference_vs_Contract',
-                       'Policy_Status']], use_container_width=True)
-
+def download_buttons(df, code, prefix):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as w:
-        view.to_excel(w, sheet_name='Trips', index=False)
+        df.to_excel(w, sheet_name='Trips', index=False)
         POLICY_DF[POLICY_DF.State == code].to_excel(w, sheet_name='Policy', index=False)
-    st.download_button('Download report - Excel', out.getvalue(),
-                       f'{key_prefix}_{code}_report.xlsx',
+    st.download_button('Download - Excel', out.getvalue(), f'{prefix}_{code}.xlsx',
                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                       key=f'dl_xlsx_{key_prefix}_{code}')
-    st.download_button('Download report - CSV', view.to_csv(index=False).encode('utf-8-sig'),
-                       f'{key_prefix}_{code}_report.csv', 'text/csv',
-                       key=f'dl_csv_{key_prefix}_{code}')
-    pdf_bytes = pdf_report(view, code, name)
-    if pdf_bytes:
-        st.download_button('Download report - PDF', pdf_bytes,
-                           f'{key_prefix}_{code}_report.pdf', 'application/pdf',
-                           key=f'dl_pdf_{key_prefix}_{code}')
+                       key=f'xlsx_{prefix}_{code}')
+    st.download_button('Download - CSV', df.to_csv(index=False).encode('utf-8-sig'),
+                       f'{prefix}_{code}.csv', 'text/csv', key=f'csv_{prefix}_{code}')
 
 
-def first_page():
-    st.title('First Reports')
-    st.caption('Upload First detailed reports here. Per-state reports are then generated '
-               'automatically on the "State Reports" page.')
-    files = st.file_uploader('First reports (Excel / CSV)', type=['xlsx', 'xls', 'csv'],
-                             accept_multiple_files=True, key='first_upload')
-    if files:
-        try:
-            df = pd.concat([read_any(f, 'First') for f in files], ignore_index=True)
-            st.session_state['First_df'] = df
-            st.session_state['First_files'] = [(f.name, f.getvalue()) for f in files]
-            st.success(f'Loaded {len(df):,} trips from {len(files)} file(s).')
-        except Exception as e:
-            st.error(f'Could not read the First files: {e}')
+def show_state_report(code, name, df):
+    s = state_summary_row(code, df)
+    a, b, c, d, e = st.columns(5)
+    a.metric('Trips', s['Trips'])
+    b.metric('Revenue (agreed)', f"${s['Revenue']:,.2f}")
+    c.metric('Payments (drivers)', f"${s['Payments']:,.2f}")
+    d.metric('Margin', f"${s['Margin']:,.2f}")
+    e.metric('Margin %', f"{s['Margin_%']}%")
 
-    st.subheader('Driver roster (optional)')
-    st.caption('Upload the weekly state reports once so the app learns which driver belongs '
-               'to which state. After that it splits every First report by state on its own.')
-    rfiles = st.file_uploader('Weekly state reports (optional - used only to map drivers to states)',
-                              type=['xlsx', 'xls'], accept_multiple_files=True, key='roster_upload')
-    if rfiles:
-        roster = build_roster(rfiles)
-        st.session_state['roster'] = roster
-        st.success(f'Roster built: {len(roster)} drivers mapped to states.')
+    st.subheader('Pricing-policy compliance')
+    if max_fixed_policy(code) <= 0:
+        st.info('No pricing policy is supplied for this state yet, so trips are not '
+                'checked for violations. Provide the policy to enable this check.')
+    elif s['Violations'] == 0:
+        st.success('All trips are within the pricing policy.')
+    else:
+        st.warning(
+            f"{s['Violations']} trip(s) break the pricing policy "
+            f"({s['Violation_%']}% of all trips). "
+            f"Extra paid to drivers above policy (loss): ${s['Loss']:,.2f}. "
+            f"If every trip followed the policy, margin would be "
+            f"${s['Margin_if_Compliant']:,.2f} ({s['Margin_%_if_Compliant']}%) "
+            f"instead of ${s['Margin']:,.2f} ({s['Margin_%']}%).")
 
-    df = st.session_state.get('First_df', pd.DataFrame())
-    if not df.empty:
-        d2 = apply_roster(df.copy(), st.session_state.get('roster', {}))
-        st.subheader('Detected trips by state')
-        st.dataframe(d2.groupby('State').agg(
-            Trips=('Trip_ID', 'count'), Revenue=('Revenue', 'sum'),
-            Driver_Pay=('Policy_Driver_Pay', 'sum'), Margin=('Margin', 'sum')).reset_index(),
-            use_container_width=True)
-        orig = st.session_state.get('First_files', [])
-        if orig:
-            st.download_button('Download original First files - ZIP', originals_zip(orig),
-                               'first_original_files.zip', 'application/zip', key='zip_first')
+    first_df = st.session_state.get('first_df', pd.DataFrame())
+    cmp = first_vs_agreed({code: df}, first_df)
+    if not cmp.empty:
+        r = cmp.iloc[0]
+        st.subheader('Agreed price (this report) vs what First actually paid')
+        st.dataframe(cmp[['Agreed_Trips', 'First_Trips', 'Agreed_Revenue',
+                          'First_Revenue', 'Difference']],
+                     use_container_width=True, hide_index=True)
+        if abs(r['Difference']) > 0.05:
+            direction = 'less than' if r['Difference'] > 0 else 'more than'
+            st.warning(f"First paid ${abs(r['Difference']):,.2f} {direction} the agreed "
+                       f"price for {name}.")
 
-
-def state_page(code, name):
-    st.title(f'{name} - Analysis Dashboard')
-    st.subheader('Official Pricing Policy')
-    st.table(POLICY_DF[POLICY_DF.State == code][
-        ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']])
-
-    first_df = st.session_state.get('First_df', pd.DataFrame())
-    if first_df.empty:
-        st.info('Upload a First report on the "First Reports" page first. '
-                'The state report is generated automatically from it.')
-        return
-    first_df = apply_roster(first_df.copy(), st.session_state.get('roster', {}))
-    view = first_df[first_df.State == code]
-    if view.empty:
-        st.warning(f'No {name} trips were attributed in the First report. '
-                   'If the drivers were not recognised, upload the weekly state reports as a '
-                   'roster on the "First Reports" page so the app can map drivers to this state.')
-        return
-    st.header(f'{name} - State report (generated from the First report)')
-    show_metrics_and_tables(view, code, name, f'state_{code}')
+    download_buttons(df, code, 'state_report')
     try:
-        save_history(code, view)
+        save_history(code, df)
     except Exception:
         pass
 
 
-def consolidated_summary(df):
-    """Per-state financial roll-up used by the consolidated report."""
-    rows = []
-    for code, g in df.groupby('State'):
-        total_rev = float(g.Revenue.sum())
-        driver = float(g.Policy_Driver_Pay.sum())
-        margin = total_rev - driver
-        nc = int(g.Is_Non_Compliant.sum())
-        over = float(g[g.Is_Non_Compliant].Loss_Amount.sum())
-        rows.append({
-            'State': code,
-            'State_Name': STATES.get(code, code),
-            'Trips': int(len(g)),
-            'Miles': float(g.Miles.sum()),
-            'Revenue': total_rev,
-            'Driver_Pay': driver,
-            'Margin': margin,
-            'Margin_%': (margin / total_rev * 100) if total_rev else 0.0,
-            'Violations': nc,
-            'Over_Policy_Amount': over,
-        })
-    out = pd.DataFrame(rows)
-    if not out.empty:
-        out = out.sort_values('Revenue', ascending=False).reset_index(drop=True)
-    return out
+def upload_state_files():
+    files = st.file_uploader('Weekly state reports (Excel / CSV) - any layout',
+                             type=['xlsx', 'xls', 'csv'], accept_multiple_files=True,
+                             key='state_upload')
+    if files:
+        states, unknown = {}, []
+        for f in files:
+            code = state_code_from_name(getattr(f, 'name', ''))
+            if code == 'Unknown':
+                unknown.append(f.name)
+                continue
+            try:
+                df = read_state(f, code)
+            except Exception as e:
+                st.error(f'Could not read {f.name}: {e}')
+                continue
+            states[code] = pd.concat([states[code], df], ignore_index=True) if code in states else df
+        if states:
+            st.session_state['states'] = states
+            st.success('Loaded: ' + ', '.join(f'{STATES.get(k, k)} ({len(v)} trips)'
+                                               for k, v in states.items()))
+        if unknown:
+            st.warning('Could not detect the state from these file names (rename to include '
+                       'the state, e.g. "Oregon", "North CA", "AK"): ' + ', '.join(unknown))
+
+
+def state_page():
+    st.title('State Reports')
+    st.caption('Upload each weekly state report. The app reads any layout and builds that '
+               "state's report automatically.")
+    upload_state_files()
+    states = st.session_state.get('states', {})
+    if not states:
+        st.info('Upload one or more weekly state reports to see their reports here.')
+        return
+    codes = list(states.keys())
+    sel = st.selectbox('Choose state', codes, format_func=lambda x: STATES.get(x, x))
+    st.header(f'{STATES.get(sel, sel)} - Report')
+    st.subheader('Official pricing policy')
+    st.table(POLICY_DF[POLICY_DF.State == sel][
+        ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']])
+    show_state_report(sel, STATES.get(sel, sel), states[sel])
+
+
+def first_page():
+    st.title('First Reports')
+    st.caption('Upload First itemized reports. They are used to compare what First actually '
+               'pays against the agreed price from the state reports.')
+    files = st.file_uploader('First reports (Excel / CSV)', type=['xlsx', 'xls', 'csv'],
+                             accept_multiple_files=True, key='first_upload')
+    if files:
+        try:
+            df = pd.concat([read_first(f) for f in files], ignore_index=True)
+            st.session_state['first_df'] = df
+            st.success(f'Loaded {len(df):,} First trips from {len(files)} file(s).')
+        except Exception as e:
+            st.error(f'Could not read the First files: {e}')
+    first_df = st.session_state.get('first_df', pd.DataFrame())
+    states = st.session_state.get('states', {})
+    if not first_df.empty and states:
+        st.subheader('Agreed price vs First actual payment (by state)')
+        st.dataframe(first_vs_agreed(states, first_df), use_container_width=True, hide_index=True)
+    elif not first_df.empty:
+        st.info('Upload the weekly state reports (State Reports page) to compare against the '
+                'agreed price.')
 
 
 def consolidated_page():
     st.title('Consolidated Financial Report - All States')
-    first_df = st.session_state.get('First_df', pd.DataFrame())
-    if first_df.empty:
-        st.info('Upload a First report on the "First Reports" page first. '
-                'The consolidated report is generated automatically from it.')
+    states = st.session_state.get('states', {})
+    if not states:
+        st.info('Upload the weekly state reports on the "State Reports" page first.')
         return
-    df = apply_roster(first_df.copy(), st.session_state.get('roster', {}))
-    summary = consolidated_summary(df)
-    if summary.empty:
-        st.warning('No trips were attributed to any state yet.')
-        return
+    summary = pd.DataFrame([state_summary_row(c, d) for c, d in states.items()])
+    summary = summary.sort_values('Revenue', ascending=False).reset_index(drop=True)
 
     tot_rev = float(summary.Revenue.sum())
-    tot_driver = float(summary.Driver_Pay.sum())
-    tot_margin = tot_rev - tot_driver
-    tot_trips = int(summary.Trips.sum())
-    tot_viol = int(summary.Violations.sum())
-    tot_over = float(summary.Over_Policy_Amount.sum())
-
+    tot_pay = float(summary.Payments.sum())
+    tot_margin = tot_rev - tot_pay
     a, b, c, d, e = st.columns(5)
-    a.metric('States', int(summary.State.nunique()))
-    b.metric('Trips', f'{tot_trips:,}')
-    c.metric('Revenue (First)', f'${tot_rev:,.2f}')
-    d.metric('Driver Pay (policy)', f'${tot_driver:,.2f}')
+    a.metric('States', len(states))
+    b.metric('Trips', f"{int(summary.Trips.sum()):,}")
+    c.metric('Revenue', f'${tot_rev:,.2f}')
+    d.metric('Payments', f'${tot_pay:,.2f}')
     e.metric('Margin', f'${tot_margin:,.2f}')
 
-    # ---- 1) Consolidated financial report (all states) ----
-    st.subheader('Financial summary by state')
-    disp = summary.copy()
-    disp['Margin_%'] = disp['Margin_%'].round(1)
-    grand = pd.DataFrame([{
-        'State': 'ALL', 'State_Name': 'Grand total', 'Trips': tot_trips,
-        'Miles': float(summary.Miles.sum()), 'Revenue': tot_rev, 'Driver_Pay': tot_driver,
-        'Margin': tot_margin, 'Margin_%': round(tot_margin / tot_rev * 100, 1) if tot_rev else 0.0,
-        'Violations': tot_viol, 'Over_Policy_Amount': tot_over,
-    }])
-    st.dataframe(pd.concat([disp, grand], ignore_index=True), use_container_width=True,
-                 hide_index=True)
+    st.subheader('Performance by state')
+    perf = summary[['State', 'State_Name', 'Trips', 'Revenue', 'Payments', 'Margin',
+                    'Margin_%', 'Margin_if_Compliant', 'Margin_%_if_Compliant']]
+    st.dataframe(perf, use_container_width=True, hide_index=True)
 
-    # ---- 2) Actual vs Target profit ----
-    st.subheader('Actual vs Target profit')
-    st.caption('Enter your own target margin % for each state (no targets are assumed). '
-               'The target amount and the variance are calculated from the revenue you uploaded.')
-    prev = st.session_state.get('targets', {})
-    target_input = pd.DataFrame({
-        'State': summary.State,
-        'State_Name': summary.State_Name,
-        'Target_Margin_%': [float(prev.get(s, 0.0)) for s in summary.State],
-    })
-    edited = st.data_editor(
-        target_input, hide_index=True, use_container_width=True, num_rows='fixed',
-        disabled=['State', 'State_Name'], key='target_editor',
-        column_config={'Target_Margin_%': st.column_config.NumberColumn(
-            'Target Margin %', min_value=0.0, max_value=100.0, step=1.0, format='%.1f')})
-    st.session_state['targets'] = dict(zip(edited.State, edited['Target_Margin_%']))
-
-    comp = summary[['State', 'State_Name', 'Revenue', 'Margin', 'Margin_%']].copy()
-    comp = comp.merge(edited[['State', 'Target_Margin_%']], on='State', how='left')
-    comp['Target_Margin_$'] = comp['Revenue'] * comp['Target_Margin_%'] / 100.0
-    comp['Actual_Margin_$'] = comp['Margin']
-    comp['Variance_$'] = comp['Actual_Margin_$'] - comp['Target_Margin_$']
-    comp['Achievement_%'] = comp.apply(
-        lambda r: round(r['Actual_Margin_$'] / r['Target_Margin_$'] * 100, 1)
-        if r['Target_Margin_$'] else 0.0, axis=1)
-    comp['Actual_Margin_%'] = comp['Margin_%'].round(1)
-    comp_view = comp[['State', 'State_Name', 'Revenue', 'Target_Margin_%', 'Actual_Margin_%',
-                      'Target_Margin_$', 'Actual_Margin_$', 'Variance_$', 'Achievement_%']]
-    st.dataframe(comp_view, use_container_width=True, hide_index=True)
-    tgt_total = float(comp['Target_Margin_$'].sum())
-    if tgt_total:
-        var_total = tot_margin - tgt_total
-        st.info(f'Total target margin: ${tgt_total:,.2f} | actual: ${tot_margin:,.2f} | '
-                f'variance: ${var_total:,.2f} '
-                f'({"above" if var_total >= 0 else "below"} target).')
-
-    # ---- 3) Financial violations summary per state ----
-    st.subheader('Financial violations summary (per state)')
-    viol_trips = df[df.Is_Non_Compliant].copy()
-    viol_summary = (summary[summary.Violations > 0]
-                    [['State', 'State_Name', 'Trips', 'Violations', 'Revenue',
-                      'Over_Policy_Amount']].copy())
-    if viol_summary.empty:
-        st.success('No trips exceeded the supplied pricing policy. '
-                   '(States marked "Not supplied" are not checked for violations.)')
+    st.subheader('Trips not compliant with the pricing policy')
+    viol = summary[summary.Violations > 0][['State', 'State_Name', 'Trips', 'Violations',
+                                            'Violation_%', 'Loss']]
+    if viol.empty:
+        st.success('No trips break the pricing policy (states with no supplied policy are '
+                   'not checked).')
     else:
-        viol_summary['Violation_Rate_%'] = (
-            viol_summary['Violations'] / viol_summary['Trips'] * 100).round(1)
-        st.dataframe(viol_summary, use_container_width=True, hide_index=True)
+        st.dataframe(viol, use_container_width=True, hide_index=True)
+        st.caption(f'Total extra paid to drivers above policy: ${float(viol.Loss.sum()):,.2f}')
 
-    cols = ['Trip_Date', 'Trip_ID', 'Trip_Name', 'State', 'City', 'Driver_Name', 'Miles',
-            'Revenue', 'Policy_Driver_Pay', 'Margin', 'Loss_Amount', 'Policy_Status']
-    cols = [c for c in cols if c in viol_trips.columns]
+    st.subheader('Trips where First differs from the agreed price')
+    first_df = st.session_state.get('first_df', pd.DataFrame())
+    cmp = first_vs_agreed(states, first_df)
+    if cmp.empty:
+        st.info('Upload the First reports (First Reports page) to see this comparison.')
+    else:
+        st.dataframe(cmp[['State', 'State_Name', 'Agreed_Trips', 'First_Trips',
+                          'Agreed_Revenue', 'First_Revenue', 'Difference']],
+                     use_container_width=True, hide_index=True)
+        st.caption(f'Total agreed: ${float(cmp.Agreed_Revenue.sum()):,.2f} | '
+                   f'Total First paid: ${float(cmp.First_Revenue.sum()):,.2f} | '
+                   f'Difference: ${float(cmp.Difference.sum()):,.2f}')
 
-    # Consolidated report export (summary + targets)
-    out1 = io.BytesIO()
-    with pd.ExcelWriter(out1, engine='openpyxl') as w:
-        pd.concat([disp, grand], ignore_index=True).to_excel(w, sheet_name='Summary', index=False)
-        comp_view.to_excel(w, sheet_name='Actual_vs_Target', index=False)
-    st.download_button('Download consolidated report - Excel', out1.getvalue(),
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine='openpyxl') as w:
+        perf.to_excel(w, sheet_name='Performance', index=False)
+        (viol if not viol.empty else pd.DataFrame(
+            columns=['State', 'State_Name', 'Trips', 'Violations', 'Violation_%', 'Loss'])
+         ).to_excel(w, sheet_name='Policy_Violations', index=False)
+        (cmp if not cmp.empty else pd.DataFrame(
+            columns=['State', 'State_Name', 'Agreed_Revenue', 'First_Revenue', 'Difference'])
+         ).to_excel(w, sheet_name='Agreed_vs_First', index=False)
+    st.download_button('Download consolidated report - Excel', out.getvalue(),
                        'consolidated_all_states.xlsx',
                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                       key='dl_consolidated_xlsx')
-    st.download_button('Download consolidated summary - CSV',
-                       pd.concat([disp, grand], ignore_index=True).to_csv(index=False).encode('utf-8-sig'),
-                       'consolidated_all_states.csv', 'text/csv', key='dl_consolidated_csv')
-
-    # Violations export (per-state summary + every flagged trip)
-    out2 = io.BytesIO()
-    with pd.ExcelWriter(out2, engine='openpyxl') as w:
-        (viol_summary if not viol_summary.empty else
-         pd.DataFrame(columns=['State', 'State_Name', 'Trips', 'Violations', 'Revenue',
-                               'Over_Policy_Amount', 'Violation_Rate_%'])
-         ).to_excel(w, sheet_name='Violations_by_State', index=False)
-        (viol_trips[cols] if cols and not viol_trips.empty else
-         pd.DataFrame(columns=cols)).to_excel(w, sheet_name='Violation_Trips', index=False)
-    st.download_button('Export financial violations summary - Excel', out2.getvalue(),
-                       'violations_summary_all_states.xlsx',
-                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                       key='dl_viol_xlsx')
-    if cols and not viol_trips.empty:
-        st.download_button('Export violation trips - CSV',
-                           viol_trips[cols].to_csv(index=False).encode('utf-8-sig'),
-                           'violation_trips_all_states.csv', 'text/csv', key='dl_viol_csv')
+                       key='dl_consolidated')
 
 
 st.set_page_config(page_title="Hatem's B.T. Analyzer", layout='wide')
 st.sidebar.title('Navigation')
 menu = st.sidebar.radio('Choose section',
                         ['Consolidated Report', 'State Reports', 'First Reports'])
-if menu == 'First Reports':
+if menu == 'State Reports':
+    state_page()
+elif menu == 'First Reports':
     first_page()
-elif menu == 'Consolidated Report':
-    consolidated_page()
 else:
-    selected = st.sidebar.selectbox('Choose state', list(STATES), format_func=lambda x: STATES[x])
-    state_page(selected, STATES[selected])
+    consolidated_page()
