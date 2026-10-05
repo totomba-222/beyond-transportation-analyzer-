@@ -1112,23 +1112,31 @@ def origin_vs_first(d_state, code, origin):
 
 
 def price_difference_report(df):
-    """Group matched trips by state and per-trip price difference."""
+    """Report First Net Pay versus contractual State Revenue by state and difference."""
     if df.empty or 'State_Price' not in df:
         return pd.DataFrame()
-    x = df[df['State_Price'].notna()].copy()
+    x = df.copy()
+    first = pd.to_numeric(x.get('Revenue'), errors='coerce')
+    state_rev = pd.to_numeric(x.get('State_Revenue'), errors='coerce')
+    raw = pd.to_numeric(x.get('State_Price'), errors='coerce')
+    state_rev = state_rev.where(state_rev.notna(), raw)
+    x = x[state_rev.notna() & first.notna()].copy()
     if x.empty:
         return pd.DataFrame()
-    x['Difference_Per_Run'] = (pd.to_numeric(x['State_Price'], errors='coerce') -
-                               pd.to_numeric(x['Revenue'], errors='coerce')).round(2)
-    out = (x.groupby(['State', 'Difference_Per_Run'], dropna=False)
-             .agg(Runs=('Revenue', 'size'),
-                  First_Revenue=('Revenue', 'sum'),
-                  State_Revenue=('State_Price', 'sum'))
+    x['First Net Pay'] = first.loc[x.index]
+    x['State Revenue'] = state_rev.loc[x.index]
+    x['Difference per trip'] = (x['State Revenue'] - x['First Net Pay']).round(2)
+    out = (x.groupby(['State', 'Difference per trip'], dropna=False)
+             .agg(Runs=('First Net Pay', 'size'),
+                  First_Net_Pay=('First Net Pay', 'sum'),
+                  State_Revenue_Total=('State Revenue', 'sum'))
              .reset_index())
-    out['Total_Difference'] = (out['State_Revenue'] - out['First_Revenue']).round(2)
-    out['Amount_Due_From_First'] = out['Total_Difference'].clip(lower=0).round(2)
+    out['Total Difference'] = (out['State_Revenue_Total'] - out['First_Net_Pay']).round(2)
     out['State'] = out['State'].map(lambda c: STATES.get(c, c))
-    return out.sort_values(['State', 'Difference_Per_Run'])
+    out = out.rename(columns={'First_Net_Pay': 'First Net Pay',
+                              'State_Revenue_Total': 'State Revenue'})
+    return out[['State', 'Runs', 'First Net Pay', 'State Revenue',
+                'Difference per trip', 'Total Difference']].sort_values(['State', 'Difference per trip'])
 
 
 def df_download(df, fname, key, sheets=None):
@@ -1159,7 +1167,11 @@ def display_block(d, code, origin):
         contract = contract.where(contract.notna(), raw_contract)
         claim = (contract - first).where(contract.notna() & first.notna())
         b['price_difference'] = float(claim.sum()) if claim.notna().any() else float('nan')
-        b['amount_due'] = max(b['price_difference'], 0.0) if pd.notna(b['price_difference']) else float('nan')
+        # Amount due is the sum of positive shortages only. A trip where
+        # First paid more than State Revenue cannot offset a different trip
+        # where First paid less.
+        positive = claim[claim > 0.01]
+        b['amount_due'] = float(positive.sum()) if not positive.empty else 0.0
         b['below_contract_runs'] = int((claim > 0.01).sum())
         b['claim_matched_runs'] = int(claim.notna().sum())
     else:
@@ -1241,7 +1253,7 @@ def state_only_page(origin):
 
 def consolidated_page(df, origin):
     st.title('📊 Consolidated Financial Report — All States')
-    st.caption('First Paid Fare comes only from First Net Pay. State Revenue and State Driver Pay come only from state reports. MO/Monitor labels are excluded as non-trip records.')
+    st.caption('First Paid Fare comes only from First Net Pay. State Revenue and State Driver Pay come only from state reports. Amount Due is the sum of positive per-trip shortages only; overpaid trips do not offset shortages. MO/Monitor labels are excluded as non-trip records.')
     total = display_total(df, origin)
     if float(pd.to_numeric(df.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
         st.error('No First Net Pay values were detected. Upload the First detailed report in the First reports box.')
@@ -1254,8 +1266,8 @@ def consolidated_page(df, origin):
     c1.metric('Matched trips (First + State)', _int(total.get('matched_runs', 0)))
     c2.metric('Unmatched state trips', _int(total.get('unmatched_state_runs', 0)))
     c3.metric('Amount due from First', _money(total.get('amount_due')))
-    st.metric('Below State Revenue (subset of matched)', _int(total.get('below_contract_runs', 0)),
-              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips — not additional trips")
+    st.metric('Shortage trips included in Amount Due', _int(total.get('below_contract_runs', 0)),
+              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips; included in Amount Due")
     st.subheader('Pricing-policy compliance')
     compliant = max(int(total.get('runs', 0)) - int(total.get('non_compliant', 0)), 0)
     nc = int(total.get('non_compliant', 0))
@@ -1284,13 +1296,56 @@ def consolidated_page(df, origin):
     excluded = int(df.attrs.get('excluded_non_trip_rows', 0))
     if excluded:
         st.info(f'{excluded:,} MO/Monitor record(s) were excluded because they are labels, not trips.')
-    # Keep only a downloadable summary; no detail tables are rendered below the dashboard.
+    st.subheader('Performance by state')
+    state_rows = []
+    for code in sorted(set(df['State'].dropna().unique()) | set(origin.keys() if origin else []),
+                       key=lambda c: STATES.get(c, c)):
+        block = display_block(df[df['State'].eq(code)], code, origin)
+        state_rows.append({
+            'State': STATES.get(code, code),
+            'Runs': int(block.get('runs', 0)),
+            'Revenue': block.get('state_revenue', 0.0),
+            'Payment': block.get('payment', 0.0),
+            'Profit': block.get('profit', 0.0),
+            'Margin %': block.get('margin', float('nan')),
+        })
+    state_summary = pd.DataFrame(state_rows)
+    st.dataframe(state_summary.style.format({
+        'Revenue': '${:,.2f}', 'Payment': '${:,.2f}', 'Profit': '${:,.2f}',
+        'Margin %': '{:,.1f}%'}, na_rep='—'), use_container_width=True, hide_index=True)
+
+    st.subheader('Price differences: First Net Pay vs State Revenue')
+    diff = price_difference_report(df)
+    if diff.empty:
+        st.info('No matched First/State rows with numeric prices were found.')
+    else:
+        st.dataframe(diff.style.format({
+            'First Net Pay': '${:,.2f}', 'State Revenue': '${:,.2f}',
+            'Difference per trip': '${:,.2f}', 'Total Difference': '${:,.2f}'}, na_rep='—'),
+            use_container_width=True, hide_index=True)
+
+    st.subheader('Non-compliant trips')
+    bad = df[df.get('Non_Compliant', pd.Series(False, index=df.index)).fillna(False)].copy()
+    if bad.empty:
+        st.success('No non-compliant trips were identified.')
+    else:
+        bad['Difference'] = (pd.to_numeric(bad['Policy_Pay'], errors='coerce') -
+                             pd.to_numeric(bad['First_Paid_Fare'], errors='coerce')).round(2)
+        bad_report = bad[['State', 'Driver_Name', 'Trip_Date', 'Miles', 'Policy_Pay',
+                          'First_Paid_Fare', 'Difference']].copy()
+        bad_report['State'] = bad_report['State'].map(lambda c: STATES.get(c, c))
+        st.dataframe(bad_report.style.format({
+            'Policy_Pay': '${:,.2f}', 'First_Paid_Fare': '${:,.2f}',
+            'Difference': '${:,.2f}'}, na_rep='—'), use_container_width=True, hide_index=True)
+
     summary = pd.DataFrame([{'Metric': k, 'Value': v} for k, v in {
         'Runs': total['runs'], 'First Paid Fare': total['revenue'],
         'State Revenue': total['state_revenue'], 'State Driver Pay': total['payment'],
         'Amount Due': total['amount_due'], 'Profit': total['profit'], 'Margin %': total['margin'],
         'Compliant Trips': compliant, 'Non-compliant Trips': nc, 'Loss': total['loss']}.items()])
-    df_download(summary, 'financial_summary.xlsx', 'dl_summary')
+    df_download(summary, 'financial_summary.xlsx', 'dl_summary',
+                sheets={'Dashboard Summary': summary, 'State Summary': state_summary,
+                        'Price Differences': diff, 'Non-compliant Trips': bad_report if not bad.empty else pd.DataFrame()})
 
 
 def state_page(df, code, origin):
@@ -1307,8 +1362,8 @@ def state_page(df, code, origin):
     c2.metric('Non-compliant trips', f'{nc:,}', f'{nc / total["runs"] * 100:.1f}%' if total.get('runs') else '0%')
     c3.metric('Loss from non-compliance', _money(total.get('loss')))
     c4.metric('Amount due from First', _money(total.get('amount_due')))
-    st.metric('Below State Revenue (subset of matched)', _int(total.get('below_contract_runs', 0)),
-              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips — not additional trips")
+    st.metric('Shortage trips included in Amount Due', _int(total.get('below_contract_runs', 0)),
+              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips; included in Amount Due")
     if total.get('unmatched_state_runs', 0):
         st.info(f"{total['unmatched_state_runs']:,} state-report trip(s) have no matching First trip and are excluded from the per-trip claim until matched.")
     current = save_financial_snapshot(d, {code: origin.get(code)} if code in origin else {})
@@ -1318,7 +1373,27 @@ def state_page(df, code, origin):
         for label, key in [('Runs','runs'),('State Revenue','state_revenue'),('Amount Due','amount_due'),('Profit','profit'),('Margin','margin')]:
             now = current.get(key); old = before.get(key); delta = pct_change(now, old)
             st.metric(label, _money(now) if key not in ('runs',) else f'{int(now):,}', f'{delta:+.1f}%' if delta is not None else None)
-    st.caption('Only the financial summary is shown. Detailed tables are intentionally hidden.')
+    st.subheader('Non-compliant trips')
+    bad = d[d.get('Non_Compliant', pd.Series(False, index=d.index)).fillna(False)].copy()
+    if bad.empty:
+        st.success('No non-compliant trips were identified.')
+    else:
+        bad['Difference'] = (pd.to_numeric(bad['Policy_Pay'], errors='coerce') -
+                             pd.to_numeric(bad['First_Paid_Fare'], errors='coerce')).round(2)
+        bad['State'] = bad['State'].map(lambda c: STATES.get(c, c))
+        report = bad[['Driver_Name', 'Trip_Date', 'Miles', 'Policy_Pay',
+                      'First_Paid_Fare', 'Difference']].copy()
+        st.dataframe(report.style.format({'Policy_Pay': '${:,.2f}',
+                     'First_Paid_Fare': '${:,.2f}', 'Difference': '${:,.2f}'}, na_rep='—'),
+                     use_container_width=True, hide_index=True)
+
+    st.subheader('Price differences: First Net Pay vs State Revenue')
+    diff = price_difference_report(d)
+    if not diff.empty:
+        st.dataframe(diff.style.format({'First Net Pay': '${:,.2f}',
+                     'State Revenue': '${:,.2f}', 'Difference per trip': '${:,.2f}',
+                     'Total Difference': '${:,.2f}'}, na_rep='—'),
+                     use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
 # APP ENTRY
