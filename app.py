@@ -1,5 +1,5 @@
 from __future__ import annotations
-import io, re, sqlite3, json
+import io, re, sqlite3, json, tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -593,8 +593,24 @@ def _normalise_state_rows(x, code, source_file):
     return out.reset_index(drop=True)
 
 
-HISTORY_DIR = Path('/home/ubuntu/trip_app/financial_history')
-HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+def _get_history_dir():
+    # Streamlit Cloud does not permit writing to /home/ubuntu or the mounted
+    # source tree. Prefer an app-local folder when writable, then use /tmp.
+    candidates = [Path.cwd() / '.financial_history',
+                  Path(tempfile.gettempdir()) / 'bta_financial_history']
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / '.write_test'
+            probe.write_text('ok', encoding='utf-8')
+            probe.unlink(missing_ok=True)
+            return candidate
+        except (OSError, PermissionError):
+            continue
+    return None
+
+
+HISTORY_DIR = _get_history_dir()
 
 
 def is_non_trip_label(value):
@@ -618,13 +634,19 @@ def save_financial_snapshot(df, origin):
                'margin': total['margin'], 'non_compliant': total['non_compliant'],
                'loss': total['loss'], 'matched_runs': total.get('matched_runs', 0),
                'unmatched_state_runs': total.get('unmatched_state_runs', 0)}
-    path = HISTORY_DIR / f'{year}-W{week:02d}.json'
-    path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    if HISTORY_DIR is not None:
+        path = HISTORY_DIR / f'{year}-W{week:02d}.json'
+        try:
+            path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+        except (OSError, PermissionError):
+            pass
     return payload
 
 
 def previous_snapshot(current):
     if not current:
+        return None
+    if HISTORY_DIR is None:
         return None
     files = sorted(HISTORY_DIR.glob('*.json'))
     old = []
