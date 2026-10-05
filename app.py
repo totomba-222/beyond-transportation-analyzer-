@@ -323,6 +323,21 @@ DRIVER_STATE = {
 # ---------------------------------------------------------------------------
 NO_POLICY = set()  # A state is unchecked only when no numeric policy exists.
 
+# Reconciliation controls. The state workbook may contain the observed fare
+# ($42.50 in Alaska), while the approved contract target is $45.00. We keep
+# both values so the difference is visible and auditable.
+CONTRACT_TARGETS = {
+    # state: (observed Excel fare, approved contract target)
+    'AK': (42.50, 45.00),
+}
+
+# Reporting roll-ups requested by the operator. Raw trip rows remain untouched;
+# these are applied only to the consolidated comparison table.
+ROLLUP_ADJUSTMENTS = {
+    'RS&AZ': ['AZ'],       # Riverside & Arizona less Arizona
+    'N.CA': ['SAC'],       # North California less Sacramento
+}
+
 
 def has_policy(state):
     return state not in NO_POLICY and max_fixed_policy(state) > 0
@@ -444,68 +459,65 @@ def state_from_first_row(district, driver, trip, company):
 
 
 def _read_combined_states_workbook(file_obj):
-    """Read STATESREPORT-style sheets containing several blocks side by side."""
+    """Read every sheet and every side-by-side block in STATESREPORT-style workbooks."""
     name = str(getattr(file_obj, 'name', '')).lower()
     if not name.endswith(('.xlsx', '.xls')):
         return pd.DataFrame()
-    raw = pd.read_excel(file_obj, sheet_name=0, header=None, engine='openpyxl')
-    blocks = []
-    header_specs = []
-    for row_no, row in raw.iterrows():
-        for col_no, value in enumerate(row):
-            if clean(value).upper() != 'DRIVER NAME':
-                continue
-            ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
-            if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
-                continue
-            # Find the revenue/payment columns belonging to this block.
-            revenue_col = next((col_no + j for j, v in enumerate(ahead)
-                                if v in ('REVENUE', 'REVENUE ')), None)
-            payment_col = next((col_no + j for j, v in enumerate(ahead)
-                                if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
-            if revenue_col is None:
-                continue
-            title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
-            code = state_code_from_name(title)
-            if code == 'Unknown':
-                code = state_code_from_name(getattr(file_obj, 'name', ''))
-            # Trip-wise block has DATE/TRIP NAME/MILES after DRIVER NAME.
-            date_col = next((col_no + j for j, v in enumerate(ahead)
-                             if v in ('DATE', 'TRIP DATE')), None)
-            trip_col = next((col_no + j for j, v in enumerate(ahead)
-                             if v in ('TRIP NAME', 'TRIP', 'NAME')), None)
-            miles_col = next((col_no + j for j, v in enumerate(ahead)
-                              if v in ('MILES', 'TOTAL MILES')), None)
-            blocks.append({'start': row_no + 1, 'col': col_no, 'revenue': revenue_col,
-                           'payment': payment_col, 'date': date_col, 'trip': trip_col,
-                           'miles': miles_col, 'code': code,
-                           'width': 6 if date_col is not None else 3})
-            header_specs.append((row_no, col_no))
-    if not blocks:
-        return pd.DataFrame()
-    out = []
-    for b in blocks:
-        next_headers = [h for h, c in header_specs
-                        if h > b['start'] and b['col'] <= c < b['col'] + b['width']]
-        end = min(next_headers) if next_headers else len(raw)
-        for i in range(b['start'], end):
-            driver = raw.iat[i, b['col']]
-            price = raw.iat[i, b['revenue']]
-            if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
-                continue
-            price_num = _number_series(pd.Series([price])).iloc[0]
-            if pd.isna(price_num):
-                continue
-            out.append({
-                'State': b['code'], 'Driver_Key': _normal_key(driver),
-                'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
-                'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
-                'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
-                'State_Price': float(price_num),
-                'State_Pay': (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
-                              if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA),
-                'Source_File': getattr(file_obj, 'name', '')})
-    return pd.DataFrame(out)
+    book = pd.ExcelFile(file_obj, engine='openpyxl')
+    all_out = []
+    for sheet in book.sheet_names:
+        raw = pd.read_excel(file_obj, sheet_name=sheet, header=None, engine='openpyxl')
+        blocks, header_specs = [], []
+        for row_no, row in raw.iterrows():
+            for col_no, value in enumerate(row):
+                if clean(value).upper() != 'DRIVER NAME':
+                    continue
+                ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
+                if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
+                    continue
+                revenue_col = next((col_no + j for j, v in enumerate(ahead)
+                                    if v in ('REVENUE', 'REVENUE ')), None)
+                payment_col = next((col_no + j for j, v in enumerate(ahead)
+                                    if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
+                if revenue_col is None:
+                    continue
+                title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
+                code = state_code_from_name(title)
+                if code == 'Unknown':
+                    code = state_code_from_name(f'{sheet} {getattr(file_obj, "name", "")}')
+                date_col = next((col_no + j for j, v in enumerate(ahead)
+                                 if v in ('DATE', 'TRIP DATE')), None)
+                trip_col = next((col_no + j for j, v in enumerate(ahead)
+                                 if v in ('TRIP NAME', 'TRIP', 'NAME')), None)
+                miles_col = next((col_no + j for j, v in enumerate(ahead)
+                                  if v in ('MILES', 'TOTAL MILES')), None)
+                blocks.append({'start': row_no + 1, 'col': col_no, 'revenue': revenue_col,
+                               'payment': payment_col, 'date': date_col, 'trip': trip_col,
+                               'miles': miles_col, 'code': code,
+                               'width': 6 if date_col is not None else 3})
+                header_specs.append((row_no, col_no))
+        for b in blocks:
+            next_headers = [h for h, c in header_specs
+                            if h > b['start'] and b['col'] <= c < b['col'] + b['width']]
+            end_row = min(next_headers) if next_headers else len(raw)
+            for i in range(b['start'], end_row):
+                driver = raw.iat[i, b['col']]
+                price = raw.iat[i, b['revenue']]
+                if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
+                    continue
+                price_num = _number_series(pd.Series([price])).iloc[0]
+                if pd.isna(price_num):
+                    continue
+                pay_num = (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
+                           if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA)
+                all_out.append({
+                    'State': b['code'], 'Driver_Key': _normal_key(driver),
+                    'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
+                    'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
+                    'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
+                    'State_Price': float(price_num), 'State_Pay': pay_num,
+                    'Source_File': f'{getattr(file_obj, "name", "")}::{sheet}'})
+    return pd.DataFrame(all_out)
 
 
 def _normalise_state_rows(x, code, source_file):
@@ -592,8 +604,17 @@ def _recalculate(d):
     state_pay = pd.to_numeric(d.get('State_Pay', pd.Series(pd.NA, index=d.index)), errors='coerce')
     policy_price = pd.to_numeric(d['Policy_Pay'], errors='coerce')
     # Positive difference is money owed to the company by First.
-    d['Price_Difference'] = state_price - d['First_Paid_Fare']
-    d['State_Revenue'] = state_price
+    # Preserve the fare actually read from Excel, then apply an explicit
+    # contract target only where configured. This makes AK $42.50 -> $45.00
+    # produce a transparent $2.50 shortage per run.
+    d['State_Reported_Price'] = state_price
+    target = state_price.copy()
+    for state, (observed_price, target_price) in CONTRACT_TARGETS.items():
+        mask = d['State'].eq(state) & state_price.notna()
+        target.loc[mask & state_price.sub(observed_price).abs().le(0.01)] = float(target_price)
+    d['State_Price'] = target
+    d['Price_Difference'] = target - d['First_Paid_Fare']
+    d['State_Revenue'] = target
     # Pricing Policy is the authoritative driver payment when it exists.
     # State-report Pay is a fallback for states without an internal policy.
     policy_available = d['State'].map(has_policy) & policy_price.gt(0)
@@ -655,6 +676,17 @@ def apply_state_prices(d, origin):
     d = d.copy()
     d['_driver_key'] = d['Driver_Name'].map(_normal_key)
     d['_trip_key'] = d['Trip_Name'].map(_normal_key)
+    # Use the uploaded state reports as an additional authoritative roster.
+    # This fixes files where the First report contains drivers not present in
+    # the built-in name map, preventing valid runs from becoming Unassigned.
+    roster = {}
+    for origin_code, info in origin.items():
+        for driver_key in info.get('rows', pd.DataFrame()).get('Driver_Key', pd.Series(dtype=str)).dropna().unique():
+            if driver_key:
+                roster.setdefault(driver_key, set()).add(origin_code)
+    inferred = d['_driver_key'].map(lambda k: next(iter(roster[k])) if k in roster and len(roster[k]) == 1 else None)
+    unassigned = d['State'].eq('Unassigned') & inferred.notna()
+    d.loc[unassigned, 'State'] = inferred[unassigned]
     d['_date_key'] = d['Trip_Date'].map(_date_key)
     d['_miles_key'] = pd.to_numeric(d['Miles'], errors='coerce').fillna(0).round(2)
     d['_occ'] = d.groupby(['State', '_driver_key', '_trip_key', '_date_key', '_miles_key'], dropna=False).cumcount()
@@ -752,6 +784,33 @@ def agg_block(d):
         'margin_if': (profit_if / rev * 100) if (policy_state and rev) else float('nan'),
         'policy_state': policy_state,
     }
+
+
+def consolidated_rollup(df):
+    """Return display-only state summaries after configured child deductions."""
+    numeric = ['runs', 'revenue', 'state_revenue', 'price_difference', 'amount_due',
+               'payment', 'profit', 'total_runs', 'non_compliant', 'loss', 'profit_if']
+    blocks = {code: agg_block(df[df['State'].eq(code)]) for code in df['State'].dropna().unique()}
+    out = []
+    for code, b in blocks.items():
+        row = dict(b)
+        row['code'] = code
+        row['deducted_from'] = ''
+        children = ROLLUP_ADJUSTMENTS.get(code, [])
+        for child in children:
+            cb = blocks.get(child)
+            if not cb:
+                continue
+            row['deducted_from'] += (', ' if row['deducted_from'] else '') + STATES.get(child, child)
+            for key in numeric:
+                if pd.notna(row.get(key)) and pd.notna(cb.get(key)):
+                    row[key] -= cb[key]
+        row['margin'] = (row['profit'] / row['revenue'] * 100) if row.get('revenue') else float('nan')
+        row['margin_if'] = (row['profit_if'] / row['revenue'] * 100) if row.get('revenue') else float('nan')
+        row['compliant'] = row['total_runs'] - row['non_compliant'] if row.get('policy_state') else row['total_runs']
+        out.append(row)
+    return out
+
 
 
 def _money(v):
@@ -925,17 +984,22 @@ def consolidated_page(df, origin):
 
     st.subheader('Performance by state')
     rows = []
-    for code in sorted(df['State'].unique(), key=lambda c: STATES.get(c, c)):
-        b = agg_block(df[df['State'] == code])
+    for b in sorted(consolidated_rollup(df), key=lambda x: STATES.get(x['code'], x['code'])):
+        code = b['code']
+        label = STATES.get(code, code)
+        if b.get('deducted_from'):
+            label += f" (less {b['deducted_from']})"
         rows.append({
-            'State': STATES.get(code, code), 'Runs': b['runs'],
+            'State': label, 'Runs': b['runs'],
             'First Paid Fare': b['revenue'], 'State Revenue': b['state_revenue'],
             'Price Difference': b['price_difference'], 'Amount Due': b['amount_due'],
-            'Driver Payment': b['payment'],
-            'Profit': b['profit'], 'Margin %': b['margin'],
-            'Non-compliant': b['non_compliant'], 'Loss': b['loss'],
-            'Profit if compliant': b['profit_if'], 'Margin if compliant %': b['margin_if'],
+            'Driver Payment': b['payment'], 'Profit': b['profit'],
+            'Margin %': b['margin'], 'Non-compliant': b['non_compliant'],
+            'Loss': b['loss'], 'Profit if compliant': b['profit_if'],
+            'Margin if compliant %': b['margin_if'],
         })
+    if ROLLUP_ADJUSTMENTS:
+        st.info('Roll-ups are display-only: Riverside & Arizona less Arizona; North California less Sacramento. Raw trip data and child-state reports remain available below.')
     perf = pd.DataFrame(rows)
     st.dataframe(perf.style.format({
         'First Paid Fare': '${:,.2f}', 'State Revenue': '${:,.2f}',
@@ -1000,10 +1064,10 @@ def state_page(df, code, origin):
 
     price_cols = ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name', 'Miles',
                   'First_Reported_Revenue', 'Net_Pay', 'First_Paid_Fare', 'Paid_Fare_Source',
-                  'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
+                  'State_Reported_Price', 'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
     with st.expander('Matched contract prices from state report'):
         st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
-    st.caption('First Paid Fare is Net Pay from First Alt (First Revenue is the fallback when Net Pay is absent). State Revenue is the separate contracted trip price from the state report; it is never replaced by First Paid Fare. Driver Payment comes from Pricing Policy. Amount Due = State Revenue − First Paid Fare.')
+    st.caption('First Paid Fare is Net Pay from First Alt. State Reported Price is the raw Excel value. State Revenue is the contract target used for reconciliation (Alaska: $42.50 observed → $45.00 target). Amount Due = State Revenue − First Paid Fare.')
     state_diff = price_difference_report(d)
     if not state_diff.empty:
         st.dataframe(state_diff.style.format({
