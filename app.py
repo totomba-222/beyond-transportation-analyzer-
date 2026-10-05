@@ -387,6 +387,27 @@ def _normal_key(v):
     return re.sub(r'[^a-z0-9]+', ' ', str(v).lower()).strip()
 
 
+def _column_alias(frame, aliases, startswith=()):
+    """Find a data column despite suffixes such as (F), spaces, or punctuation."""
+    cols = list(frame.columns)
+    norm = {_normal_key(c): c for c in cols}
+    for alias in aliases:
+        key = _normal_key(alias)
+        if key in norm:
+            return norm[key]
+    for key, original in norm.items():
+        if any(key.startswith(_normal_key(prefix)) for prefix in startswith):
+            return original
+    return None
+
+
+def _series_from_column(frame, aliases, default=0, startswith=()):
+    col = _column_alias(frame, aliases, startswith=startswith)
+    if col is None:
+        return pd.Series([default] * len(frame), index=frame.index), None
+    return frame[col], str(col)
+
+
 def _date_key(v):
     dt = pd.to_datetime(v, errors='coerce')
     return '' if pd.isna(dt) else dt.strftime('%Y-%m-%d')
@@ -544,35 +565,48 @@ def _normalise_state_rows(x, code, source_file):
 
 
 def read_first(files):
-    """Read First reports into trip-level rows; First remains the revenue source."""
+    """Read First reports with Net Pay as the primary paid-fare source."""
     frames = []
+    diagnostics = []
     for f in files:
         preferred = 'SP ITEMIZED REPORT'
         x = _read_report_table(f, preferred)
         x.columns = [str(c).strip() for c in x.columns]
-        up = {c.upper(): c for c in x.columns}
+        driver_s, driver_col = _series_from_column(x, ['DRIVER NAME', 'DRIVER'], 'Unknown', ('DRIVER NAME', 'DRIVER'))
+        district_s, district_col = _series_from_column(x, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '', ('DISTRICT', 'STATE', 'REGION', 'AREA'))
+        trip_s, trip_col = _series_from_column(x, ['TRIP NAME', 'NAME'], '', ('TRIP NAME',))
+        date_s, date_col = _series_from_column(x, ['DATE', 'TRIP DATE'], None, ('DATE', 'TRIP DATE'))
+        miles_s, miles_col = _series_from_column(x, ['TOTAL MILES', 'MILES'], 0, ('TOTAL MILES', 'MILES'))
+        # Net Pay / Paid Fare is intentionally checked before Revenue.
+        net_s, net_col = _series_from_column(x,
+            ['NET PAY', 'NET PAY (F)', 'PAID FARE', 'PAID FARE (F)', 'FIRST PAID FARE', 'PAYMENT'],
+            pd.NA, startswith=('NET PAY', 'PAID FARE', 'FIRST PAID FARE'))
+        revenue_s, revenue_col = _series_from_column(x, ['REVENUE', 'GROSS REVENUE'], pd.NA, ('REVENUE',))
         d = pd.DataFrame(index=x.index)
-        d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
-        d['District'] = _pick(x, up, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '')
-        d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
-        d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
-        d['Miles'] = _number_series(_pick(x, up, ['TOTAL MILES', 'MILES'], pd.Series(0, index=x.index))).fillna(0.0)
-        d['First_Reported_Revenue'] = _number_series(
-            _pick(x, up, ['REVENUE'], pd.Series(pd.NA, index=x.index)))
-        d['Net_Pay'] = _number_series(
-            _pick(x, up, ['NET PAY', 'NET'], pd.Series(pd.NA, index=x.index)))
-        # First Alt's Net Pay is the paid fare. If the file has no Net Pay
-        # column, use Revenue as the paid-fare field.
-        d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(),
-                                         d['First_Reported_Revenue']).fillna(0.0)
-        # First Paid Fare is always the First Alt amount used for reconciliation.
+        d['Driver_Name'] = driver_s
+        d['District'] = district_s
+        d['Trip_Name'] = trip_s
+        d['Trip_Date'] = pd.to_datetime(date_s, errors='coerce')
+        d['Miles'] = _number_series(miles_s).fillna(0.0)
+        d['First_Reported_Revenue'] = _number_series(revenue_s)
+        d['Net_Pay'] = _number_series(net_s)
+        d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(), d['First_Reported_Revenue']).fillna(0.0)
         d['First_Paid_Fare'] = d['Revenue']
-        d['Paid_Fare_Source'] = d['Net_Pay'].notna().map(
-            {True: 'First Alt Net Pay', False: 'First Alt Revenue'})
-        d['First_Gross'] = _number_series(_pick(x, up, ['GROSS PAY', 'GROSS'], pd.Series(0, index=x.index))).fillna(0.0)
-        d['Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
+        d['Paid_Fare_Source'] = d['Net_Pay'].notna().map({True: 'First Alt Net Pay', False: 'First Alt Revenue'})
+        gross_s, gross_col = _series_from_column(x, ['GROSS PAY', 'GROSS'], 0, ('GROSS PAY', 'GROSS'))
+        d['First_Gross'] = _number_series(gross_s).fillna(0.0)
+        company_s, company_col = _series_from_column(x, ['SP COMPANY', 'COMPANY'], '', ('SP COMPANY', 'COMPANY'))
+        d['Company'] = company_s
         d['Source_File'] = getattr(f, 'name', '')
+        d['First_NetPay_Column'] = net_col or ''
+        d['First_Revenue_Column'] = revenue_col or ''
         frames.append(d)
+        diagnostics.append({'File': getattr(f, 'name', ''), 'Rows read': len(x),
+                            'Driver column': driver_col or 'NOT FOUND',
+                            'Net Pay column': net_col or 'NOT FOUND',
+                            'Revenue column': revenue_col or 'NOT FOUND',
+                            'Net Pay nonzero rows': int((d['Net_Pay'].fillna(0) != 0).sum()),
+                            'First Paid Fare total': float(d['Revenue'].sum())})
     if not frames:
         return pd.DataFrame()
     d = pd.concat(frames, ignore_index=True)
@@ -580,8 +614,7 @@ def read_first(files):
     keep = d['Driver_Name'].map(lambda v: clean(v) not in bad) & (
         (d['Revenue'] != 0) | (d['Trip_Name'].map(lambda v: clean(v) not in {'', 'nan'})))
     d = d[keep].copy()
-    d['State'] = [state_from_first_row(row['District'], row['Driver_Name'],
-                                        row['Trip_Name'], row['Company'])
+    d['State'] = [state_from_first_row(row['District'], row['Driver_Name'], row['Trip_Name'], row['Company'])
                   for _, row in d.iterrows()]
     d['State'] = d['State'].replace({'Unknown': 'Unassigned'})
     d['Vehicle'] = d['Trip_Name'].map(vehicle_from)
@@ -590,11 +623,12 @@ def read_first(files):
     pol = d.apply(lambda r: policy_pay(r['State'], r['Miles'], r['Vehicle'], r['City']), axis=1)
     d['Policy_Pay'] = [p[0] for p in pol]
     d['Policy_Note'] = [p[1] for p in pol]
-    d['State_Price'] = pd.NA  # state contract price; never overwrite Policy_Pay
+    d['State_Price'] = pd.NA
     d['State_Revenue'] = pd.NA
     d['State_Pay'] = pd.NA
     d['Price_Difference'] = pd.NA
     d['Price_Source'] = 'Pricing policy'
+    d.attrs['read_diagnostics'] = diagnostics
     return _recalculate(d)
 
 
@@ -980,6 +1014,9 @@ def consolidated_page(df, origin):
                'then matched to the state report; Driver Payment comes from state Pay '
                'or the built-in policy fallback.')
     total = agg_block(df)
+    if float(pd.to_numeric(df.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
+        st.error('No First Net Pay values were detected. The report below is blocked because it would show artificial losses. Return to the First report read-check and upload the detailed First report containing Net Pay per trip.')
+        return
     kpi_row(total)
 
     st.subheader('Performance by state')
@@ -1120,7 +1157,20 @@ with st.sidebar:
     if first_files:
         try:
             st.session_state['first_df'] = read_first(first_files)
-            st.success(f'Loaded {len(st.session_state["first_df"]):,} runs.')
+            loaded = st.session_state['first_df']
+            st.success(f'Loaded {len(loaded):,} runs.')
+            diagnostics = loaded.attrs.get('read_diagnostics', [])
+            with st.expander('First report read-check (what the app actually read)', expanded=True):
+                if diagnostics:
+                    st.dataframe(pd.DataFrame(diagnostics), use_container_width=True, hide_index=True)
+                st.write({
+                    'First Paid Fare total': _money(float(loaded['Revenue'].sum())) if not loaded.empty else '$0.00',
+                    'Net Pay rows used': int((loaded.get('Paid_Fare_Source', pd.Series(dtype=str)) == 'First Alt Net Pay').sum()),
+                    'Revenue fallback rows': int((loaded.get('Paid_Fare_Source', pd.Series(dtype=str)) == 'First Alt Revenue').sum()),
+                    'Rows with zero paid fare': int((pd.to_numeric(loaded.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0) == 0).sum()),
+                })
+                if loaded.empty or float(pd.to_numeric(loaded.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
+                    st.error('The First report was loaded but no Net Pay/paid-fare values were found. Check the read-check table above; calculations are not reliable until a paid-fare column is detected.')
         except Exception as e:
             st.error(f'Could not read the First report(s): {e}')
     with st.expander('Optional: state reports (origin price)'):
