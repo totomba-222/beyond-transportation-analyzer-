@@ -529,8 +529,9 @@ def _read_combined_states_workbook(file_obj):
                 if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
                     continue
                 price_num = _number_series(pd.Series([price])).iloc[0]
-                if pd.isna(price_num):
-                    continue
+                # Keep a numbered state-report row in the run count even when
+                # its Revenue cell is text/invalid (e.g. 'drug'). It remains
+                # unmatched for the claim, but must not disappear from runs.
                 pay_num = (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
                            if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA)
                 all_out.append({
@@ -538,7 +539,7 @@ def _read_combined_states_workbook(file_obj):
                     'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
                     'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
                     'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
-                    'State_Price': float(price_num), 'State_Pay': pay_num,
+                    'State_Price': (float(price_num) if not pd.isna(price_num) else pd.NA), 'State_Pay': pay_num,
                     'Source_File': f'{getattr(file_obj, "name", "")}::{sheet}'})
     out = pd.DataFrame(all_out)
     # Some state workbooks contain summary-only rows such as Monitor with
@@ -566,6 +567,14 @@ def _read_combined_states_workbook(file_obj):
                 code = state_code_from_name(f'{sheet} {getattr(file_obj, "name", "")}')
                 summary_rows.append({'State': code, 'Summary': 'Monitor',
                                      'Revenue': revenue, 'Pay': pay, 'Runs': int(runs)})
+    # Exclude MO/Monitor labels from the state report as well. These are
+    # operational labels, not payable trips, and must not affect run counts
+    # or the First-vs-State claim.
+    if not out.empty:
+        non_trip = out.apply(lambda r: is_non_trip_label(r.get('Driver_Key', '')) or
+                              is_non_trip_label(r.get('Trip_Key', '')), axis=1)
+        out.attrs['excluded_non_trip_rows'] = int(non_trip.sum())
+        out = out[~non_trip].reset_index(drop=True)
     out.attrs['summary_rows'] = summary_rows
     return out
 
@@ -614,9 +623,9 @@ HISTORY_DIR = _get_history_dir()
 
 
 def is_non_trip_label(value):
-    """Rows labelled MO/Monitor are operational labels, not payable trips."""
+    """Exclude explicit Monitor records; MO rows remain part of the state report."""
     text = str(value or '').strip().upper()
-    return bool(re.search(r'(^|[^A-Z0-9])(MO|MONITOR)([^A-Z0-9]|$)', text))
+    return text == 'MONITOR' or text.endswith(' MONITOR') or bool(re.search(r'\(\s*MONITOR\s*\)', text))
 
 
 def save_financial_snapshot(df, origin):
@@ -1141,6 +1150,21 @@ def df_download(df, fname, key, sheets=None):
 def display_block(d, code, origin):
     """Use complete state totals while keeping First/state matching auditable."""
     b = agg_block(d)
+    # Claim basis: contract State Revenue minus First Net Pay, per matched trip.
+    # This deliberately does not use State Driver Pay.
+    if not d.empty:
+        first = pd.to_numeric(d.get('Revenue', pd.Series(pd.NA, index=d.index)), errors='coerce')
+        contract = pd.to_numeric(d.get('State_Revenue', pd.Series(pd.NA, index=d.index)), errors='coerce')
+        raw_contract = pd.to_numeric(d.get('State_Price', pd.Series(pd.NA, index=d.index)), errors='coerce')
+        contract = contract.where(contract.notna(), raw_contract)
+        claim = (contract - first).where(contract.notna() & first.notna())
+        b['price_difference'] = float(claim.sum()) if claim.notna().any() else float('nan')
+        b['amount_due'] = max(b['price_difference'], 0.0) if pd.notna(b['price_difference']) else float('nan')
+        b['below_contract_runs'] = int((claim > 0.01).sum())
+        b['claim_matched_runs'] = int(claim.notna().sum())
+    else:
+        b['below_contract_runs'] = 0
+        b['claim_matched_runs'] = 0
     info = origin.get(code) if origin else None
     if not info:
         b['matched_runs'] = int(d['State_Price'].notna().sum()) if 'State_Price' in d else 0
@@ -1170,7 +1194,7 @@ def display_total(df, origin):
     codes = sorted(set(df['State'].dropna().unique()) | set(origin.keys() if origin else []))
     numeric = ['runs', 'revenue', 'state_revenue', 'price_difference', 'amount_due',
                'payment', 'profit', 'total_runs', 'non_compliant', 'loss', 'profit_if',
-               'matched_runs', 'unmatched_state_runs']
+               'matched_runs', 'unmatched_state_runs', 'below_contract_runs', 'claim_matched_runs']
     total = {k: 0.0 for k in numeric}
     total['policy_state'] = False
     for code in codes:
@@ -1183,6 +1207,8 @@ def display_total(df, origin):
     total['runs'] = int(total['runs'])
     total['matched_runs'] = int(total['matched_runs'])
     total['unmatched_state_runs'] = int(total['unmatched_state_runs'])
+    total['below_contract_runs'] = int(total['below_contract_runs'])
+    total['claim_matched_runs'] = int(total['claim_matched_runs'])
     total['total_runs'] = int(total['total_runs'])
     total['non_compliant'] = int(total['non_compliant'])
     total['margin'] = total['profit'] / total['revenue'] * 100 if total['revenue'] else float('nan')
@@ -1225,9 +1251,11 @@ def consolidated_page(df, origin):
     before = previous_snapshot(current)
     st.subheader('Financial control summary')
     c1, c2, c3 = st.columns(3)
-    c1.metric('Matched trips', _int(total.get('matched_runs', 0)))
+    c1.metric('Matched trips (First + State)', _int(total.get('matched_runs', 0)))
     c2.metric('Unmatched state trips', _int(total.get('unmatched_state_runs', 0)))
     c3.metric('Amount due from First', _money(total.get('amount_due')))
+    st.metric('Below State Revenue (subset of matched)', _int(total.get('below_contract_runs', 0)),
+              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips — not additional trips")
     st.subheader('Pricing-policy compliance')
     compliant = max(int(total.get('runs', 0)) - int(total.get('non_compliant', 0)), 0)
     nc = int(total.get('non_compliant', 0))
@@ -1279,6 +1307,8 @@ def state_page(df, code, origin):
     c2.metric('Non-compliant trips', f'{nc:,}', f'{nc / total["runs"] * 100:.1f}%' if total.get('runs') else '0%')
     c3.metric('Loss from non-compliance', _money(total.get('loss')))
     c4.metric('Amount due from First', _money(total.get('amount_due')))
+    st.metric('Below State Revenue (subset of matched)', _int(total.get('below_contract_runs', 0)),
+              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips — not additional trips")
     if total.get('unmatched_state_runs', 0):
         st.info(f"{total['unmatched_state_runs']:,} state-report trip(s) have no matching First trip and are excluded from the per-trip claim until matched.")
     current = save_financial_snapshot(d, {code: origin.get(code)} if code in origin else {})
