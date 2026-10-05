@@ -553,6 +553,8 @@ def read_first(files):
         # column, use Revenue as the paid-fare field.
         d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(),
                                          d['First_Reported_Revenue']).fillna(0.0)
+        # First Paid Fare is always the First Alt amount used for reconciliation.
+        d['First_Paid_Fare'] = d['Revenue']
         d['Paid_Fare_Source'] = d['Net_Pay'].notna().map(
             {True: 'First Alt Net Pay', False: 'First Alt Revenue'})
         d['First_Gross'] = _number_series(_pick(x, up, ['GROSS PAY', 'GROSS'], pd.Series(0, index=x.index))).fillna(0.0)
@@ -590,7 +592,7 @@ def _recalculate(d):
     state_pay = pd.to_numeric(d.get('State_Pay', pd.Series(pd.NA, index=d.index)), errors='coerce')
     policy_price = pd.to_numeric(d['Policy_Pay'], errors='coerce')
     # Positive difference is money owed to the company by First.
-    d['Price_Difference'] = state_price - d['Revenue']
+    d['Price_Difference'] = state_price - d['First_Paid_Fare']
     d['State_Revenue'] = state_price
     # Pricing Policy is the authoritative driver payment when it exists.
     # State-report Pay is a fallback for states without an internal policy.
@@ -602,9 +604,9 @@ def _recalculate(d):
     d.loc[fallback_pay, 'Policy_Pay'] = state_pay[fallback_pay]
     d.loc[policy_available, 'Price_Source'] = 'Pricing policy'
     d.loc[fallback_pay, 'Price_Source'] = 'State report Pay (no internal policy)'
-    d['Profit'] = (d['Revenue'] - d['Policy_Pay']).where(effective, other=pd.NA)
-    d['Non_Compliant'] = effective & (d['Revenue'] < d['Policy_Pay'] - 0.01)
-    d['Loss'] = (d['Policy_Pay'] - d['Revenue']).where(d['Non_Compliant'], other=0.0)
+    d['Profit'] = (d['First_Paid_Fare'] - d['Policy_Pay']).where(effective, other=pd.NA)
+    d['Non_Compliant'] = effective & (d['First_Paid_Fare'] < d['Policy_Pay'] - 0.01)
+    d['Loss'] = (d['Policy_Pay'] - d['First_Paid_Fare']).where(d['Non_Compliant'], other=0.0)
     return d
 
 
@@ -927,7 +929,7 @@ def consolidated_page(df, origin):
         b = agg_block(df[df['State'] == code])
         rows.append({
             'State': STATES.get(code, code), 'Runs': b['runs'],
-            'First Revenue': b['revenue'], 'State Revenue': b['state_revenue'],
+            'First Paid Fare': b['revenue'], 'State Revenue': b['state_revenue'],
             'Price Difference': b['price_difference'], 'Amount Due': b['amount_due'],
             'Driver Payment': b['payment'],
             'Profit': b['profit'], 'Margin %': b['margin'],
@@ -936,7 +938,7 @@ def consolidated_page(df, origin):
         })
     perf = pd.DataFrame(rows)
     st.dataframe(perf.style.format({
-        'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
+        'First Paid Fare': '${:,.2f}', 'State Revenue': '${:,.2f}',
         'Price Difference': '${:,.2f}', 'Amount Due': '${:,.2f}',
         'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
         'Margin %': '{:,.1f}%', 'Loss': '${:,.2f}', 'Profit if compliant': '${:,.2f}',
@@ -944,8 +946,8 @@ def consolidated_page(df, origin):
         use_container_width=True, hide_index=True)
 
     c1, c2 = st.columns(2)
-    c1.caption('First Revenue vs State Contract Revenue')
-    c1.bar_chart(perf.set_index('State')[['First Revenue', 'State Revenue']])
+    c1.caption('First Paid Fare vs State Contract Revenue')
+    c1.bar_chart(perf.set_index('State')[['First Paid Fare', 'State Revenue']])
     mperf = perf.dropna(subset=['Margin %'])
     if not mperf.empty:
         c2.caption('Margin % by state')
@@ -997,11 +999,11 @@ def state_page(df, code, origin):
     st.dataframe(rep, use_container_width=True)
 
     price_cols = ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name', 'Miles',
-                  'First_Reported_Revenue', 'Net_Pay', 'Revenue', 'Paid_Fare_Source',
+                  'First_Reported_Revenue', 'Net_Pay', 'First_Paid_Fare', 'Paid_Fare_Source',
                   'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
     with st.expander('Matched contract prices from state report'):
         st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
-    st.caption('First Paid Fare is Net Pay from First Alt (Revenue is the fallback when Net Pay is absent). State Revenue is the contracted trip price from the state report. Driver Payment comes from Pricing Policy. Amount Due = State Revenue − First Paid Fare.')
+    st.caption('First Paid Fare is Net Pay from First Alt (First Revenue is the fallback when Net Pay is absent). State Revenue is the separate contracted trip price from the state report; it is never replaced by First Paid Fare. Driver Payment comes from Pricing Policy. Amount Due = State Revenue − First Paid Fare.')
     state_diff = price_difference_report(d)
     if not state_diff.empty:
         st.dataframe(state_diff.style.format({
@@ -1025,14 +1027,14 @@ def state_page(df, code, origin):
 
     ov = origin_vs_first(d, code, origin)
     if ov and ov['Matched_Runs']:
-        st.subheader('State Revenue vs First Revenue reconciliation')
+        st.subheader('State Revenue vs First Paid Fare reconciliation')
         st.dataframe(pd.DataFrame([{
             'State': name, 'Matched Runs': ov['Matched_Runs'],
-            'First Revenue': ov['First_Paid'], 'State Revenue': ov['Origin_Price'],
+            'First Paid Fare': ov['First_Paid'], 'State Revenue': ov['Origin_Price'],
             'Total Price Difference': ov['Difference'],
             'Unmatched First Runs': ov['Unmatched_First_Runs']
         }]).style.format({
-            'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
+            'First Paid Fare': '${:,.2f}', 'State Revenue': '${:,.2f}',
             'Total Price Difference': '${:,.2f}'}), use_container_width=True, hide_index=True)
         if abs(ov['Difference']) > 0.05:
             direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
