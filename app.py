@@ -1087,6 +1087,32 @@ def display_block(d, code, origin):
     return b
 
 
+def display_total(df, origin):
+    """Top dashboard total built from the same state blocks as the table."""
+    codes = sorted(set(df['State'].dropna().unique()) | set(origin.keys() if origin else []))
+    numeric = ['runs', 'revenue', 'state_revenue', 'price_difference', 'amount_due',
+               'payment', 'profit', 'total_runs', 'non_compliant', 'loss', 'profit_if',
+               'matched_runs', 'unmatched_state_runs']
+    total = {k: 0.0 for k in numeric}
+    total['policy_state'] = False
+    for code in codes:
+        block = display_block(df[df['State'].eq(code)], code, origin)
+        for key in numeric:
+            value = block.get(key, 0.0)
+            if pd.notna(value):
+                total[key] += float(value)
+        total['policy_state'] = total['policy_state'] or bool(block.get('policy_state'))
+    total['runs'] = int(total['runs'])
+    total['matched_runs'] = int(total['matched_runs'])
+    total['unmatched_state_runs'] = int(total['unmatched_state_runs'])
+    total['total_runs'] = int(total['total_runs'])
+    total['non_compliant'] = int(total['non_compliant'])
+    total['margin'] = total['profit'] / total['revenue'] * 100 if total['revenue'] else float('nan')
+    total['margin_if'] = total['profit_if'] / total['revenue'] * 100 if total['revenue'] else float('nan')
+    total['compliant'] = total['total_runs'] - total['non_compliant']
+    return total
+
+
 def state_only_page(origin):
     st.title('State reports loaded — First report not uploaded yet')
     st.info('You can start with the state report. Upload the First detailed report later to calculate Net Pay differences per trip.')
@@ -1108,7 +1134,7 @@ def consolidated_page(df, origin):
     st.caption('First Net Pay is read only from the First report. State Revenue and State Driver Pay are read only from the State report. '
                'Then matching is performed by trip keys; unmatched rows are shown separately. '
                'or the built-in policy fallback.')
-    total = agg_block(df)
+    total = display_total(df, origin)
     if float(pd.to_numeric(df.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
         st.error('No First Net Pay values were detected. The report below is blocked because it would show artificial losses. Return to the First report read-check and upload the detailed First report containing Net Pay per trip.')
         return
