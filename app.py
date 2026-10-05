@@ -14,6 +14,13 @@ STATES = {
     'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona',
 }
 
+SPECIAL_DRIVER_STATE = {
+    'mohammed emad bedaer': 'AZ',
+    'saif said awda': 'AZ',
+    'habes al tayyeb': 'SAC',
+    'suhaib yousef batayneh': 'SAC',
+}
+
 CITIES = {
     'OR': ['Portland', 'Gresham', 'Tigard', 'Salem', 'McMinnville', 'Wilsonville',
            'Roseburg', 'Molalla', 'Lincoln City', 'North Bend', 'Newberg',
@@ -375,15 +382,17 @@ def _state_code_from_text(text):
     s = re.sub(r'[^A-Z0-9]+', ' ', str(text).upper()).strip()
     if 'NEW MEXICO' in s or re.search(r'(^| )NM( |$)', s) or 'ABQ' in s:
         return 'NM'
-    if 'NORTH CA' in s or 'NORTHCAROLINA' in s or re.search(r'(^| )N CA( |$)', s):
+    if 'NORTH CA' in s or 'NORTH CALIFORNIA' in s or 'NORTHCAROLINA' in s or re.search(r'(^| )N CA( |$)', s):
         return 'N.CA'
-    if 'SOUTH CA' in s or re.search(r'(^| )S CA( |$)', s):
+    if 'SOUTH CA' in s or 'SOUTH CALIFORNIA' in s or re.search(r'(^| )S CA( |$)', s):
         return 'S.CA'
     if 'OREGON' in s or re.search(r'(^| )OR( |$)', s):
         return 'OR'
     if 'ALASKA' in s or 'ANCHORAGE' in s or re.search(r'(^| )AK( |$)', s):
         return 'AK'
     if 'CROSS BORDER' in s or ('RS' in s and 'AZ' in s):
+        return 'RS&AZ'
+    if 'RIVERSIDE' in s:
         return 'RS&AZ'
     if 'ARIZONA' in s or re.search(r'(^| )AZ( |$)', s):
         return 'AZ'
@@ -402,13 +411,87 @@ def state_code_from_name(fname):
 
 def state_from_first_row(district, driver, trip, company):
     """First Alt district is authoritative; driver/trip are fallback only."""
+    district_text = clean(district).upper()
+    route_text = f'{clean(trip)} {clean(company)}'.upper()
+    driver_key = clean(driver)
+    if 'SACRAMENTO' in route_text or 'SACRAMENTO' in district_text:
+        return 'SAC'
+    if 'ARIZONA' in route_text or re.search(r'(^|\s)AZ(\s|$)', route_text):
+        return 'AZ'
+    if driver_key in SPECIAL_DRIVER_STATE:
+        return SPECIAL_DRIVER_STATE[driver_key]
     district_code = _state_code_from_text(district)
     if district_code != 'Unknown':
         return district_code
-    known = DRIVER_STATE.get(clean(driver))
+    known = DRIVER_STATE.get(driver_key)
     if known:
         return known
     return state_from(trip, company)
+
+
+def _read_combined_states_workbook(file_obj):
+    """Read STATESREPORT-style sheets containing several blocks side by side."""
+    name = str(getattr(file_obj, 'name', '')).lower()
+    if not name.endswith(('.xlsx', '.xls')):
+        return pd.DataFrame()
+    raw = pd.read_excel(file_obj, sheet_name=0, header=None, engine='openpyxl')
+    blocks = []
+    header_specs = []
+    for row_no, row in raw.iterrows():
+        for col_no, value in enumerate(row):
+            if clean(value).upper() != 'DRIVER NAME':
+                continue
+            ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
+            if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
+                continue
+            # Find the revenue/payment columns belonging to this block.
+            revenue_col = next((col_no + j for j, v in enumerate(ahead)
+                                if v in ('REVENUE', 'REVENUE ')), None)
+            payment_col = next((col_no + j for j, v in enumerate(ahead)
+                                if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
+            if revenue_col is None:
+                continue
+            title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
+            code = state_code_from_name(title)
+            if code == 'Unknown':
+                code = state_code_from_name(getattr(file_obj, 'name', ''))
+            # Trip-wise block has DATE/TRIP NAME/MILES after DRIVER NAME.
+            date_col = next((col_no + j for j, v in enumerate(ahead)
+                             if v in ('DATE', 'TRIP DATE')), None)
+            trip_col = next((col_no + j for j, v in enumerate(ahead)
+                             if v in ('TRIP NAME', 'TRIP', 'NAME')), None)
+            miles_col = next((col_no + j for j, v in enumerate(ahead)
+                              if v in ('MILES', 'TOTAL MILES')), None)
+            blocks.append({'start': row_no + 1, 'col': col_no, 'revenue': revenue_col,
+                           'payment': payment_col, 'date': date_col, 'trip': trip_col,
+                           'miles': miles_col, 'code': code,
+                           'width': 6 if date_col is not None else 3})
+            header_specs.append((row_no, col_no))
+    if not blocks:
+        return pd.DataFrame()
+    out = []
+    for b in blocks:
+        next_headers = [h for h, c in header_specs
+                        if h > b['start'] and b['col'] <= c < b['col'] + b['width']]
+        end = min(next_headers) if next_headers else len(raw)
+        for i in range(b['start'], end):
+            driver = raw.iat[i, b['col']]
+            price = raw.iat[i, b['revenue']]
+            if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
+                continue
+            price_num = _number_series(pd.Series([price])).iloc[0]
+            if pd.isna(price_num):
+                continue
+            out.append({
+                'State': b['code'], 'Driver_Key': _normal_key(driver),
+                'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
+                'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
+                'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
+                'State_Price': float(price_num),
+                'State_Pay': (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
+                              if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA),
+                'Source_File': getattr(file_obj, 'name', '')})
+    return pd.DataFrame(out)
 
 
 def _normalise_state_rows(x, code, source_file):
@@ -425,6 +508,8 @@ def _normalise_state_rows(x, code, source_file):
     out['Date_Key'] = _pick(x, up, ['DATE', 'TRIP DATE'], '').map(_date_key)
     out['Miles_Key'] = pd.to_numeric(_pick(x, up, ['TOTAL MILES', 'MILES'], 0), errors='coerce').fillna(0).round(2)
     out['State_Price'] = _number_series(x[price_col])
+    pay_col = next((up[n] for n in ['PAY', 'PAYMENT', 'DRIVER PAY'] if n in up), None)
+    out['State_Pay'] = (_number_series(x[pay_col]) if pay_col else pd.Series(pd.NA, index=x.index))
     out['Source_File'] = source_file
     out = out[out['State_Price'].notna()].copy()
     # Remove report totals and blank lines, but keep legitimate zero-price rows out.
@@ -470,6 +555,7 @@ def read_first(files):
     d['Policy_Note'] = [p[1] for p in pol]
     d['State_Price'] = pd.NA  # state contract price; never overwrite Policy_Pay
     d['State_Revenue'] = pd.NA
+    d['State_Pay'] = pd.NA
     d['Price_Difference'] = pd.NA
     d['Price_Source'] = 'Built-in policy'
     return _recalculate(d)
@@ -478,15 +564,18 @@ def read_first(files):
 def _recalculate(d):
     """Recalculate driver payment/profit and state-price reconciliation separately."""
     state_price = pd.to_numeric(d['State_Price'], errors='coerce')
+    state_pay = pd.to_numeric(d.get('State_Pay', pd.Series(pd.NA, index=d.index)), errors='coerce')
     policy_price = pd.to_numeric(d['Policy_Pay'], errors='coerce')
     d['Price_Difference'] = state_price - d['Revenue']
     d['State_Revenue'] = state_price
-    # A state report price is company/state reconciliation data only. It must
-    # not make a state with no driver policy look compliant or change payment.
-    effective = d['State'].map(has_policy) & policy_price.gt(0)
+    # State report Pay is the actual driver payment when supplied; the built-in
+    # policy is only the fallback for rows without a state Pay.
+    effective = state_pay.notna() | (d['State'].map(has_policy) & policy_price.gt(0))
     d['Checked'] = effective
     d['Policy_Pay'] = policy_price.where(effective, other=pd.NA)
-    d.loc[effective, 'Price_Source'] = 'Built-in driver-payment policy'
+    d.loc[state_pay.notna(), 'Policy_Pay'] = state_pay[state_pay.notna()]
+    d.loc[state_pay.notna(), 'Price_Source'] = 'State report Pay'
+    d.loc[effective & state_pay.isna(), 'Price_Source'] = 'Built-in driver-payment policy'
     d['Profit'] = (d['Revenue'] - d['Policy_Pay']).where(effective, other=pd.NA)
     d['Non_Compliant'] = effective & (d['Revenue'] < d['Policy_Pay'] - 0.01)
     d['Loss'] = (d['Policy_Pay'] - d['Revenue']).where(d['Non_Compliant'], other=0.0)
@@ -499,19 +588,27 @@ def read_state_origin(files):
     for f in files:
         code = state_code_from_name(getattr(f, 'name', ''))
         try:
-            x = _read_report_table(f)
-            part = _normalise_state_rows(x, code, getattr(f, 'name', ''))
+            part = _read_combined_states_workbook(f)
+            if part.empty:
+                x = _read_report_table(f)
+                part = _normalise_state_rows(x, code, getattr(f, 'name', ''))
         except Exception:
             continue
         if part.empty:
             continue
-        if code == 'Unknown':
+        if code == 'Unknown' and set(part['State'].dropna().unique()) <= {'Unknown'}:
             driver_state_normalized = {_normal_key(name): state for name, state in DRIVER_STATE.items()}
             inferred = part['Driver_Key'].map(lambda n: driver_state_normalized.get(n, 'Unknown'))
             known = inferred[inferred != 'Unknown']
             if not known.empty:
                 code = known.mode().iloc[0]
                 part['State'] = code
+        if set(part['State'].dropna().unique()) - {'Unknown'}:
+            for block_code, block_rows in part.groupby('State'):
+                prev = rows.get(block_code, {'rows': []})
+                prev['rows'].append(block_rows.copy())
+                rows[block_code] = prev
+            continue
         prev = rows.get(code, {'rows': []})
         prev['rows'].append(part)
         rows[code] = prev
@@ -558,15 +655,24 @@ def apply_state_prices(d, origin):
                 if len(hits):
                     hit = hits[0]
                     first.at[idx, 'State_Price'] = available.at[hit, 'State_Price']
+                    if 'State_Pay' in available.columns:
+                        first.at[idx, 'State_Pay'] = available.at[hit, 'State_Pay']
                     available.at[hit, '_used'] = True
             if first['State_Price'].notna().all():
                 break
 
-    for code, info in origin.items():
-        if code == 'Unknown' or 'rows' not in info:
+    for first_code in d['State'].dropna().unique():
+        compatible_codes = {first_code}
+        if first_code == 'AZ':
+            compatible_codes.add('RS&AZ')
+        if first_code == 'SAC':
+            compatible_codes.add('N.CA')
+        candidate_frames = [info['rows'] for code, info in origin.items()
+                            if code in compatible_codes and 'rows' in info]
+        if not candidate_frames:
             continue
-        r = info['rows'].copy()
-        mask = d['State'].eq(code)
+        r = pd.concat(candidate_frames, ignore_index=True)
+        mask = d['State'].eq(first_code)
         first = d.loc[mask].copy()
         # Try exact trip identity first, then gracefully handle reports without
         # date/miles/driver columns. Every state row is used at most once.
@@ -581,6 +687,7 @@ def apply_state_prices(d, origin):
             (['_driver_key'], ['Driver_Key']),
         ])
         d.loc[mask, 'State_Price'] = first['State_Price']
+        d.loc[mask, 'State_Pay'] = first['State_Pay']
     d = _recalculate(d)
     return d.drop(columns=['_driver_key', '_trip_key', '_date_key', '_miles_key', '_occ'])
 
@@ -705,12 +812,14 @@ def kpi(col, label, value, tone=''):
                  f'<div class="val">{value}</div></div>', unsafe_allow_html=True)
 
 
-def kpi_row(total):
+def kpi_row(total, state_name=''):
     comp_rate = (total['compliant'] / total['total_runs'] * 100) if total['total_runs'] else 0
+    revenue_f_label = f'{state_name} Revenue (F)' if state_name else 'First Revenue (F)'
+    revenue_state_label = f'{state_name} Revenue (State)' if state_name else 'State Revenue (contract)'
     a, b, c, d, e = st.columns(5)
     kpi(a, 'Runs', _int(total['runs']))
-    kpi(b, 'First Revenue (company)', _money(total['revenue']), 'p')
-    kpi(c, 'State Revenue (contract)', _money(total['state_revenue']), 'o')
+    kpi(b, revenue_f_label, _money(total['revenue']), 'p')
+    kpi(c, revenue_state_label, _money(total['state_revenue']), 'o')
     kpi(d, 'Profit', _money(total['profit']), 'g')
     kpi(e, 'Driver Payment', _money(total['payment']), 'o')
     f, g, h, i, j = st.columns(5)
@@ -774,8 +883,9 @@ def df_download(df, fname, key, sheets=None):
 # ---------------------------------------------------------------------------
 def consolidated_page(df, origin):
     st.title('📊 Consolidated Financial Report — All States')
-    st.caption('Built automatically from the First report. Each run is assigned to its '
-               'state from the driver, then priced against your built-in policy.')
+    st.caption('Built from First Alt. Each run is assigned from District/Route first, '
+               'then matched to the state report; Driver Payment comes from state Pay '
+               'or the built-in policy fallback.')
     total = agg_block(df)
     kpi_row(total)
 
@@ -831,12 +941,12 @@ def state_page(df, code, origin):
     name = STATES.get(code, code)
     st.title(f'📍 {name} — Weekly Financial Report')
     d = df[df['State'] == code].copy()
-    if not has_policy(code):
+    if not total.get('policy_state'):
         st.info('No pricing policy is supplied for this state yet, so runs are not checked '
                 'for compliance. Revenue and runs are still reported. Provide the rates to '
                 'enable profit and compliance.')
     rep, total, weeks = weekly_report(d)
-    kpi_row(total)
+    kpi_row(total, name)
 
     st.subheader('Pricing policy')
     pol = POLICY_DF[POLICY_DF.State == code][
@@ -852,7 +962,7 @@ def state_page(df, code, origin):
     st.dataframe(rep, use_container_width=True)
 
     price_cols = ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name', 'Miles', 'Revenue',
-                  'State_Price', 'Price_Difference', 'Price_Source']
+                  'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
     with st.expander('Matched contract prices from state report'):
         st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
         st.caption('First Revenue is the company revenue from First Alt. State Revenue is the agreed trip price from the state report. Driver Payment comes only from the pricing policy. Price Difference = State Revenue − First Revenue.')
@@ -863,7 +973,7 @@ def state_page(df, code, origin):
                 'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}'}),
                 use_container_width=True, hide_index=True)
 
-    if has_policy(code) and total['non_compliant']:
+    if total['policy_state'] and total['non_compliant']:
         st.warning(f"{total['non_compliant']} loss-making run(s): First paid less than the "
                    f"policy driver pay. Total loss ${total['loss']:,.2f}. If every run were "
                    f"priced per policy, profit would be ${total['profit_if']:,.2f} "
@@ -872,7 +982,7 @@ def state_page(df, code, origin):
         bad = d[d['Non_Compliant']][['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles',
                                      'Revenue', 'Policy_Pay', 'State_Price', 'Price_Difference', 'Price_Source', 'Loss']].sort_values('Loss', ascending=False)
         with st.expander(f'Show {len(bad)} loss-making runs'):
-            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
+            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}', 'State_Pay': '${:,.2f}',
                                            'Price_Difference': '${:,.2f}', 'Loss': '${:,.2f}'}),
                          use_container_width=True, hide_index=True)
 
