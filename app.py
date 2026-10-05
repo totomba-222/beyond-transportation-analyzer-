@@ -9,7 +9,7 @@ DB_FILE = 'history.db'
 
 STATES = {
     'OR': 'Oregon', 'N.CA': 'North California', 'S.CA': 'South California',
-    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico',
+    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska',
     'SAC': 'Sacramento', 'MON': 'Monterey',
     'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona',
 }
@@ -29,7 +29,7 @@ CITIES = {
     'S.CA': ['San Diego', 'Los Angeles'],
     'AK': ['Anchorage'],
     'IL': ['Elgin', 'Carol Stream', 'Chicago'],
-    'NM': ['Albuquerque'],
+    'NM': ['Albuquerque'], 'NE': ['Lincoln'],
     'MON': ['Monterey'],
 }
 
@@ -51,7 +51,7 @@ def city_from(name):
         'Troutdale', 'Corvallis', 'Woodburn', 'Clackamas', 'West Linn', 'Milwaukie',
         'Benicia', 'Berkeley', 'Richmond', 'San Leandro', 'Sacramento', 'San Diego',
         'Los Angeles', 'Anchorage', 'Monterey', 'Elgin', 'Carol Stream', 'Chicago',
-        'Albuquerque',
+        'Albuquerque', 'Lincoln', 'Winston Knolls',
     ]
     for city in cities:
         if city.upper() in s:
@@ -63,6 +63,10 @@ def state_from(name, company=''):
     s = f'{name} {company}'.upper()
     if 'MONTEREY' in s:
         return 'MON'
+    if 'NEW MEXICO' in s or 'ALBUQUERQUE' in s or 'ABQ' in s:
+        return 'NM'
+    if 'NEBRASKA' in s or 'LINCOLN' in s or 'LINC ' in s:
+        return 'NE'
     if 'CROSS BORDER' in s or 'ALASKA' in s or 'ANCHORAGE' in s:
         return 'AK'
     if any(c.upper() in s for c in ['DAMASCUS', 'CLACKAMAS', 'TROUTDALE', 'GLADSTONE',
@@ -128,8 +132,12 @@ POLICIES = [
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 43.0, 'Per_Mile_Rate': 0, 'Note': 'Minivan 1-6'},
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 48.0, 'Per_Mile_Rate': 0, 'Note': 'Minivan 7-14'},
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 14.01, 'Max_Miles': 9999, 'Policy_Pay': 48.0, 'Per_Mile_Rate': 0.80, 'Note': 'Minivan 48 + $0.80 per mile above 14'},
+    {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 16, 'Policy_Pay': 30.0, 'Per_Mile_Rate': 0, 'Note': 'Nebraska: $30 through 16 miles'},
+    {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 9999, 'Policy_Pay': 30.0, 'Per_Mile_Rate': 1.50, 'Note': 'Nebraska: $30 + $1.50 per mile above 16'},
     {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
-    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
+    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33.0, 'Per_Mile_Rate': 0, 'Note': 'New Mexico: 1–6 miles'},
+    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 0, 'Note': 'New Mexico: 7–14 miles'},
+    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 9999, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 1.50, 'Note': 'New Mexico: $37 + $1.50 per mile above 14'},
     {'State': 'AZ', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'RS&AZ', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'SAC', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'See Sacramento sedan/minivan schedule'},
@@ -153,6 +161,11 @@ CITY_POLICIES = {
     ],
     'Elgin': [{'min': 0, 'max': 9999, 'base': 75.0, 'per_mile': 0.0, 'note': 'Elgin: driver pay $75'}],
     'Carol Stream': [{'min': 0, 'max': 9999, 'base': 85.0, 'per_mile': 0.0, 'note': 'Carol Stream: driver pay $85'}],
+    'Winston Knolls': [{'min': 0, 'max': 9999, 'base': 85.0, 'per_mile': 0.0, 'note': 'Winston Knolls: driver pay $85'}],
+    'Lincoln': [
+        {'min': 0, 'max': 16, 'base': 30.0, 'per_mile': 0.0, 'note': 'Lincoln: $30 through 16 miles'},
+        {'min': 16.01, 'max': 9999, 'base': 30.0, 'per_mile': 1.50, 'note': 'Lincoln: $30 + $1.50 per mile above 16'},
+    ],
 }
 
 SACRAMENTO_POLICIES = {
@@ -206,7 +219,8 @@ def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
     if 'Not supplied' in str(rule.Note):
         return 0.0, 'No policy supplied'
     if float(rule.Per_Mile_Rate) > 0:
-        return round(float(rule.Policy_Pay) + max(0.0, miles - 16) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
+        # Per-mile increases start above this rule's threshold (for example, NM >14 and NE >16).
+        return round(float(rule.Policy_Pay) + max(0.0, miles - (float(rule.Min_Miles) - 0.01)) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
     return float(rule.Policy_Pay), 'Matched - state policy'
 
 
@@ -307,7 +321,7 @@ DRIVER_STATE = {
 #                         reconciliation; it is never used as driver payment)
 #   States with no supplied policy (NM, IL, RS&AZ, AZ) are NOT checked.
 # ---------------------------------------------------------------------------
-NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ'}
+NO_POLICY = set()  # A state is unchecked only when no numeric policy exists.
 
 
 def has_policy(state):
