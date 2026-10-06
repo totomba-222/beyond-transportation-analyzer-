@@ -788,12 +788,12 @@ def _recalculate(d):
     return d
 
 
-def read_state_origin(files):
+def read_state_origin(files, state_hint=None):
     """Read state reports as trip-level contract prices, not one state total."""
     rows = {}
     summaries = {}
     for f in files:
-        code = state_code_from_name(getattr(f, 'name', ''))
+        code = state_hint or state_code_from_name(getattr(f, 'name', ''))
         try:
             part = _read_combined_states_workbook(f)
             if part.empty:
@@ -1399,6 +1399,29 @@ def state_page(df, code, origin):
                      'Difference per trip': '${:,.2f}'}, na_rep='—'),
                      use_container_width=True, hide_index=True)
 
+
+def merge_origins(*origin_sets):
+    """Merge independently uploaded state-report results without changing calculations."""
+    merged = {}
+    for origin in origin_sets:
+        for code, info in (origin or {}).items():
+            current = merged.setdefault(code, {
+                'rows': [], 'origin': 0.0, 'runs': 0,
+                'summary_runs': 0, 'summary_revenue': 0.0, 'summary_pay': 0.0,
+            })
+            rows = info.get('rows', pd.DataFrame())
+            if not rows.empty:
+                current['rows'].append(rows)
+            for key in ('origin', 'runs', 'summary_runs', 'summary_revenue', 'summary_pay'):
+                current[key] += float(info.get(key, 0) or 0)
+    return {
+        code: {
+            **{k: v for k, v in info.items() if k != 'rows'},
+            'rows': pd.concat(info['rows'], ignore_index=True) if info['rows'] else pd.DataFrame(),
+        }
+        for code, info in merged.items()
+    }
+
 # ---------------------------------------------------------------------------
 # APP ENTRY
 # ---------------------------------------------------------------------------
@@ -1409,8 +1432,10 @@ st.sidebar.title("Hatem's B.T. Analyzer")
 st.sidebar.caption('Beyond Transportation — financial & pricing control')
 
 with st.sidebar:
-    first_files = st.file_uploader('First report(s) — Excel / CSV', type=['xlsx', 'xls', 'csv'],
-                                   accept_multiple_files=True, key='first_up')
+    st.markdown('### 1. First detailed report')
+    first_files = st.file_uploader('Upload First report(s) — Excel / CSV', type=['xlsx', 'xls', 'csv'],
+                                   accept_multiple_files=True, key='first_up',
+                                   help='Upload one or more detailed First reports.')
     if first_files:
         try:
             st.session_state['first_df'] = read_first(first_files)
@@ -1430,16 +1455,42 @@ with st.sidebar:
                     st.error('The First report was loaded but no Net Pay/paid-fare values were found. Check the read-check table above; calculations are not reliable until a paid-fare column is detected.')
         except Exception as e:
             st.error(f'Could not read the First report(s): {e}')
-    with st.expander('Optional: state reports (origin price)'):
-        state_files = st.file_uploader('Weekly state reports', type=['xlsx', 'xls', 'csv'],
-                                       accept_multiple_files=True, key='state_up')
-        if state_files:
-            st.session_state['origin'] = read_state_origin(state_files)
-            st.success('State contract prices loaded for: ' +
-                       ', '.join(STATES.get(k, k) for k in st.session_state['origin']))
-        else:
-            # Do not reuse a state report from an earlier upload/session.
-            st.session_state['origin'] = {}
+    st.markdown('### 2. State reports')
+    st.caption('Upload all state reports together, or use the individual boxes below.')
+    bulk_files = st.file_uploader('Upload all state reports', type=['xlsx', 'xls', 'csv'],
+                                  accept_multiple_files=True, key='state_bulk_up',
+                                  help='The app reads each uploaded report directly and detects its state from the filename/content.')
+
+    state_uploads = []
+    state_order = ['OR', 'N.CA', 'S.CA', 'AK', 'IL', 'NM', 'NE', 'SAC', 'MON', 'RS&AZ', 'AZ']
+    state_colors = {
+        'OR': '#2563eb', 'N.CA': '#7c3aed', 'S.CA': '#db2777', 'AK': '#0891b2',
+        'IL': '#059669', 'NM': '#16a34a', 'NE': '#65a30d', 'SAC': '#ca8a04',
+        'MON': '#ea580c', 'RS&AZ': '#dc2626', 'AZ': '#b91c1c',
+    }
+    for code in state_order:
+        color = state_colors.get(code, '#475569')
+        st.markdown(
+            f'<div style="border-left:4px solid {color};padding:4px 8px;margin:8px 0 2px;'
+            f'font-weight:700;color:{color};">{code} — {STATES.get(code, code)}</div>',
+            unsafe_allow_html=True,
+        )
+        files = st.file_uploader(
+            f'{STATES.get(code, code)} report(s)', type=['xlsx', 'xls', 'csv'],
+            accept_multiple_files=True, key=f'state_upload_{code.replace("&", "and").replace(".", "").lower()}',
+        )
+        if files:
+            state_uploads.append((code, files))
+
+    origins = []
+    if bulk_files:
+        origins.append(read_state_origin(bulk_files))
+    for code, files in state_uploads:
+        origins.append(read_state_origin(files, state_hint=code))
+    st.session_state['origin'] = merge_origins(*origins)
+    if st.session_state['origin']:
+        loaded_names = ', '.join(STATES.get(k, k) for k in sorted(st.session_state['origin']))
+        st.success(f'State contract prices loaded for: {loaded_names}')
 
 df = st.session_state.get('first_df', pd.DataFrame())
 origin = st.session_state.get('origin', {})
