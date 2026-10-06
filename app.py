@@ -11,7 +11,7 @@ STATES = {
     'OR': 'Oregon', 'N.CA': 'North California', 'S.CA': 'South California',
     'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico',
     'SAC': 'Sacramento', 'MON': 'Monterey',
-    'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona',
+    'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona', 'WA': 'Washington',
 }
 
 SPECIAL_DRIVER_STATE = {
@@ -61,6 +61,8 @@ def city_from(name):
 
 def state_from(name, company=''):
     s = f'{name} {company}'.upper()
+    if 'WASHINGTON' in s or 'SEATTLE' in s or re.search(r'(^|\s)WA(\s|$)', s):
+        return 'WA'
     if 'MONTEREY' in s:
         return 'MON'
     if 'CROSS BORDER' in s or 'ALASKA' in s or 'ANCHORAGE' in s:
@@ -329,7 +331,7 @@ DRIVER_STATE = {
 #                         reconciliation; it is never used as driver payment)
 #   States with no supplied policy (NM, IL, RS&AZ, AZ) are NOT checked.
 # ---------------------------------------------------------------------------
-NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ'}
+NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ', 'SAC', 'WA'}
 
 
 def has_policy(state):
@@ -365,12 +367,24 @@ def _read_report_table(file_obj, preferred_sheet=None):
                                                     engine='openpyxl'))
                     break
     wanted = {'DRIVER NAME', 'DRIVER', 'TRIP NAME', 'REVENUE', 'NET PAY', 'TOTAL MILES', 'MILES'}
-    for frame in candidates:
+    scored = []
+    for position, frame in enumerate(candidates):
         frame = frame.copy()
         frame.columns = [str(c).strip() for c in frame.columns]
         upper = {str(c).strip().upper() for c in frame.columns}
-        if upper & wanted:
-            return frame
+        if not (upper & wanted):
+            continue
+        normalized = {re.sub(r'[^A-Z0-9]+', '', c) for c in upper}
+        # A trip-level table with Net Pay, driver, route and miles wins over
+        # a summary table that happens to contain only Revenue.
+        score = (100 if 'NETPAY' in normalized else 0)
+        score += 20 if ('DRIVERNAME' in normalized or 'DRIVER' in normalized) else 0
+        score += 20 if ('TRIPNAME' in normalized or 'TRIP' in normalized or 'ROUTE' in normalized) else 0
+        score += 20 if ('TOTALMILES' in normalized or 'MILES' in normalized or 'DISTANCE' in normalized) else 0
+        score += 10 if ('DATE' in normalized or 'TRIPDATE' in normalized) else 0
+        scored.append((score, -position, frame))
+    if scored:
+        return max(scored, key=lambda item: (item[0], item[1]))[2]
     return candidates[0] if candidates else pd.DataFrame()
 
 
@@ -418,6 +432,8 @@ def _state_code_from_text(text):
     s = re.sub(r'[^A-Z0-9]+', ' ', str(text).upper()).strip()
     if 'NEW MEXICO' in s or re.search(r'(^| )NM( |$)', s) or 'ABQ' in s:
         return 'NM'
+    if 'WASHINGTON' in s or re.search(r'(^| )WA( |$)', s) or 'SEATTLE' in s:
+        return 'WA'
     if 'NORTH CA' in s or 'NORTH CALIFORNIA' in s or 'NORTHCAROLINA' in s or re.search(r'(^| )N CA( |$)', s):
         return 'N.CA'
     if 'SOUTH CA' in s or 'SOUTH CALIFORNIA' in s or re.search(r'(^| )S CA( |$)', s):
@@ -450,6 +466,13 @@ def state_from_first_row(district, driver, trip, company):
     district_text = clean(district).upper()
     route_text = f'{clean(trip)} {clean(company)}'.upper()
     driver_key = clean(driver)
+    # Route and school district identify the operating location. Washington
+    # must never be folded into Oregon merely because both appear in one file.
+    if ('WASHINGTON' in route_text or 'SEATTLE' in route_text
+            or re.search(r'(^|\s)WA(\s|$)', route_text)
+            or 'WASHINGTON' in district_text or 'SEATTLE' in district_text
+            or re.search(r'(^|\s)WA(\s|$)', district_text)):
+        return 'WA'
     if 'SACRAMENTO' in route_text or 'SACRAMENTO' in district_text:
         return 'SAC'
     if 'ARIZONA' in route_text or re.search(r'(^|\s)AZ(\s|$)', route_text):
@@ -673,6 +696,19 @@ def apply_state_prices(d, origin):
     if d.empty or not origin:
         return d
     d = d.copy()
+    # Build the state-to-driver map from the reports uploaded in this session.
+    # This is the authoritative bridge between state reports and First Alt;
+    # hard-coded driver lists are only a fallback for rows with no state match.
+    driver_states = {}
+    for code, info in origin.items():
+        for driver in info.get('rows', pd.DataFrame()).get('Driver_Key', pd.Series(dtype=str)).dropna():
+            key = _normal_key(driver)
+            if key:
+                driver_states.setdefault(key, set()).add(code)
+    for idx, row in d.iterrows():
+        states = driver_states.get(_normal_key(row.get('Driver_Name', '')), set())
+        if len(states) == 1:
+            d.at[idx, 'State'] = next(iter(states))
     d['_driver_key'] = d['Driver_Name'].map(_normal_key)
     d['_trip_key'] = d['Trip_Name'].map(_normal_key)
     d['_date_key'] = d['Trip_Date'].map(_date_key)
@@ -738,6 +774,55 @@ def apply_state_prices(d, origin):
         d.loc[mask, 'State_Pay'] = first['State_Pay']
     d = _recalculate(d)
     return d.drop(columns=['_driver_key', '_trip_key', '_date_key', '_miles_key', '_occ'])
+
+
+def unmatched_state_rows(first_df, origin, first_code):
+    """Return state-report rows that were not consumed by First matching."""
+    compatible = {first_code}
+    if first_code == 'AZ':
+        compatible.add('RS&AZ')
+    if first_code == 'SAC':
+        compatible.add('N.CA')
+    candidates = [info['rows'].copy() for code, info in origin.items() if code in compatible]
+    if not candidates:
+        return pd.DataFrame()
+    state_rows = pd.concat(candidates, ignore_index=True)
+    first = first_df[first_df['State'].eq(first_code)].copy()
+    if first.empty:
+        return state_rows
+    first['_driver_key'] = first['Driver_Name'].map(_normal_key)
+    first['_trip_key'] = first['Trip_Name'].map(_normal_key)
+    first['_date_key'] = first['Trip_Date'].map(_date_key)
+    first['_miles_key'] = pd.to_numeric(first['Miles'], errors='coerce').fillna(0).round(2)
+    key_pairs = [
+        (['_driver_key', '_trip_key', '_date_key', '_miles_key'], ['Driver_Key', 'Trip_Key', 'Date_Key', 'Miles_Key']),
+        (['_driver_key', '_trip_key', '_date_key'], ['Driver_Key', 'Trip_Key', 'Date_Key']),
+        (['_driver_key', '_trip_key'], ['Driver_Key', 'Trip_Key']),
+        (['_trip_key', '_date_key', '_miles_key'], ['Trip_Key', 'Date_Key', 'Miles_Key']),
+        (['_trip_key', '_miles_key'], ['Trip_Key', 'Miles_Key']),
+        (['_driver_key'], ['Driver_Key']),
+    ]
+    used = set()
+    for _, fr in first.iterrows():
+        for fcols, scols in key_pairs:
+            vals = [fr.get(c, '') for c in fcols]
+            if not all(v not in ('', 0) and not pd.isna(v) for v in vals):
+                continue
+            hits = []
+            for si, sr in state_rows.iterrows():
+                if si in used:
+                    continue
+                if all(sr.get(sc, '') == v for sc, v in zip(scols, vals)):
+                    hits.append(si)
+            if hits:
+                used.add(hits[0])
+                break
+    out = state_rows.loc[~state_rows.index.isin(used)].copy()
+    if out.empty:
+        return out
+    out['Possible_State'] = out['Trip_Key'].map(
+        lambda x: STATES.get(_state_code_from_text(x), _state_code_from_text(x)))
+    return out.reset_index(drop=True)
 
 # ---------------------------------------------------------------------------
 # AGGREGATION & REPORT BUILDERS
@@ -1129,11 +1214,56 @@ def state_page(df, code, origin):
     first_total = float(pd.to_numeric(matched['Revenue'], errors='coerce').sum())
     state_total = float(pd.to_numeric(matched['State_Price'], errors='coerce').sum())
     difference = state_total - first_total
+    state_info = origin.get(code, {})
+    state_run_count = int(state_info.get('runs', len(matched)))
+    unmatched_state_runs = max(state_run_count - len(matched), 0)
+    full_state_total = float(pd.to_numeric(state_info.get('rows', pd.DataFrame()).get(
+        'State_Price', pd.Series(dtype=float)), errors='coerce').sum())
+    unmatched_state_revenue = full_state_total - state_total
+    if unmatched_state_runs:
+        st.warning(
+            f'{unmatched_state_runs:,} state-report run(s) are not matched to First Alt. '
+            f'Their state-report revenue is {_money(unmatched_state_revenue)}. '
+            'This is a run-count/matching difference, not a price difference for matched trips. '
+            'They may belong to Washington or may have different driver, route, date, or miles values.'
+        )
+        unmatched = unmatched_state_rows(df, origin, code)
+        if not unmatched.empty:
+            st.subheader('Unmatched State-Report Trips — Review Before Classifying')
+            st.caption('These rows are read directly from the uploaded state report. They are not included in the price-difference calculation until matched.')
+            unmatched['Washington_Candidate'] = unmatched.apply(
+                lambda r: 'Yes' if 'WASHINGTON' in f"{r.get('Trip_Key', '')} {r.get('Driver_Key', '')}".upper()
+                or 'SEATTLE' in f"{r.get('Trip_Key', '')} {r.get('Driver_Key', '')}".upper()
+                else 'No', axis=1)
+            filter_choice = st.selectbox(
+                'Filter unmatched trips',
+                ['All unmatched', 'Washington candidates', 'Other unmatched'],
+                key=f'unmatched_filter_{code}')
+            view = unmatched
+            if filter_choice == 'Washington candidates':
+                view = unmatched[unmatched['Washington_Candidate'].eq('Yes')]
+            elif filter_choice == 'Other unmatched':
+                view = unmatched[unmatched['Washington_Candidate'].eq('No')]
+            display = view.rename(columns={
+                'Driver_Key': 'Driver', 'Trip_Key': 'Route / Trip',
+                'Date_Key': 'Date', 'Miles_Key': 'Miles',
+                'State_Price': 'State Revenue', 'State_Pay': 'State PAY',
+                'Source_File': 'Source File'})
+            cols = ['Driver', 'Route / Trip', 'Date', 'Miles', 'State Revenue',
+                    'State PAY', 'Possible_State', 'Washington_Candidate', 'Source File']
+            st.dataframe(display[[c for c in cols if c in display.columns]].style.format({
+                'State Revenue': '${:,.2f}', 'State PAY': '${:,.2f}'}),
+                use_container_width=True, hide_index=True)
     x1, x2, x3, x4 = st.columns(4)
     x1.metric('Matched First Runs', f'{len(matched):,}')
     x2.metric('First Net Pay (F)', _money(first_total))
     x3.metric('Matched State Revenue', _money(state_total))
     x4.metric('Amount Due From First', _money(max(difference, 0)))
+    st.caption(
+        f'Full state report: {state_run_count:,} runs / {_money(full_state_total)}. '
+        f'Matched for price comparison: {len(matched):,} runs / {_money(state_total)}. '
+        f'Price difference is calculated only on those {len(matched):,} matched runs.'
+    )
     diff_report = price_difference_report(matched)
     if not diff_report.empty:
         st.subheader('Price Difference by Trip Price')
