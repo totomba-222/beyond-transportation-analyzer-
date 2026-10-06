@@ -1,6 +1,5 @@
 from __future__ import annotations
-import io, re, sqlite3, json, tempfile
-from pathlib import Path
+import io, re, sqlite3
 from datetime import datetime
 
 import pandas as pd
@@ -10,7 +9,7 @@ DB_FILE = 'history.db'
 
 STATES = {
     'OR': 'Oregon', 'N.CA': 'North California', 'S.CA': 'South California',
-    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico', 'NE': 'Nebraska',
+    'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico',
     'SAC': 'Sacramento', 'MON': 'Monterey',
     'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona',
 }
@@ -30,7 +29,7 @@ CITIES = {
     'S.CA': ['San Diego', 'Los Angeles'],
     'AK': ['Anchorage'],
     'IL': ['Elgin', 'Carol Stream', 'Chicago'],
-    'NM': ['Albuquerque'], 'NE': ['Lincoln'],
+    'NM': ['Albuquerque'],
     'MON': ['Monterey'],
 }
 
@@ -52,7 +51,7 @@ def city_from(name):
         'Troutdale', 'Corvallis', 'Woodburn', 'Clackamas', 'West Linn', 'Milwaukie',
         'Benicia', 'Berkeley', 'Richmond', 'San Leandro', 'Sacramento', 'San Diego',
         'Los Angeles', 'Anchorage', 'Monterey', 'Elgin', 'Carol Stream', 'Chicago',
-        'Albuquerque', 'Lincoln', 'Winston Knolls',
+        'Albuquerque',
     ]
     for city in cities:
         if city.upper() in s:
@@ -64,10 +63,6 @@ def state_from(name, company=''):
     s = f'{name} {company}'.upper()
     if 'MONTEREY' in s:
         return 'MON'
-    if 'NEW MEXICO' in s or 'ALBUQUERQUE' in s or 'ABQ' in s:
-        return 'NM'
-    if 'NEBRASKA' in s or 'LINCOLN' in s or 'LINC ' in s:
-        return 'NE'
     if 'CROSS BORDER' in s or 'ALASKA' in s or 'ANCHORAGE' in s:
         return 'AK'
     if any(c.upper() in s for c in ['DAMASCUS', 'CLACKAMAS', 'TROUTDALE', 'GLADSTONE',
@@ -133,12 +128,8 @@ POLICIES = [
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 43.0, 'Per_Mile_Rate': 0, 'Note': 'Minivan 1-6'},
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 48.0, 'Per_Mile_Rate': 0, 'Note': 'Minivan 7-14'},
     {'State': 'MON', 'Vehicle_Type': 'Minivan', 'Min_Miles': 14.01, 'Max_Miles': 9999, 'Policy_Pay': 48.0, 'Per_Mile_Rate': 0.80, 'Note': 'Minivan 48 + $0.80 per mile above 14'},
-    {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 16, 'Policy_Pay': 30.0, 'Per_Mile_Rate': 0, 'Note': 'Nebraska: $30 through 16 miles'},
-    {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 16.01, 'Max_Miles': 9999, 'Policy_Pay': 30.0, 'Per_Mile_Rate': 1.50, 'Note': 'Nebraska: $30 + $1.50 per mile above 16'},
     {'State': 'IL', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
-    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 6, 'Policy_Pay': 33.0, 'Per_Mile_Rate': 0, 'Note': 'New Mexico: 1–6 miles'},
-    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 6.01, 'Max_Miles': 14, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 0, 'Note': 'New Mexico: 7–14 miles'},
-    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 14.01, 'Max_Miles': 9999, 'Policy_Pay': 37.0, 'Per_Mile_Rate': 1.50, 'Note': 'New Mexico: $37 + $1.50 per mile above 14'},
+    {'State': 'NM', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'AZ', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'RS&AZ', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'SAC', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'See Sacramento sedan/minivan schedule'},
@@ -162,11 +153,6 @@ CITY_POLICIES = {
     ],
     'Elgin': [{'min': 0, 'max': 9999, 'base': 75.0, 'per_mile': 0.0, 'note': 'Elgin: driver pay $75'}],
     'Carol Stream': [{'min': 0, 'max': 9999, 'base': 85.0, 'per_mile': 0.0, 'note': 'Carol Stream: driver pay $85'}],
-    'Winston Knolls': [{'min': 0, 'max': 9999, 'base': 85.0, 'per_mile': 0.0, 'note': 'Winston Knolls: driver pay $85'}],
-    'Lincoln': [
-        {'min': 0, 'max': 16, 'base': 30.0, 'per_mile': 0.0, 'note': 'Lincoln: $30 through 16 miles'},
-        {'min': 16.01, 'max': 9999, 'base': 30.0, 'per_mile': 1.50, 'note': 'Lincoln: $30 + $1.50 per mile above 16'},
-    ],
 }
 
 SACRAMENTO_POLICIES = {
@@ -192,6 +178,27 @@ def init_db():
 
 
 init_db()
+
+
+def save_weekly_summary(state_code, d, total):
+    """Persist the legacy weekly summary without changing the new matching data."""
+    dates = pd.to_datetime(d.get('Trip_Date'), errors='coerce').dropna()
+    week_start = dates.min().strftime('%Y-%m-%d') if not dates.empty else ''
+    week_end = dates.max().strftime('%Y-%m-%d') if not dates.empty else ''
+    with sqlite3.connect(DB_FILE) as c:
+        c.execute('''INSERT INTO weekly_summary
+            (analysis_date, state, week_start_date, week_end_date, total_trips,
+             total_revenue, total_driver_cost, total_margin, total_loss)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (datetime.now().strftime('%Y-%m-%d'), state_code, week_start, week_end,
+             total['runs'], total['revenue'], total['payment'], total['profit'], total['loss']))
+
+
+def historical_summary(state_code):
+    with sqlite3.connect(DB_FILE) as c:
+        return pd.read_sql_query(
+            'SELECT * FROM weekly_summary WHERE state = ? ORDER BY week_start_date DESC',
+            c, params=[state_code])
 
 
 def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
@@ -220,8 +227,7 @@ def policy_pay(state, miles, vehicle='Unknown', city='Unknown'):
     if 'Not supplied' in str(rule.Note):
         return 0.0, 'No policy supplied'
     if float(rule.Per_Mile_Rate) > 0:
-        # Per-mile increases start above this rule's threshold (for example, NM >14 and NE >16).
-        return round(float(rule.Policy_Pay) + max(0.0, miles - (float(rule.Min_Miles) - 0.01)) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
+        return round(float(rule.Policy_Pay) + max(0.0, miles - 16) * float(rule.Per_Mile_Rate), 2), 'Matched - state policy'
     return float(rule.Policy_Pay), 'Matched - state policy'
 
 
@@ -322,22 +328,7 @@ DRIVER_STATE = {
 #                         reconciliation; it is never used as driver payment)
 #   States with no supplied policy (NM, IL, RS&AZ, AZ) are NOT checked.
 # ---------------------------------------------------------------------------
-NO_POLICY = set()  # A state is unchecked only when no numeric policy exists.
-
-# Reconciliation controls. The state workbook may contain the observed fare
-# ($42.50 in Alaska), while the approved contract target is $45.00. We keep
-# both values so the difference is visible and auditable.
-CONTRACT_TARGETS = {
-    # state: (observed Excel fare, approved contract target)
-    'AK': (42.50, 45.00),
-}
-
-# Reporting roll-ups requested by the operator. Raw trip rows remain untouched;
-# these are applied only to the consolidated comparison table.
-ROLLUP_ADJUSTMENTS = {
-    'RS&AZ': ['AZ'],       # Riverside & Arizona less Arizona
-    'N.CA': ['SAC'],       # North California less Sacramento
-}
+NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ'}
 
 
 def has_policy(state):
@@ -386,27 +377,6 @@ def _normal_key(v):
     if pd.isna(v):
         return ''
     return re.sub(r'[^a-z0-9]+', ' ', str(v).lower()).strip()
-
-
-def _column_alias(frame, aliases, startswith=()):
-    """Find a data column despite suffixes such as (F), spaces, or punctuation."""
-    cols = list(frame.columns)
-    norm = {_normal_key(c): c for c in cols}
-    for alias in aliases:
-        key = _normal_key(alias)
-        if key in norm:
-            return norm[key]
-    for key, original in norm.items():
-        if any(key.startswith(_normal_key(prefix)) for prefix in startswith):
-            return original
-    return None
-
-
-def _series_from_column(frame, aliases, default=0, startswith=()):
-    col = _column_alias(frame, aliases, startswith=startswith)
-    if col is None:
-        return pd.Series([default] * len(frame), index=frame.index), None
-    return frame[col], str(col)
 
 
 def _date_key(v):
@@ -481,102 +451,68 @@ def state_from_first_row(district, driver, trip, company):
 
 
 def _read_combined_states_workbook(file_obj):
-    """Read every sheet and every side-by-side block in STATESREPORT-style workbooks."""
+    """Read STATESREPORT-style sheets containing several blocks side by side."""
     name = str(getattr(file_obj, 'name', '')).lower()
     if not name.endswith(('.xlsx', '.xls')):
         return pd.DataFrame()
-    book = pd.ExcelFile(file_obj, engine='openpyxl')
-    all_out = []
-    summary_rows = []
-    for sheet in book.sheet_names:
-        raw = pd.read_excel(file_obj, sheet_name=sheet, header=None, engine='openpyxl')
-        blocks, header_specs = [], []
-        for row_no, row in raw.iterrows():
-            for col_no, value in enumerate(row):
-                if clean(value).upper() != 'DRIVER NAME':
-                    continue
-                ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
-                if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
-                    continue
-                revenue_col = next((col_no + j for j, v in enumerate(ahead)
-                                    if v in ('REVENUE', 'REVENUE ')), None)
-                payment_col = next((col_no + j for j, v in enumerate(ahead)
-                                    if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
-                if revenue_col is None:
-                    continue
-                title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
-                code = state_code_from_name(title)
-                if code == 'Unknown':
-                    code = state_code_from_name(f'{sheet} {getattr(file_obj, "name", "")}')
-                date_col = next((col_no + j for j, v in enumerate(ahead)
-                                 if v in ('DATE', 'TRIP DATE')), None)
-                trip_col = next((col_no + j for j, v in enumerate(ahead)
-                                 if v in ('TRIP NAME', 'TRIP', 'NAME')), None)
-                miles_col = next((col_no + j for j, v in enumerate(ahead)
-                                  if v in ('MILES', 'TOTAL MILES')), None)
-                blocks.append({'start': row_no + 1, 'col': col_no, 'revenue': revenue_col,
-                               'payment': payment_col, 'date': date_col, 'trip': trip_col,
-                               'miles': miles_col, 'code': code,
-                               'width': 6 if date_col is not None else 3})
-                header_specs.append((row_no, col_no))
-        for b in blocks:
-            next_headers = [h for h, c in header_specs
-                            if h > b['start'] and b['col'] <= c < b['col'] + b['width']]
-            end_row = min(next_headers) if next_headers else len(raw)
-            for i in range(b['start'], end_row):
-                driver = raw.iat[i, b['col']]
-                price = raw.iat[i, b['revenue']]
-                if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
-                    continue
-                price_num = _number_series(pd.Series([price])).iloc[0]
-                # Keep a numbered state-report row in the run count even when
-                # its Revenue cell is text/invalid (e.g. 'drug'). It remains
-                # unmatched for the claim, but must not disappear from runs.
-                pay_num = (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
-                           if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA)
-                all_out.append({
-                    'State': b['code'], 'Driver_Key': _normal_key(driver),
-                    'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
-                    'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
-                    'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
-                    'State_Price': (float(price_num) if not pd.isna(price_num) else pd.NA), 'State_Pay': pay_num,
-                    'Source_File': f'{getattr(file_obj, "name", "")}::{sheet}'})
-    out = pd.DataFrame(all_out)
-    # Some state workbooks contain summary-only rows such as Monitor with
-    # Revenue, Pay and Runs but no driver/trip detail. Capture them separately
-    # so they count in state totals without being duplicated in trip matching.
-    for sheet in book.sheet_names:
-        raw = pd.read_excel(file_obj, sheet_name=sheet, header=None, engine='openpyxl')
-        for _, row in raw.iterrows():
-            values = [str(v).strip().lower() for v in row.tolist() if pd.notna(v)]
-            # Match a standalone summary label only. Do not treat trip names
-            # such as 'District Monitor (...)' as financial summary rows.
-            if not any(v in {'monitor', 'monitor summary', 'monitor total'} for v in values):
+    raw = pd.read_excel(file_obj, sheet_name=0, header=None, engine='openpyxl')
+    blocks = []
+    header_specs = []
+    for row_no, row in raw.iterrows():
+        for col_no, value in enumerate(row):
+            if clean(value).upper() != 'DRIVER NAME':
                 continue
-            text = ' '.join(values)
-            nums = []
-            for v in row.tolist():
-                n = _number_series(pd.Series([v])).iloc[0]
-                if not pd.isna(n):
-                    nums.append(float(n))
-            if len(nums) >= 3:
-                revenue = max(nums)
-                remaining = [n for n in nums if n != revenue]
-                pay = max(remaining) if remaining else 0.0
-                runs = min(nums)
-                code = state_code_from_name(f'{sheet} {getattr(file_obj, "name", "")}')
-                summary_rows.append({'State': code, 'Summary': 'Monitor',
-                                     'Revenue': revenue, 'Pay': pay, 'Runs': int(runs)})
-    # Exclude MO/Monitor labels from the state report as well. These are
-    # operational labels, not payable trips, and must not affect run counts
-    # or the First-vs-State claim.
-    if not out.empty:
-        non_trip = out.apply(lambda r: is_non_trip_label(r.get('Driver_Key', '')) or
-                              is_non_trip_label(r.get('Trip_Key', '')), axis=1)
-        out.attrs['excluded_non_trip_rows'] = int(non_trip.sum())
-        out = out[~non_trip].reset_index(drop=True)
-    out.attrs['summary_rows'] = summary_rows
-    return out
+            ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
+            if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
+                continue
+            # Find the revenue/payment columns belonging to this block.
+            revenue_col = next((col_no + j for j, v in enumerate(ahead)
+                                if v in ('REVENUE', 'REVENUE ')), None)
+            payment_col = next((col_no + j for j, v in enumerate(ahead)
+                                if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
+            if revenue_col is None:
+                continue
+            title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
+            code = state_code_from_name(title)
+            if code == 'Unknown':
+                code = state_code_from_name(getattr(file_obj, 'name', ''))
+            # Trip-wise block has DATE/TRIP NAME/MILES after DRIVER NAME.
+            date_col = next((col_no + j for j, v in enumerate(ahead)
+                             if v in ('DATE', 'TRIP DATE')), None)
+            trip_col = next((col_no + j for j, v in enumerate(ahead)
+                             if v in ('TRIP NAME', 'TRIP', 'NAME')), None)
+            miles_col = next((col_no + j for j, v in enumerate(ahead)
+                              if v in ('MILES', 'TOTAL MILES')), None)
+            blocks.append({'start': row_no + 1, 'col': col_no, 'revenue': revenue_col,
+                           'payment': payment_col, 'date': date_col, 'trip': trip_col,
+                           'miles': miles_col, 'code': code,
+                           'width': 6 if date_col is not None else 3})
+            header_specs.append((row_no, col_no))
+    if not blocks:
+        return pd.DataFrame()
+    out = []
+    for b in blocks:
+        next_headers = [h for h, c in header_specs
+                        if h > b['start'] and b['col'] <= c < b['col'] + b['width']]
+        end = min(next_headers) if next_headers else len(raw)
+        for i in range(b['start'], end):
+            driver = raw.iat[i, b['col']]
+            price = raw.iat[i, b['revenue']]
+            if pd.isna(driver) or clean(driver) in {'', 'total', 'totals', 'grand total'}:
+                continue
+            price_num = _number_series(pd.Series([price])).iloc[0]
+            if pd.isna(price_num):
+                continue
+            out.append({
+                'State': b['code'], 'Driver_Key': _normal_key(driver),
+                'Trip_Key': _normal_key(raw.iat[i, b['trip']]) if b['trip'] is not None else '',
+                'Date_Key': _date_key(raw.iat[i, b['date']]) if b['date'] is not None else '',
+                'Miles_Key': float(_number_series(pd.Series([raw.iat[i, b['miles']]])).fillna(0).iloc[0]) if b['miles'] is not None else 0.0,
+                'State_Price': float(price_num),
+                'State_Pay': (float(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0])
+                              if b['payment'] is not None and not pd.isna(_number_series(pd.Series([raw.iat[i, b['payment']]])).iloc[0]) else pd.NA),
+                'Source_File': getattr(file_obj, 'name', '')})
+    return pd.DataFrame(out)
 
 
 def _normalise_state_rows(x, code, source_file):
@@ -602,141 +538,43 @@ def _normalise_state_rows(x, code, source_file):
     return out.reset_index(drop=True)
 
 
-def _get_history_dir():
-    # Streamlit Cloud does not permit writing to /home/ubuntu or the mounted
-    # source tree. Prefer an app-local folder when writable, then use /tmp.
-    candidates = [Path.cwd() / '.financial_history',
-                  Path(tempfile.gettempdir()) / 'bta_financial_history']
-    for candidate in candidates:
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / '.write_test'
-            probe.write_text('ok', encoding='utf-8')
-            probe.unlink(missing_ok=True)
-            return candidate
-        except (OSError, PermissionError):
-            continue
-    return None
-
-
-HISTORY_DIR = _get_history_dir()
-
-
-def is_non_trip_label(value):
-    """Exclude explicit Monitor records; MO rows remain part of the state report."""
-    text = str(value or '').strip().upper()
-    return text == 'MONITOR' or text.endswith(' MONITOR') or bool(re.search(r'\(\s*MONITOR\s*\)', text))
-
-
-def save_financial_snapshot(df, origin):
-    """Persist a compact weekly snapshot for next week's variance review."""
-    if df.empty:
-        return None
-    dates = pd.to_datetime(df.get('Trip_Date'), errors='coerce').dropna()
-    week = int(dates.max().isocalendar().week) if len(dates) else int(pd.Timestamp.today().isocalendar().week)
-    year = int(dates.max().isocalendar().year) if len(dates) else int(pd.Timestamp.today().isocalendar().year)
-    total = display_total(df, origin)
-    payload = {'year': year, 'week': week, 'saved_at': pd.Timestamp.now().isoformat(),
-               'runs': total['runs'], 'first_paid_fare': total['revenue'],
-               'state_revenue': total['state_revenue'], 'state_driver_pay': total['payment'],
-               'amount_due': total['amount_due'], 'profit': total['profit'],
-               'margin': total['margin'], 'non_compliant': total['non_compliant'],
-               'loss': total['loss'], 'matched_runs': total.get('matched_runs', 0),
-               'unmatched_state_runs': total.get('unmatched_state_runs', 0)}
-    if HISTORY_DIR is not None:
-        path = HISTORY_DIR / f'{year}-W{week:02d}.json'
-        try:
-            path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-        except (OSError, PermissionError):
-            pass
-    return payload
-
-
-def previous_snapshot(current):
-    if not current:
-        return None
-    if HISTORY_DIR is None:
-        return None
-    files = sorted(HISTORY_DIR.glob('*.json'))
-    old = []
-    for path in files:
-        try:
-            item = json.loads(path.read_text(encoding='utf-8'))
-            if (item.get('year'), item.get('week')) != (current.get('year'), current.get('week')):
-                old.append(item)
-        except Exception:
-            pass
-    return old[-1] if old else None
-
-
-def pct_change(now, before):
-    if before in (None, 0) or pd.isna(before) or pd.isna(now):
-        return None
-    return (now - before) / abs(before) * 100
-
-
 def read_first(files):
-    """Read First reports with Net Pay as the primary paid-fare source."""
+    """Read First reports into trip-level rows; First remains the revenue source."""
     frames = []
-    diagnostics = []
     for f in files:
         preferred = 'SP ITEMIZED REPORT'
         x = _read_report_table(f, preferred)
         x.columns = [str(c).strip() for c in x.columns]
-        driver_s, driver_col = _series_from_column(x, ['DRIVER NAME', 'DRIVER'], 'Unknown', ('DRIVER NAME', 'DRIVER'))
-        district_s, district_col = _series_from_column(x, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '', ('DISTRICT', 'STATE', 'REGION', 'AREA'))
-        trip_s, trip_col = _series_from_column(x, ['TRIP NAME', 'NAME'], '', ('TRIP NAME',))
-        date_s, date_col = _series_from_column(x, ['DATE', 'TRIP DATE'], None, ('DATE', 'TRIP DATE'))
-        miles_s, miles_col = _series_from_column(x, ['TOTAL MILES', 'MILES'], 0, ('TOTAL MILES', 'MILES'))
-        # Net Pay / Paid Fare is intentionally checked before Revenue.
-        net_s, net_col = _series_from_column(x,
-            ['NET PAY', 'NET PAY (F)', 'PAID FARE', 'PAID FARE (F)', 'FIRST PAID FARE'],
-            pd.NA, startswith=('NET PAY', 'PAID FARE', 'FIRST PAID FARE'))
-        revenue_s, revenue_col = _series_from_column(x, ['REVENUE', 'GROSS REVENUE'], pd.NA, ('REVENUE',))
-        state_payment_col = _column_alias(x, ['PAY', 'PAYMENT', 'DRIVER PAY'], startswith=('PAY', 'DRIVER PAY'))
-        state_like_file = net_col is None and revenue_col is not None and state_payment_col is not None
+        up = {c.upper(): c for c in x.columns}
         d = pd.DataFrame(index=x.index)
-        d['Driver_Name'] = driver_s
-        d['District'] = district_s
-        d['Trip_Name'] = trip_s
-        d['Trip_Date'] = pd.to_datetime(date_s, errors='coerce')
-        d['Miles'] = _number_series(miles_s).fillna(0.0)
-        d['First_Reported_Revenue'] = _number_series(revenue_s)
-        d['Net_Pay'] = _number_series(net_s)
-        # A Revenue + payment workbook without Net Pay is a state report, not
-        # a First report. Never reinterpret driver payment as First revenue.
-        if state_like_file:
-            d['Revenue'] = 0.0
-        else:
-            d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(), d['First_Reported_Revenue']).fillna(0.0)
-        d['First_Paid_Fare'] = d['Revenue']
-        d['Paid_Fare_Source'] = d['Net_Pay'].notna().map({True: 'First Alt Net Pay', False: 'First Alt Revenue'})
-        gross_s, gross_col = _series_from_column(x, ['GROSS PAY', 'GROSS'], 0, ('GROSS PAY', 'GROSS'))
-        d['First_Gross'] = _number_series(gross_s).fillna(0.0)
-        company_s, company_col = _series_from_column(x, ['SP COMPANY', 'COMPANY'], '', ('SP COMPANY', 'COMPANY'))
-        d['Company'] = company_s
+        d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
+        d['District'] = _pick(x, up, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '')
+        d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
+        d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
+        d['Miles'] = _number_series(_pick(x, up, ['TOTAL MILES', 'MILES'], pd.Series(0, index=x.index))).fillna(0.0)
+        d['First_Reported_Revenue'] = _number_series(
+            _pick(x, up, ['REVENUE'], pd.Series(pd.NA, index=x.index)))
+        d['Net_Pay'] = _number_series(
+            _pick(x, up, ['NET PAY', 'NET'], pd.Series(pd.NA, index=x.index)))
+        # First Alt's Net Pay is the paid fare. If the file has no Net Pay
+        # column, use Revenue as the paid-fare field.
+        d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(),
+                                         d['First_Reported_Revenue']).fillna(0.0)
+        d['Paid_Fare_Source'] = d['Net_Pay'].notna().map(
+            {True: 'First Alt Net Pay', False: 'First Alt Revenue'})
+        d['First_Gross'] = _number_series(_pick(x, up, ['GROSS PAY', 'GROSS'], pd.Series(0, index=x.index))).fillna(0.0)
+        d['Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
         d['Source_File'] = getattr(f, 'name', '')
-        d['First_NetPay_Column'] = net_col or ''
-        d['First_Revenue_Column'] = revenue_col or ''
         frames.append(d)
-        diagnostics.append({'File': getattr(f, 'name', ''), 'Rows read': len(x),
-                            'Driver column': driver_col or 'NOT FOUND',
-                            'Net Pay column': net_col or 'NOT FOUND',
-                            'Revenue column': revenue_col or 'NOT FOUND',
-                            'Net Pay nonzero rows': int((d['Net_Pay'].fillna(0) != 0).sum()),
-                            'First Paid Fare total': float(d['Revenue'].sum()),
-                            'Warning': 'Looks like a state report; upload under State reports' if state_like_file else ''})
     if not frames:
         return pd.DataFrame()
     d = pd.concat(frames, ignore_index=True)
-    d['Excluded_Non_Trip'] = d['Trip_Name'].map(is_non_trip_label)
-    excluded = int(d['Excluded_Non_Trip'].sum())
-    d = d[~d['Excluded_Non_Trip']].copy()
     bad = {'', 'nan', 'total', 'totals', 'grand total'}
     keep = d['Driver_Name'].map(lambda v: clean(v) not in bad) & (
         (d['Revenue'] != 0) | (d['Trip_Name'].map(lambda v: clean(v) not in {'', 'nan'})))
     d = d[keep].copy()
-    d['State'] = [state_from_first_row(row['District'], row['Driver_Name'], row['Trip_Name'], row['Company'])
+    d['State'] = [state_from_first_row(row['District'], row['Driver_Name'],
+                                        row['Trip_Name'], row['Company'])
                   for _, row in d.iterrows()]
     d['State'] = d['State'].replace({'Unknown': 'Unassigned'})
     d['Vehicle'] = d['Trip_Name'].map(vehicle_from)
@@ -745,13 +583,11 @@ def read_first(files):
     pol = d.apply(lambda r: policy_pay(r['State'], r['Miles'], r['Vehicle'], r['City']), axis=1)
     d['Policy_Pay'] = [p[0] for p in pol]
     d['Policy_Note'] = [p[1] for p in pol]
-    d['State_Price'] = pd.NA
+    d['State_Price'] = pd.NA  # state contract price; never overwrite Policy_Pay
     d['State_Revenue'] = pd.NA
     d['State_Pay'] = pd.NA
     d['Price_Difference'] = pd.NA
     d['Price_Source'] = 'Pricing policy'
-    d.attrs['read_diagnostics'] = diagnostics
-    d.attrs['excluded_non_trip_rows'] = excluded
     return _recalculate(d)
 
 
@@ -761,17 +597,8 @@ def _recalculate(d):
     state_pay = pd.to_numeric(d.get('State_Pay', pd.Series(pd.NA, index=d.index)), errors='coerce')
     policy_price = pd.to_numeric(d['Policy_Pay'], errors='coerce')
     # Positive difference is money owed to the company by First.
-    # Preserve the fare actually read from Excel, then apply an explicit
-    # contract target only where configured. This makes AK $42.50 -> $45.00
-    # produce a transparent $2.50 shortage per run.
-    d['State_Reported_Price'] = state_price
-    target = state_price.copy()
-    for state, (observed_price, target_price) in CONTRACT_TARGETS.items():
-        mask = d['State'].eq(state) & state_price.notna()
-        target.loc[mask & state_price.sub(observed_price).abs().le(0.01)] = float(target_price)
-    d['State_Price'] = target
-    d['Price_Difference'] = target - d['First_Paid_Fare']
-    d['State_Revenue'] = target
+    d['Price_Difference'] = state_price - d['Revenue']
+    d['State_Revenue'] = state_price
     # Pricing Policy is the authoritative driver payment when it exists.
     # State-report Pay is a fallback for states without an internal policy.
     policy_available = d['State'].map(has_policy) & policy_price.gt(0)
@@ -782,18 +609,17 @@ def _recalculate(d):
     d.loc[fallback_pay, 'Policy_Pay'] = state_pay[fallback_pay]
     d.loc[policy_available, 'Price_Source'] = 'Pricing policy'
     d.loc[fallback_pay, 'Price_Source'] = 'State report Pay (no internal policy)'
-    d['Profit'] = (d['First_Paid_Fare'] - d['Policy_Pay']).where(effective, other=pd.NA)
-    d['Non_Compliant'] = effective & (d['First_Paid_Fare'] < d['Policy_Pay'] - 0.01)
-    d['Loss'] = (d['Policy_Pay'] - d['First_Paid_Fare']).where(d['Non_Compliant'], other=0.0)
+    d['Profit'] = (d['Revenue'] - d['Policy_Pay']).where(effective, other=pd.NA)
+    d['Non_Compliant'] = effective & (d['Revenue'] < d['Policy_Pay'] - 0.01)
+    d['Loss'] = (d['Policy_Pay'] - d['Revenue']).where(d['Non_Compliant'], other=0.0)
     return d
 
 
-def read_state_origin(files, state_hint=None):
+def read_state_origin(files):
     """Read state reports as trip-level contract prices, not one state total."""
     rows = {}
-    summaries = {}
     for f in files:
-        code = state_hint or state_code_from_name(getattr(f, 'name', ''))
+        code = state_code_from_name(getattr(f, 'name', ''))
         try:
             part = _read_combined_states_workbook(f)
             if part.empty:
@@ -803,14 +629,6 @@ def read_state_origin(files, state_hint=None):
             continue
         if part.empty:
             continue
-        for summary in part.attrs.get('summary_rows', []):
-            scode = summary.get('State', code)
-            if scode == 'Unknown':
-                scode = code
-            summaries.setdefault(scode, {'runs': 0, 'revenue': 0.0, 'pay': 0.0})
-            summaries[scode]['runs'] += int(summary.get('Runs', 0))
-            summaries[scode]['revenue'] += float(summary.get('Revenue', 0.0))
-            summaries[scode]['pay'] += float(summary.get('Pay', 0.0))
         if code == 'Unknown' and set(part['State'].dropna().unique()) <= {'Unknown'}:
             driver_state_normalized = {_normal_key(name): state for name, state in DRIVER_STATE.items()}
             inferred = part['Driver_Key'].map(lambda n: driver_state_normalized.get(n, 'Unknown'))
@@ -828,16 +646,10 @@ def read_state_origin(files, state_hint=None):
         prev['rows'].append(part)
         rows[code] = prev
     result = {}
-    all_codes = set(rows) | set(summaries)
-    for code in all_codes:
-        info = rows.get(code, {'rows': []})
-        all_rows = pd.concat(info['rows'], ignore_index=True) if info.get('rows') else pd.DataFrame(columns=['State_Price', 'State_Pay'])
-        sm = summaries.get(code, {'runs': 0, 'revenue': 0.0, 'pay': 0.0})
-        result[code] = {'rows': all_rows,
-                        'origin': float(pd.to_numeric(all_rows.get('State_Price', pd.Series(dtype=float)), errors='coerce').sum()) + sm['revenue'],
-                        'runs': int(len(all_rows)) + sm['runs'],
-                        'summary_runs': sm['runs'], 'summary_revenue': sm['revenue'],
-                        'summary_pay': sm['pay']}
+    for code, info in rows.items():
+        all_rows = pd.concat(info['rows'], ignore_index=True)
+        result[code] = {'rows': all_rows, 'origin': float(all_rows['State_Price'].sum()),
+                        'runs': int(len(all_rows))}
     return result
 
 
@@ -848,17 +660,6 @@ def apply_state_prices(d, origin):
     d = d.copy()
     d['_driver_key'] = d['Driver_Name'].map(_normal_key)
     d['_trip_key'] = d['Trip_Name'].map(_normal_key)
-    # Use the uploaded state reports as an additional authoritative roster.
-    # This fixes files where the First report contains drivers not present in
-    # the built-in name map, preventing valid runs from becoming Unassigned.
-    roster = {}
-    for origin_code, info in origin.items():
-        for driver_key in info.get('rows', pd.DataFrame()).get('Driver_Key', pd.Series(dtype=str)).dropna().unique():
-            if driver_key:
-                roster.setdefault(driver_key, set()).add(origin_code)
-    inferred = d['_driver_key'].map(lambda k: next(iter(roster[k])) if k in roster and len(roster[k]) == 1 else None)
-    unassigned = d['State'].eq('Unassigned') & inferred.notna()
-    d.loc[unassigned, 'State'] = inferred[unassigned]
     d['_date_key'] = d['Trip_Date'].map(_date_key)
     d['_miles_key'] = pd.to_numeric(d['Miles'], errors='coerce').fillna(0).round(2)
     d['_occ'] = d.groupby(['State', '_driver_key', '_trip_key', '_date_key', '_miles_key'], dropna=False).cumcount()
@@ -958,33 +759,6 @@ def agg_block(d):
     }
 
 
-def consolidated_rollup(df):
-    """Return display-only state summaries after configured child deductions."""
-    numeric = ['runs', 'revenue', 'state_revenue', 'price_difference', 'amount_due',
-               'payment', 'profit', 'total_runs', 'non_compliant', 'loss', 'profit_if']
-    blocks = {code: agg_block(df[df['State'].eq(code)]) for code in df['State'].dropna().unique()}
-    out = []
-    for code, b in blocks.items():
-        row = dict(b)
-        row['code'] = code
-        row['deducted_from'] = ''
-        children = ROLLUP_ADJUSTMENTS.get(code, [])
-        for child in children:
-            cb = blocks.get(child)
-            if not cb:
-                continue
-            row['deducted_from'] += (', ' if row['deducted_from'] else '') + STATES.get(child, child)
-            for key in numeric:
-                if pd.notna(row.get(key)) and pd.notna(cb.get(key)):
-                    row[key] -= cb[key]
-        row['margin'] = (row['profit'] / row['revenue'] * 100) if row.get('revenue') else float('nan')
-        row['margin_if'] = (row['profit_if'] / row['revenue'] * 100) if row.get('revenue') else float('nan')
-        row['compliant'] = row['total_runs'] - row['non_compliant'] if row.get('policy_state') else row['total_runs']
-        out.append(row)
-    return out
-
-
-
 def _money(v):
     return '-' if pd.isna(v) else f'${v:,.2f}'
 
@@ -1058,40 +832,6 @@ def weekly_report(d):
 CARD_CSS = """
 <style>
 .block-container {padding-top: 2rem;}
-.stApp {background: #f6f8fb;}
-[data-testid="stSidebar"] {background: #111827; border-right: 1px solid #243047;}
-[data-testid="stSidebar"] > div:first-child {padding: 1.4rem 1rem 2rem;}
-[data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label,
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {color: #d8e1ef;}
-[data-testid="stSidebar"] .stCaption {color: #91a0b8;}
-[data-testid="stSidebar"] hr {border-color: #2b3850; margin: 1rem 0;}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] {
-  background: #192337; border: 1px solid #33445f; border-radius: 12px;
-  padding: .55rem; transition: border-color .2s ease, background .2s ease;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"]:hover {
-  background: #1d2b43; border-color: #4e78b8;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] {
-  background: #172235; border: 1px solid #2e405d; border-radius: 12px;
-  margin: .55rem 0;
-}
-[data-testid="stSidebar"] [data-testid="stExpander"] details summary {
-  color: #e7eef9; font-weight: 650;
-}
-.brand-card {background: linear-gradient(145deg,#1e3a5f 0%,#17223a 100%);
-  border: 1px solid #35527a; border-radius: 16px; padding: 16px 15px;
-  margin: 0 0 20px; box-shadow: 0 10px 26px rgba(0,0,0,.18);}
-.brand-mark {display:inline-flex; align-items:center; justify-content:center;
-  width:34px; height:34px; border-radius:10px; background:#4f8cff;
-  color:white; font-size:18px; margin-bottom:10px;}
-.brand-title {color:#fff; font-size:1.08rem; font-weight:750; letter-spacing:-.02em;}
-.brand-subtitle {color:#aebed5; font-size:.73rem; margin-top:4px;}
-.side-section {color:#f2f6fc; font-size:.84rem; font-weight:750;
-  letter-spacing:.01em; margin:14px 0 7px;}
-.side-note {color:#91a0b8; font-size:.72rem; line-height:1.45; margin:0 0 8px;}
-.upload-badge {display:inline-block; color:#9fc4ff; background:#1d3c68;
-  border-radius:20px; padding:3px 9px; font-size:.66rem; font-weight:700; margin:3px 0 8px;}
 .kpi {background: linear-gradient(135deg,#1e3a8a 0%,#2563eb 100%); color:#fff;
   border-radius:14px; padding:16px 18px; margin:4px 0;
   box-shadow:0 4px 14px rgba(0,0,0,.12);}
@@ -1113,13 +853,13 @@ def kpi(col, label, value, tone=''):
 def kpi_row(total, state_name=''):
     comp_rate = (total['compliant'] / total['total_runs'] * 100) if total['total_runs'] else 0
     revenue_f_label = f'{state_name} Paid Fare / Net Pay (F)' if state_name else 'First Paid Fare / Net Pay (F)'
-    revenue_state_label = f'{state_name} Revenue (State Report)' if state_name else 'State Revenue (State Report)'
+    revenue_state_label = f'{state_name} Revenue (State)' if state_name else 'State Revenue (contract)'
     a, b, c, d, e = st.columns(5)
     kpi(a, 'Runs', _int(total['runs']))
     kpi(b, revenue_f_label, _money(total['revenue']), 'p')
     kpi(c, revenue_state_label, _money(total['state_revenue']), 'o')
     kpi(d, 'Profit', _money(total['profit']), 'g')
-    kpi(e, 'State Driver Pay (State Report)', _money(total['payment']), 'o')
+    kpi(e, 'Driver Payment', _money(total['payment']), 'o')
     f, g, h, i, j = st.columns(5)
     kpi(f, 'Amount due from First', _money(total['amount_due']), 'r')
     kpi(g, 'Margin', _pct(total['margin']), 'g')
@@ -1146,33 +886,23 @@ def origin_vs_first(d_state, code, origin):
 
 
 def price_difference_report(df):
-    """Report First Net Pay versus contractual State Revenue by state and difference."""
+    """Group matched trips by state and per-trip price difference."""
     if df.empty or 'State_Price' not in df:
         return pd.DataFrame()
-    x = df.copy()
-    first = pd.to_numeric(x.get('Revenue'), errors='coerce')
-    state_rev = pd.to_numeric(x.get('State_Revenue'), errors='coerce')
-    raw = pd.to_numeric(x.get('State_Price'), errors='coerce')
-    state_rev = state_rev.where(state_rev.notna(), raw)
-    x = x[state_rev.notna() & first.notna()].copy()
+    x = df[df['State_Price'].notna()].copy()
     if x.empty:
         return pd.DataFrame()
-    x['First Net Pay'] = first.loc[x.index]
-    x['State Revenue'] = state_rev.loc[x.index]
-    x['Difference per trip'] = (x['State Revenue'] - x['First Net Pay']).round(2)
-    out = (x.groupby(['State', 'Difference per trip'], dropna=False)
-             .agg(Runs=('First Net Pay', 'size'),
-                  First_Net_Pay=('First Net Pay', 'sum'),
-                  State_Revenue_Total=('State Revenue', 'sum'))
+    x['Difference_Per_Run'] = (pd.to_numeric(x['State_Price'], errors='coerce') -
+                               pd.to_numeric(x['Revenue'], errors='coerce')).round(2)
+    out = (x.groupby(['State', 'Difference_Per_Run'], dropna=False)
+             .agg(Runs=('Revenue', 'size'),
+                  First_Revenue=('Revenue', 'sum'),
+                  State_Revenue=('State_Price', 'sum'))
              .reset_index())
-    out['Amount Due'] = ((out['State_Revenue_Total'] - out['First_Net_Pay']).clip(lower=0)).round(2)
+    out['Total_Difference'] = (out['State_Revenue'] - out['First_Revenue']).round(2)
+    out['Amount_Due_From_First'] = out['Total_Difference'].clip(lower=0).round(2)
     out['State'] = out['State'].map(lambda c: STATES.get(c, c))
-    out = out.rename(columns={'First_Net_Pay': 'First Net Pay',
-                              'State_Revenue_Total': 'State Revenue'})
-    # Keep Difference per trip as the final explanatory column. Amount Due
-    # is shown before it so the table directly explains the claim.
-    return out[['State', 'Runs', 'First Net Pay', 'State Revenue',
-                'Amount Due', 'Difference per trip']].sort_values(['State', 'Difference per trip'])
+    return out.sort_values(['State', 'Difference_Per_Run'])
 
 
 def df_download(df, fname, key, sheets=None):
@@ -1190,271 +920,146 @@ def df_download(df, fname, key, sheets=None):
 # ---------------------------------------------------------------------------
 # PAGES
 # ---------------------------------------------------------------------------
-
-def display_block(d, code, origin):
-    """Use complete state totals while keeping First/state matching auditable."""
-    b = agg_block(d)
-    # Claim basis: contract State Revenue minus First Net Pay, per matched trip.
-    # This deliberately does not use State Driver Pay.
-    if not d.empty:
-        first = pd.to_numeric(d.get('Revenue', pd.Series(pd.NA, index=d.index)), errors='coerce')
-        contract = pd.to_numeric(d.get('State_Revenue', pd.Series(pd.NA, index=d.index)), errors='coerce')
-        raw_contract = pd.to_numeric(d.get('State_Price', pd.Series(pd.NA, index=d.index)), errors='coerce')
-        contract = contract.where(contract.notna(), raw_contract)
-        claim = (contract - first).where(contract.notna() & first.notna())
-        b['price_difference'] = float(claim.sum()) if claim.notna().any() else float('nan')
-        # Amount due is the sum of positive shortages only. A trip where
-        # First paid more than State Revenue cannot offset a different trip
-        # where First paid less.
-        positive = claim[claim > 0.01]
-        b['amount_due'] = float(positive.sum()) if not positive.empty else 0.0
-        b['below_contract_runs'] = int((claim > 0.01).sum())
-        b['claim_matched_runs'] = int(claim.notna().sum())
-    else:
-        b['below_contract_runs'] = 0
-        b['claim_matched_runs'] = 0
-    info = origin.get(code) if origin else None
-    if not info:
-        b['matched_runs'] = int(d['State_Price'].notna().sum()) if 'State_Price' in d else 0
-        b['unmatched_state_runs'] = 0
-        return b
-    state_rows = info.get('rows', pd.DataFrame())
-    matched = int(d['State_Price'].notna().sum()) if 'State_Price' in d else 0
-    b['matched_runs'] = matched
-    b['unmatched_state_runs'] = max(int(info.get('runs', 0)) - matched, 0)
-    b['runs'] = max(int(b.get('runs', 0)), int(info.get('runs', 0)))
-    b['state_revenue'] = float(info.get('origin', b.get('state_revenue', 0.0)))
-    pay = pd.to_numeric(state_rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
-    state_pay_total = float(pay.sum()) if pay.notna().any() else 0.0
-    state_pay_total += float(info.get('summary_pay', 0.0))
-    if state_pay_total:
-        b['payment'] = state_pay_total
-    if b['policy_state'] and pd.notna(b['revenue']):
-        b['profit'] = b['revenue'] - b['payment']
-        b['margin'] = (b['profit'] / b['revenue'] * 100) if b['revenue'] else float('nan')
-        b['profit_if'] = b['profit'] + b['loss']
-        b['margin_if'] = (b['profit_if'] / b['revenue'] * 100) if b['revenue'] else float('nan')
-    return b
-
-
-def display_total(df, origin):
-    """Top dashboard total built from the same state blocks as the table."""
-    codes = sorted(set(df['State'].dropna().unique()) | set(origin.keys() if origin else []))
-    numeric = ['runs', 'revenue', 'state_revenue', 'price_difference', 'amount_due',
-               'payment', 'profit', 'total_runs', 'non_compliant', 'loss', 'profit_if',
-               'matched_runs', 'unmatched_state_runs', 'below_contract_runs', 'claim_matched_runs']
-    total = {k: 0.0 for k in numeric}
-    total['policy_state'] = False
-    for code in codes:
-        block = display_block(df[df['State'].eq(code)], code, origin)
-        for key in numeric:
-            value = block.get(key, 0.0)
-            if pd.notna(value):
-                total[key] += float(value)
-        total['policy_state'] = total['policy_state'] or bool(block.get('policy_state'))
-    total['runs'] = int(total['runs'])
-    total['matched_runs'] = int(total['matched_runs'])
-    total['unmatched_state_runs'] = int(total['unmatched_state_runs'])
-    total['below_contract_runs'] = int(total['below_contract_runs'])
-    total['claim_matched_runs'] = int(total['claim_matched_runs'])
-    total['total_runs'] = int(total['total_runs'])
-    total['non_compliant'] = int(total['non_compliant'])
-    total['margin'] = total['profit'] / total['revenue'] * 100 if total['revenue'] else float('nan')
-    total['margin_if'] = total['profit_if'] / total['revenue'] * 100 if total['revenue'] else float('nan')
-    total['compliant'] = total['total_runs'] - total['non_compliant']
-    return total
-
-
-def state_only_page(origin):
-    st.title('State reports loaded — First report not uploaded yet')
-    st.info('You can start with the state report. Upload the First detailed report later to calculate Net Pay differences per trip.')
-    rows = []
-    for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
-        sr = info.get('rows', pd.DataFrame())
-        pay = pd.to_numeric(sr.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
-        state_pay_total = (float(pay.sum()) if pay.notna().any() else 0.0) + float(info.get('summary_pay', 0.0))
-        rows.append({'State': STATES.get(code, code), 'State Runs': info.get('runs', 0),
-                     'State Revenue': info.get('origin', 0.0),
-                     'State Pay': state_pay_total if state_pay_total else float('nan'),
-                     'First Net Pay': float('nan'), 'Matched Runs': 0,
-                     'Unmatched State Runs': info.get('runs', 0)})
-    out = pd.DataFrame(rows)
-    st.metric('States loaded', f'{len(out):,}')
-    for _, row in out.iterrows():
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric(f"{row['State']} runs", f"{int(row['State Runs']):,}")
-        c2.metric(f"{row['State']} revenue", _money(row['State Revenue']))
-        c3.metric(f"{row['State']} driver pay", _money(row['State Pay']))
-        c4.metric(f"{row['State']} unmatched", f"{int(row['Unmatched State Runs']):,}")
-
 def consolidated_page(df, origin):
     st.title('📊 Consolidated Financial Report — All States')
-    st.caption('First Paid Fare comes only from First Net Pay. State Revenue and State Driver Pay come only from state reports. Amount Due is the sum of positive per-trip shortages only; overpaid trips do not offset shortages. MO/Monitor labels are excluded as non-trip records.')
-    total = display_total(df, origin)
-    if float(pd.to_numeric(df.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
-        st.error('No First Net Pay values were detected. Upload the First detailed report in the First reports box.')
-        return
+    st.caption('Built from First Alt. Each run is assigned from District/Route first, '
+               'then matched to the state report; Driver Payment comes from state Pay '
+               'or the built-in policy fallback.')
+    total = agg_block(df)
     kpi_row(total)
-    current = save_financial_snapshot(df, origin)
-    before = previous_snapshot(current)
-    st.subheader('Financial control summary')
-    c1, c2, c3 = st.columns(3)
-    c1.metric('Matched trips (First + State)', _int(total.get('matched_runs', 0)))
-    c2.metric('Unmatched state trips', _int(total.get('unmatched_state_runs', 0)))
-    c3.metric('Amount due from First', _money(total.get('amount_due')))
-    st.metric('Shortage trips included in Amount Due', _int(total.get('below_contract_runs', 0)),
-              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips; included in Amount Due")
-    st.subheader('Pricing-policy compliance')
-    compliant = max(int(total.get('runs', 0)) - int(total.get('non_compliant', 0)), 0)
-    nc = int(total.get('non_compliant', 0))
-    rate = compliant / total['runs'] * 100 if total.get('runs') else 0
-    loss_rate = nc / total['runs'] * 100 if total.get('runs') else 0
-    a, b, c, d = st.columns(4)
-    a.metric('Compliant trips', f'{compliant:,}', f'{rate:.1f}% of trips')
-    b.metric('Non-compliant trips', f'{nc:,}', f'{loss_rate:.1f}% of trips')
-    c.metric('Loss from non-compliance', _money(total.get('loss')))
-    d.metric('Profit margin', _pct(total.get('margin')))
-    if nc:
-        st.warning(f'{nc:,} trips did not comply with the pricing policy. Estimated loss: {_money(total.get("loss"))}.')
-    else:
-        st.success('All analyzed trips comply with the available pricing policy.')
-    if before:
-        st.subheader('Change from previous saved week')
-        labels = [('Runs', 'runs'), ('First Paid Fare', 'first_paid_fare'),
-                  ('State Revenue', 'state_revenue'), ('Amount Due', 'amount_due'),
-                  ('Profit', 'profit'), ('Margin', 'margin'), ('Non-compliant trips', 'non_compliant')]
-        cols = st.columns(4)
-        for i, (label, key) in enumerate(labels):
-            now, old = current.get(key), before.get(key)
-            delta = pct_change(now, old)
-            cols[i % 4].metric(label, _money(now) if key not in ('runs','non_compliant') else f'{int(now):,}',
-                                f'{delta:+.1f}% vs W{before.get("week")} ' if delta is not None else None)
-    excluded = int(df.attrs.get('excluded_non_trip_rows', 0))
-    if excluded:
-        st.info(f'{excluded:,} MO/Monitor record(s) were excluded because they are labels, not trips.')
+
     st.subheader('Performance by state')
-    state_rows = []
-    for code in sorted(set(df['State'].dropna().unique()) | set(origin.keys() if origin else []),
-                       key=lambda c: STATES.get(c, c)):
-        block = display_block(df[df['State'].eq(code)], code, origin)
-        state_rows.append({
-            'State': STATES.get(code, code),
-            'Runs': int(block.get('runs', 0)),
-            'Revenue': block.get('state_revenue', 0.0),
-            'Payment': block.get('payment', 0.0),
-            'Profit': block.get('profit', 0.0),
-            'Margin %': block.get('margin', float('nan')),
+    rows = []
+    for code in sorted(df['State'].unique(), key=lambda c: STATES.get(c, c)):
+        b = agg_block(df[df['State'] == code])
+        rows.append({
+            'State': STATES.get(code, code), 'Runs': b['runs'],
+            'First Revenue': b['revenue'], 'State Revenue': b['state_revenue'],
+            'Price Difference': b['price_difference'], 'Amount Due': b['amount_due'],
+            'Driver Payment': b['payment'],
+            'Profit': b['profit'], 'Margin %': b['margin'],
+            'Non-compliant': b['non_compliant'], 'Loss': b['loss'],
+            'Profit if compliant': b['profit_if'], 'Margin if compliant %': b['margin_if'],
         })
-    state_summary = pd.DataFrame(state_rows)
-    st.dataframe(state_summary.style.format({
-        'Revenue': '${:,.2f}', 'Payment': '${:,.2f}', 'Profit': '${:,.2f}',
-        'Margin %': '{:,.1f}%'}, na_rep='—'), use_container_width=True, hide_index=True)
+    perf = pd.DataFrame(rows)
+    st.dataframe(perf.style.format({
+        'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
+        'Price Difference': '${:,.2f}', 'Amount Due': '${:,.2f}',
+        'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
+        'Margin %': '{:,.1f}%', 'Loss': '${:,.2f}', 'Profit if compliant': '${:,.2f}',
+        'Margin if compliant %': '{:,.1f}%'}, na_rep='—'),
+        use_container_width=True, hide_index=True)
 
-    st.subheader('Price differences: First Net Pay vs State Revenue')
-    st.info(f"Amount Due from First is calculated per trip: only positive shortages are included. Current calculation: {int(total.get('below_contract_runs', 0)):,} shortage trip(s) within {int(total.get('claim_matched_runs', 0)):,} matched trip(s), for a total claim of {_money(total.get('amount_due'))}.")
-    diff = price_difference_report(df)
-    if diff.empty:
-        st.info('No matched First/State rows with numeric prices were found.')
-    else:
-        st.dataframe(diff.style.format({
-            'First Net Pay': '${:,.2f}', 'State Revenue': '${:,.2f}',
-            'Amount Due': '${:,.2f}', 'Difference per trip': '${:,.2f}'}, na_rep='—'),
-            use_container_width=True, hide_index=True)
+    c1, c2 = st.columns(2)
+    c1.caption('First Revenue vs State Contract Revenue')
+    c1.bar_chart(perf.set_index('State')[['First Revenue', 'State Revenue']])
+    mperf = perf.dropna(subset=['Margin %'])
+    if not mperf.empty:
+        c2.caption('Margin % by state')
+        c2.bar_chart(mperf.set_index('State')[['Margin %']])
 
-    st.subheader('Non-compliant trips')
-    bad = df[df.get('Non_Compliant', pd.Series(False, index=df.index)).fillna(False)].copy()
-    if bad.empty:
-        st.success('No non-compliant trips were identified.')
-    else:
-        bad['Difference'] = (pd.to_numeric(bad['Policy_Pay'], errors='coerce') -
-                             pd.to_numeric(bad['First_Paid_Fare'], errors='coerce')).round(2)
-        bad_report = bad[['State', 'Driver_Name', 'Trip_Date', 'Miles', 'Policy_Pay',
-                          'First_Paid_Fare', 'Difference']].copy()
-        bad_report['State'] = bad_report['State'].map(lambda c: STATES.get(c, c))
-        st.dataframe(bad_report.style.format({
-            'Policy_Pay': '${:,.2f}', 'First_Paid_Fare': '${:,.2f}',
-            'Difference': '${:,.2f}'}, na_rep='—'), use_container_width=True, hide_index=True)
+    if origin:
+        st.subheader('Price matching by state and difference per run')
+        diff_report = price_difference_report(df)
+        if not diff_report.empty:
+            st.dataframe(diff_report.style.format({
+                'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
+                'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
+                'Amount_Due_From_First': '${:,.2f}'}),
+                use_container_width=True, hide_index=True)
+        else:
+            st.warning('No state-report rows were matched to First Alt yet.')
 
-    summary = pd.DataFrame([{'Metric': k, 'Value': v} for k, v in {
-        'Runs': total['runs'], 'First Paid Fare': total['revenue'],
-        'State Revenue': total['state_revenue'], 'State Driver Pay': total['payment'],
-        'Amount Due': total['amount_due'], 'Profit': total['profit'], 'Margin %': total['margin'],
-        'Compliant Trips': compliant, 'Non-compliant Trips': nc, 'Loss': total['loss']}.items()])
-    df_download(summary, 'financial_summary.xlsx', 'dl_summary',
-                sheets={'Dashboard Summary': summary, 'State Summary': state_summary,
-                        'Price Differences': diff, 'Non-compliant Trips': bad_report if not bad.empty else pd.DataFrame()})
+    if 'Unassigned' in df['State'].values:
+        n = int((df['State'] == 'Unassigned').sum())
+        st.warning(f'{n} run(s) could not be matched to a state (new drivers not in the '
+                   'built-in list). Open the "Unassigned" section to review them.')
+    df_download(perf.set_index('State'), 'consolidated_report.xlsx', 'dl_cons',
+                sheets={'State Summary': perf.set_index('State'),
+                        'Price Differences': price_difference_report(df)})
 
 
 def state_page(df, code, origin):
     name = STATES.get(code, code)
-    st.title(f'📍 {name} — Financial Summary')
+    st.title(f'📍 {name} — Weekly Financial Report')
     d = df[df['State'] == code].copy()
-    total = display_block(d, code, origin)
+    rep, total, weeks = weekly_report(d)
     kpi_row(total, name)
-    compliant = max(int(total.get('runs', 0)) - int(total.get('non_compliant', 0)), 0)
-    nc = int(total.get('non_compliant', 0))
-    rate = compliant / total['runs'] * 100 if total.get('runs') else 0
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric('Compliant trips', f'{compliant:,}', f'{rate:.1f}%')
-    c2.metric('Non-compliant trips', f'{nc:,}', f'{nc / total["runs"] * 100:.1f}%' if total.get('runs') else '0%')
-    c3.metric('Loss from non-compliance', _money(total.get('loss')))
-    c4.metric('Amount due from First', _money(total.get('amount_due')))
-    st.metric('Shortage trips included in Amount Due', _int(total.get('below_contract_runs', 0)),
-              f"of {int(total.get('claim_matched_runs', 0)):,} matched trips; included in Amount Due")
-    if total.get('unmatched_state_runs', 0):
-        st.info(f"{total['unmatched_state_runs']:,} state-report trip(s) have no matching First trip and are excluded from the per-trip claim until matched.")
-    current = save_financial_snapshot(d, {code: origin.get(code)} if code in origin else {})
-    before = previous_snapshot(current)
-    if before:
-        st.subheader('Change from previous saved week')
-        for label, key in [('Runs','runs'),('State Revenue','state_revenue'),('Amount Due','amount_due'),('Profit','profit'),('Margin','margin')]:
-            now = current.get(key); old = before.get(key); delta = pct_change(now, old)
-            st.metric(label, _money(now) if key not in ('runs',) else f'{int(now):,}', f'{delta:+.1f}%' if delta is not None else None)
-    st.subheader('Non-compliant trips')
-    bad = d[d.get('Non_Compliant', pd.Series(False, index=d.index)).fillna(False)].copy()
-    if bad.empty:
-        st.success('No non-compliant trips were identified.')
-    else:
-        bad['Difference'] = (pd.to_numeric(bad['Policy_Pay'], errors='coerce') -
-                             pd.to_numeric(bad['First_Paid_Fare'], errors='coerce')).round(2)
-        bad['State'] = bad['State'].map(lambda c: STATES.get(c, c))
-        report = bad[['Driver_Name', 'Trip_Date', 'Miles', 'Policy_Pay',
-                      'First_Paid_Fare', 'Difference']].copy()
-        st.dataframe(report.style.format({'Policy_Pay': '${:,.2f}',
-                     'First_Paid_Fare': '${:,.2f}', 'Difference': '${:,.2f}'}, na_rep='—'),
-                     use_container_width=True, hide_index=True)
+    if not total.get('policy_state'):
+        st.info('No pricing policy is supplied for this state yet, so runs are not checked '
+                'for compliance. Revenue and runs are still reported. Provide the rates to '
+                'enable profit and compliance.')
 
-    st.subheader('Price differences: First Net Pay vs State Revenue')
-    st.info(f"Amount Due = sum of positive per-trip shortages. This state has {int(total.get('below_contract_runs', 0)):,} shortage trip(s) among {int(total.get('claim_matched_runs', 0)):,} matched trip(s), totaling {_money(total.get('amount_due'))}.")
-    diff = price_difference_report(d)
-    if not diff.empty:
-        st.dataframe(diff.style.format({'First Net Pay': '${:,.2f}',
-                     'State Revenue': '${:,.2f}', 'Amount Due': '${:,.2f}',
-                     'Difference per trip': '${:,.2f}'}, na_rep='—'),
-                     use_container_width=True, hide_index=True)
+    st.subheader('Pricing policy')
+    pol = POLICY_DF[POLICY_DF.State == code][
+        ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']]
+    if code == 'SAC':
+        pol = pd.DataFrame([{'Vehicle_Type': v, 'Min_Miles': r['min'], 'Max_Miles': r['max'],
+                             'Policy_Pay': r['base'], 'Per_Mile_Rate': r['per_mile'],
+                             'Note': r['note']}
+                            for v, rs in SACRAMENTO_POLICIES.items() for r in rs])
+    st.table(pol)
 
+    st.subheader('Weekly report')
+    st.dataframe(rep, use_container_width=True)
 
-def merge_origins(*origin_sets):
-    """Merge independently uploaded state-report results without changing calculations."""
-    merged = {}
-    for origin in origin_sets:
-        for code, info in (origin or {}).items():
-            current = merged.setdefault(code, {
-                'rows': [], 'origin': 0.0, 'runs': 0,
-                'summary_runs': 0, 'summary_revenue': 0.0, 'summary_pay': 0.0,
-            })
-            rows = info.get('rows', pd.DataFrame())
-            if not rows.empty:
-                current['rows'].append(rows)
-            for key in ('origin', 'runs', 'summary_runs', 'summary_revenue', 'summary_pay'):
-                current[key] += float(info.get(key, 0) or 0)
-    return {
-        code: {
-            **{k: v for k, v in info.items() if k != 'rows'},
-            'rows': pd.concat(info['rows'], ignore_index=True) if info['rows'] else pd.DataFrame(),
-        }
-        for code, info in merged.items()
-    }
+    # Legacy feature retained: save this state's weekly analysis and review history.
+    if st.button('💾 Save this Weekly Analysis to History', key=f'save_{code}'):
+        save_weekly_summary(code, d, total)
+        st.success(f'Analysis for {name} has been saved.')
+    with st.expander('Historical Performance'):
+        history = historical_summary(code)
+        if history.empty:
+            st.info('No historical data found for this state. Save a weekly analysis first.')
+        else:
+            st.dataframe(history, use_container_width=True, hide_index=True)
+            history['week_start_date'] = pd.to_datetime(history['week_start_date'], errors='coerce')
+            if history['week_start_date'].notna().any():
+                st.line_chart(history.set_index('week_start_date')[['total_revenue', 'total_margin']])
+                st.bar_chart(history.set_index('week_start_date')[['total_loss']])
+
+    price_cols = ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name', 'Miles',
+                  'First_Reported_Revenue', 'Net_Pay', 'Revenue', 'Paid_Fare_Source',
+                  'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
+    with st.expander('Matched contract prices from state report'):
+        st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
+    st.caption('First Paid Fare is Net Pay from First Alt (Revenue is the fallback when Net Pay is absent). State Revenue is the contracted trip price from the state report. Driver Payment comes from Pricing Policy. Amount Due = State Revenue − First Paid Fare.')
+    state_diff = price_difference_report(d)
+    if not state_diff.empty:
+        st.dataframe(state_diff.style.format({
+            'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
+            'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
+            'Amount_Due_From_First': '${:,.2f}'}),
+            use_container_width=True, hide_index=True)
+
+    if total['policy_state'] and total['non_compliant']:
+        st.warning(f"{total['non_compliant']} loss-making run(s): First paid less than the "
+                   f"policy driver pay. Total loss ${total['loss']:,.2f}. If every run were "
+                   f"priced per policy, profit would be ${total['profit_if']:,.2f} "
+                   f"({_pct(total['margin_if'])}) instead of ${total['profit']:,.2f} "
+                   f"({_pct(total['margin'])}).")
+        bad = d[d['Non_Compliant']][['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles',
+                                     'Revenue', 'Policy_Pay', 'State_Price', 'Price_Difference', 'Price_Source', 'Loss']].sort_values('Loss', ascending=False)
+        with st.expander(f'Show {len(bad)} loss-making runs'):
+            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}', 'State_Pay': '${:,.2f}',
+                                           'Price_Difference': '${:,.2f}', 'Loss': '${:,.2f}'}),
+                         use_container_width=True, hide_index=True)
+
+    ov = origin_vs_first(d, code, origin)
+    if ov and ov['Matched_Runs']:
+        st.subheader('State Revenue vs First Revenue reconciliation')
+        st.dataframe(pd.DataFrame([{
+            'State': name, 'Matched Runs': ov['Matched_Runs'],
+            'First Revenue': ov['First_Paid'], 'State Revenue': ov['Origin_Price'],
+            'Total Price Difference': ov['Difference'],
+            'Unmatched First Runs': ov['Unmatched_First_Runs']
+        }]).style.format({
+            'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
+            'Total Price Difference': '${:,.2f}'}), use_container_width=True, hide_index=True)
+        if abs(ov['Difference']) > 0.05:
+            direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
+            st.warning(f"The state contract revenue is ${abs(ov['Difference']):,.2f} total {direction} First Revenue for {name}. This does not change Driver Payment or Profit.")
+    df_download(rep, f'{code}_weekly_report.xlsx', f'dl_{code}')
 
 # ---------------------------------------------------------------------------
 # APP ENTRY
@@ -1466,85 +1071,35 @@ st.sidebar.title("Hatem's B.T. Analyzer")
 st.sidebar.caption('Beyond Transportation — financial & pricing control')
 
 with st.sidebar:
-    st.markdown('''<div class="brand-card">
-      <div class="brand-mark">▰</div>
-      <div class="brand-title">Hatem's B.T. Analyzer</div>
-      <div class="brand-subtitle">Financial control &amp; pricing intelligence</div>
-    </div>''', unsafe_allow_html=True)
-    st.markdown('<div class="side-section">01 &nbsp; First detailed report</div>', unsafe_allow_html=True)
-    st.markdown('<div class="side-note">Start here with the detailed trip report. You can upload multiple files.</div>', unsafe_allow_html=True)
-    first_files = st.file_uploader('Choose First report(s)', type=['xlsx', 'xls', 'csv'],
-                                   accept_multiple_files=True, key='first_up',
-                                   help='Upload one or more detailed First reports.')
+    first_files = st.file_uploader('First report(s) — Excel / CSV', type=['xlsx', 'xls', 'csv'],
+                                   accept_multiple_files=True, key='first_up')
     if first_files:
         try:
             st.session_state['first_df'] = read_first(first_files)
-            loaded = st.session_state['first_df']
-            st.success(f'Loaded {len(loaded):,} runs.')
-            diagnostics = loaded.attrs.get('read_diagnostics', [])
-            with st.expander('First report read-check (what the app actually read)', expanded=True):
-                if diagnostics:
-                    st.dataframe(pd.DataFrame(diagnostics), use_container_width=True, hide_index=True)
-                st.write({
-                    'First Paid Fare total': _money(float(loaded['Revenue'].sum())) if not loaded.empty else '$0.00',
-                    'Net Pay rows used': int((loaded.get('Paid_Fare_Source', pd.Series(dtype=str)) == 'First Alt Net Pay').sum()),
-                    'Revenue fallback rows': int((loaded.get('Paid_Fare_Source', pd.Series(dtype=str)) == 'First Alt Revenue').sum()),
-                    'Rows with zero paid fare': int((pd.to_numeric(loaded.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0) == 0).sum()),
-                })
-                if loaded.empty or float(pd.to_numeric(loaded.get('Revenue', pd.Series(dtype=float)), errors='coerce').fillna(0).sum()) == 0:
-                    st.error('The First report was loaded but no Net Pay/paid-fare values were found. Check the read-check table above; calculations are not reliable until a paid-fare column is detected.')
+            st.success(f'Loaded {len(st.session_state["first_df"]):,} runs.')
         except Exception as e:
             st.error(f'Could not read the First report(s): {e}')
-    st.markdown('<div class="side-section">02 &nbsp; State reports</div>', unsafe_allow_html=True)
-    st.markdown('<div class="side-note">Use the bulk upload for the fastest workflow. Individual state upload is available under Advanced.</div>', unsafe_allow_html=True)
-    st.markdown('<span class="upload-badge">RECOMMENDED</span>', unsafe_allow_html=True)
-    bulk_files = st.file_uploader('Choose all state reports', type=['xlsx', 'xls', 'csv'],
-                                  accept_multiple_files=True, key='state_bulk_up',
-                                  help='The app reads each uploaded report directly and detects its state from the filename/content.')
-
-    state_uploads = []
-    state_order = ['OR', 'N.CA', 'S.CA', 'AK', 'IL', 'NM', 'NE', 'SAC', 'MON', 'RS&AZ', 'AZ']
-    state_colors = {
-        'OR': '#2563eb', 'N.CA': '#7c3aed', 'S.CA': '#db2777', 'AK': '#0891b2',
-        'IL': '#059669', 'NM': '#16a34a', 'NE': '#65a30d', 'SAC': '#ca8a04',
-        'MON': '#ea580c', 'RS&AZ': '#dc2626', 'AZ': '#b91c1c',
-    }
-    with st.expander('Advanced · upload by state', expanded=False):
-        st.caption('Choose this option only when reports need to be assigned manually.')
-        for code in state_order:
-            color = state_colors.get(code, '#475569')
-            st.markdown(
-                f'<div style="border-left:3px solid {color};padding:3px 8px;margin:9px 0 2px;'
-                f'font-size:.76rem;font-weight:700;color:{color};">{code} · {STATES.get(code, code)}</div>',
-                unsafe_allow_html=True,
-            )
-            files = st.file_uploader(
-                f'{STATES.get(code, code)} report(s)', type=['xlsx', 'xls', 'csv'],
-                accept_multiple_files=True, key=f'state_upload_{code.replace("&", "and").replace(".", "").lower()}',
-            )
-            if files:
-                state_uploads.append((code, files))
-
-    origins = []
-    if bulk_files:
-        origins.append(read_state_origin(bulk_files))
-    for code, files in state_uploads:
-        origins.append(read_state_origin(files, state_hint=code))
-    st.session_state['origin'] = merge_origins(*origins)
-    if st.session_state['origin']:
-        loaded_names = ', '.join(STATES.get(k, k) for k in sorted(st.session_state['origin']))
-        st.success(f'State contract prices loaded for: {loaded_names}')
+    with st.expander('Optional: state reports (origin price)'):
+        state_files = st.file_uploader('Weekly state reports', type=['xlsx', 'xls', 'csv'],
+                                       accept_multiple_files=True, key='state_up')
+        if state_files:
+            st.session_state['origin'] = read_state_origin(state_files)
+            st.success('State contract prices loaded for: ' +
+                       ', '.join(STATES.get(k, k) for k in st.session_state['origin']))
+        else:
+            # Do not reuse a state report from an earlier upload/session.
+            st.session_state['origin'] = {}
 
 df = st.session_state.get('first_df', pd.DataFrame())
 origin = st.session_state.get('origin', {})
 if not df.empty and origin:
     df = apply_state_prices(df, origin)
 
-if df.empty and origin:
-    state_only_page(origin)
-elif df.empty:
+if df.empty:
     st.title("Hatem's B.T. Analyzer")
-    st.info('Upload either a First detailed report or a state report. Upload both to calculate the financial claim and policy compliance.')
+    st.info('Upload a First report in the left sidebar to begin. The app assigns every run '
+            'to its state automatically and builds a financial report for each state plus a '
+            'consolidated view — no need to upload the state reports.')
 else:
     present = sorted(df['State'].unique(), key=lambda c: (c == 'Unassigned', STATES.get(c, c)))
     labels = ['📊 Consolidated Report'] + [
@@ -1561,6 +1116,7 @@ else:
                        'to a state report once and they will be recognised automatically.')
             u = df[df['State'] == 'Unassigned']
             st.metric('Runs', f'{len(u):,}')
-            st.info('Detailed rows are hidden. These runs are excluded from the state-level financial claim until assigned to a state.')
+            st.dataframe(u[['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
+                            'Source_File']], use_container_width=True, hide_index=True)
         else:
             state_page(df, code, origin)
