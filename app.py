@@ -998,6 +998,37 @@ def _state_analysis_page(df, code, origin):
     name = STATES.get(code, code)
     st.title(f'📍 {name} — Weekly Financial Report')
     d = df[df['State'] == code].copy()
+    # Keep the original state-report financial summary separate from First Alt.
+    # The state file may contain more runs than First; never replace its totals
+    # with the matched subset.
+    state_info = origin.get(code)
+    if state_info:
+        sr = state_info['rows'].copy()
+        state_rev = float(pd.to_numeric(sr['State_Price'], errors='coerce').sum())
+        state_pay_series = pd.to_numeric(sr.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
+        state_pay = float(state_pay_series.sum()) if state_pay_series.notna().any() else float('nan')
+        state_profit = state_rev - state_pay if not pd.isna(state_pay) else float('nan')
+        state_margin = state_profit / state_rev * 100 if state_rev and not pd.isna(state_profit) else float('nan')
+        st.subheader(f'{name} State Report — Original Totals')
+        st.caption('These values come directly from the uploaded state report and include all state-report runs.')
+        sa, sb, sc, sd, se = st.columns(5)
+        sa.metric('RUNS', f'{len(sr):,}')
+        sb.metric('REV', _money(state_rev))
+        sc.metric('PAY', _money(state_pay))
+        sd.metric('PROFIT', _money(state_profit))
+        se.metric('MARGIN', _pct(state_margin))
+        state_summary = pd.DataFrame({
+            'Metric': ['Total Trips', f'{name} Revenue (REV)', 'Total Driver Cost (PAY)',
+                       'Total Margin (Profit)', 'Current Margin %'],
+            'Value': [f'{len(sr):,}', _money(state_rev), _money(state_pay),
+                      _money(state_profit), _pct(state_margin)]
+        }).set_index('Metric')
+        st.table(state_summary)
+        st.markdown('---')
+        st.subheader(f'{name} First Alt — Paid Fare Matching')
+        st.caption('The following section uses First Alt runs only. Net Pay is the paid fare from First Alt; state revenue is shown only for matched runs.')
+    else:
+        st.subheader(f'{name} First Alt — Paid Fare Matching')
     rep, total, weeks = weekly_report(d)
     kpi_row(total, name)
     if not total.get('policy_state'):
@@ -1054,11 +1085,13 @@ def _state_analysis_page(df, code, origin):
         st.subheader('State Revenue vs First Revenue reconciliation')
         st.dataframe(pd.DataFrame([{
             'State': name, 'Matched Runs': ov['Matched_Runs'],
-            'First Revenue': ov['First_Paid'], 'State Revenue': ov['Origin_Price'],
+            'First Net Pay (F)': ov['First_Paid'], 'Matched State Revenue': ov['Origin_Price'],
             'Total Price Difference': ov['Difference'],
-            'Unmatched First Runs': ov['Unmatched_First_Runs']
+            'First Runs': ov['First_Runs'], 'State Report Runs': ov['Origin_Runs'],
+            'Unmatched First Runs': ov['Unmatched_First_Runs'],
+            'Unmatched State Runs': ov['Origin_Runs'] - ov['Matched_Runs']
         }]).style.format({
-            'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
+            'First Net Pay (F)': '${:,.2f}', 'Matched State Revenue': '${:,.2f}',
             'Total Price Difference': '${:,.2f}'}), use_container_width=True, hide_index=True)
         if abs(ov['Difference']) > 0.05:
             direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
@@ -1083,17 +1116,43 @@ def state_history_page(code, name):
 
 
 def state_page(df, code, origin):
-    """Legacy-looking state page with the new First/state matching inside it."""
+    """Keep the original state page; append First Alt price differences only."""
     name = STATES.get(code, code)
-    tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
-    with tab1:
-        _state_analysis_page(df, code, origin)
-    with tab2:
-        state_history_page(code, name)
+    state_only_page(origin, code)
+    d = df[df['State'] == code].copy()
+    matched = d[d['State_Price'].notna()].copy() if 'State_Price' in d else d.iloc[0:0]
+    if matched.empty:
+        return
+    st.markdown('---')
+    st.header(f'{name} — First Alt Price Difference')
+    st.caption('This is an add-on only. The state report above remains unchanged. First Net Pay and Miles come from First Alt; State Revenue comes from matched state rows.')
+    first_total = float(pd.to_numeric(matched['Revenue'], errors='coerce').sum())
+    state_total = float(pd.to_numeric(matched['State_Price'], errors='coerce').sum())
+    difference = state_total - first_total
+    x1, x2, x3, x4 = st.columns(4)
+    x1.metric('Matched First Runs', f'{len(matched):,}')
+    x2.metric('First Net Pay (F)', _money(first_total))
+    x3.metric('Matched State Revenue', _money(state_total))
+    x4.metric('Amount Due From First', _money(max(difference, 0)))
+    diff_report = price_difference_report(matched)
+    if not diff_report.empty:
+        st.subheader('Price Difference by Trip Price')
+        st.dataframe(diff_report.style.format({
+            'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
+            'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
+            'Amount_Due_From_First': '${:,.2f}'}),
+            use_container_width=True, hide_index=True)
+    st.subheader('First Alt Trips Used in Matching')
+    st.dataframe(matched[[c for c in ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name',
+                                      'Miles', 'Net_Pay', 'State_Price', 'Price_Difference']
+                                     if c in matched.columns]].style.format({
+                                         'Net_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
+                                         'Price_Difference': '${:,.2f}'}),
+                 use_container_width=True, hide_index=True)
 
 
 def state_only_page(origin, code):
-    """Legacy state-report view: REV and PAY come only from the uploaded state file."""
+    """The original state-report page; First matching is intentionally not mixed into it."""
     name = STATES.get(code, code)
     info = origin.get(code)
     if not info:
@@ -1101,42 +1160,65 @@ def state_only_page(origin, code):
         st.warning('No uploaded state report was detected for this state.')
         return
     rows = info['rows'].copy()
-    rev = float(pd.to_numeric(rows['State_Price'], errors='coerce').sum())
-    pay_values = pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
-    pay = float(pay_values.sum()) if pay_values.notna().any() else float('nan')
+    miles = pd.to_numeric(rows.get('Miles_Key', 0), errors='coerce').fillna(0)
+    actual_pay = pd.to_numeric(rows.get('State_Pay', pd.Series(pd.NA, index=rows.index)), errors='coerce')
+    rows['Driver_Name'] = rows.get('Driver_Key', '')
+    rows['Trip_Name'] = rows.get('Trip_Key', '')
+    rows['Miles'] = miles
+    rows['Gross_Pay'] = pd.to_numeric(rows['State_Price'], errors='coerce')
+    rows['Net_Pay'] = actual_pay
+    rows['Policy_Driver_Pay'] = [policy_pay(code, m, 'Unknown', 'Unknown')[0] for m in miles]
+    rows['Loss_Amount'] = (actual_pay - rows['Policy_Driver_Pay']).clip(lower=0).fillna(0)
+    rows['Is_Non_Compliant'] = rows['Loss_Amount'] > 0.05
+    rev = float(rows['Gross_Pay'].sum())
+    pay = float(actual_pay.sum()) if actual_pay.notna().any() else float('nan')
     runs = int(len(rows))
     profit = rev - pay if not pd.isna(pay) else float('nan')
-    margin = profit / rev * 100 if rev and not pd.isna(profit) else float('nan')
+    margin = profit / rev if rev and not pd.isna(profit) else 0.0
+    loss = float(rows['Loss_Amount'].sum())
     st.title(f'📊 {name} - Analysis Dashboard')
     tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
     with tab1:
         st.header('Weekly Analysis')
-        a, b, c, d, e = st.columns(5)
-        a.metric('RUNS', f'{runs:,}')
-        b.metric('REV', _money(rev))
-        c.metric('PAY', _money(pay))
-        d.metric('PROFIT', _money(profit))
-        e.metric('MARGIN', _pct(margin))
+        st.subheader('Official Pricing Policy')
+        pol = POLICY_DF[POLICY_DF.State == code][
+            ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']]
+        st.table(pol)
         st.subheader('Financial Summary')
         summary = pd.DataFrame({
-            'Metric': ['Runs', f'{name} Revenue (REV)', 'Driver Payment (PAY)', 'Profit', 'Margin'],
-            'Value': [f'{runs:,}', _money(rev), _money(pay), _money(profit), _pct(margin)]
+            'Metric': ['Total Trips', 'Total Revenue (Gross Pay)',
+                       'Total Driver Cost (Net Pay)', 'Total Margin (Profit)', 'Current Margin %'],
+            'Value': [f'{runs:,}', _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
         }).set_index('Metric')
         st.table(summary)
-        st.subheader('State Report Trips')
-        display = rows.rename(columns={'State_Price': f'{name} Revenue (REV)',
-                                       'State_Pay': 'Driver Payment (PAY)',
-                                       'Driver_Key': 'Driver', 'Trip_Key': 'Trip',
-                                       'Miles_Key': 'Miles'})
-        st.dataframe(display[[c for c in ['Driver', 'Trip', 'Date_Key', 'Miles',
-                                          f'{name} Revenue (REV)', 'Driver Payment (PAY)']
-                                         if c in display.columns]],
+        st.subheader('Compliance Impact Summary')
+        non_compliant = rows[rows['Is_Non_Compliant']]
+        ratio = len(non_compliant) / runs if runs else 0
+        c1, c2 = st.columns(2)
+        c1.metric('Total Loss from Non-Compliance', _money(loss))
+        c2.metric('Non-Compliant Trips %', f'{ratio:.2%}')
+        potential = profit + loss if not pd.isna(profit) else float('nan')
+        st.subheader('Potential Profit Analysis')
+        st.table(pd.DataFrame({
+            'Amount': [_money(profit), _money(potential), _money(loss)],
+            'Margin %': [f'{margin:.2%}', f'{(potential / rev if rev else 0):.2%}',
+                         f'+{((potential - profit) / rev if rev and not pd.isna(profit) else 0):.2%}']
+        }, index=['Current Margin (Actual)', 'Potential Margin (If Compliant)', 'Profit Increase']))
+        st.subheader('Detailed Trip Analysis')
+        detail = rows[['Driver_Name', 'Miles', 'Gross_Pay', 'Net_Pay',
+                       'Policy_Driver_Pay', 'Loss_Amount']].rename(columns={
+                           'Driver_Name': 'Driver', 'Gross_Pay': 'Gross Pay',
+                           'Net_Pay': 'Current Driver Pay',
+                           'Policy_Driver_Pay': 'POLICY DRIVER PAY',
+                           'Loss_Amount': 'Loss'})
+        st.dataframe(detail.style.format({c: '${:,.2f}' for c in
+                                          ['Gross Pay', 'Current Driver Pay',
+                                           'POLICY DRIVER PAY', 'Loss']}),
                      use_container_width=True, hide_index=True)
         if st.button('💾 Save this Weekly Analysis to History', key=f'save_state_{code}'):
-            save_weekly_summary(code, rows.rename(columns={'State_Price': 'Revenue',
-                                                            'State_Pay': 'Policy_Pay'}),
+            save_weekly_summary(code, rows,
                                 {'runs': runs, 'revenue': rev, 'payment': pay,
-                                 'profit': profit, 'loss': 0.0})
+                                 'profit': profit, 'loss': loss})
             st.success(f'Analysis for {name} has been saved.')
     with tab2:
         state_history_page(code, name)
