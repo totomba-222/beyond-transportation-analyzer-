@@ -182,7 +182,8 @@ init_db()
 
 def save_weekly_summary(state_code, d, total):
     """Persist the legacy weekly summary without changing the new matching data."""
-    dates = pd.to_datetime(d.get('Trip_Date'), errors='coerce').dropna()
+    raw_dates = d.get('Trip_Date', pd.Series(dtype='datetime64[ns]'))
+    dates = pd.to_datetime(raw_dates, errors='coerce').dropna()
     week_start = dates.min().strftime('%Y-%m-%d') if not dates.empty else ''
     week_end = dates.max().strftime('%Y-%m-%d') if not dates.empty else ''
     with sqlite3.connect(DB_FILE) as c:
@@ -379,13 +380,27 @@ def _normal_key(v):
     return re.sub(r'[^a-z0-9]+', ' ', str(v).lower()).strip()
 
 
+def _column_map(columns):
+    """Map report columns by normalized names, tolerating spaces, underscores and punctuation."""
+    return {re.sub(r'[^A-Z0-9]+', '', str(c).upper()): c for c in columns}
+
+
+def _pick_norm(frame, names, default=''):
+    cmap = _column_map(frame.columns)
+    for name in names:
+        key = re.sub(r'[^A-Z0-9]+', '', str(name).upper())
+        if key in cmap:
+            return frame[cmap[key]]
+    return pd.Series(default, index=frame.index)
+
+
 def _date_key(v):
     dt = pd.to_datetime(v, errors='coerce')
     return '' if pd.isna(dt) else dt.strftime('%Y-%m-%d')
 
 
 def _price_column(up):
-    for n in ['REVENUE', 'NET PAY', 'DRIVER PAY', 'DRIVER RATE', 'CONTRACT PRICE',
+    for n in ['REVENUE', 'REV', 'NET PAY', 'DRIVER PAY', 'DRIVER RATE', 'CONTRACT PRICE',
               'PRICE', 'RATE', 'PAYMENT', 'AMOUNT', 'TOTAL PAY', 'TOTAL', 'GROSS PAY']:
         if n in up:
             return up[n]
@@ -463,11 +478,11 @@ def _read_combined_states_workbook(file_obj):
             if clean(value).upper() != 'DRIVER NAME':
                 continue
             ahead = [clean(v).upper() for v in row.iloc[col_no:col_no + 12].tolist()]
-            if 'REVENUE' not in ahead and 'REVENUE ' not in ahead:
+            if not ({'REVENUE', 'REVENUE ', 'REV'} & set(ahead)):
                 continue
             # Find the revenue/payment columns belonging to this block.
             revenue_col = next((col_no + j for j, v in enumerate(ahead)
-                                if v in ('REVENUE', 'REVENUE ')), None)
+                                if v in ('REVENUE', 'REVENUE ', 'REV')), None)
             payment_col = next((col_no + j for j, v in enumerate(ahead)
                                 if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
             if revenue_col is None:
@@ -547,23 +562,23 @@ def read_first(files):
         x.columns = [str(c).strip() for c in x.columns]
         up = {c.upper(): c for c in x.columns}
         d = pd.DataFrame(index=x.index)
-        d['Driver_Name'] = _pick(x, up, ['DRIVER NAME', 'DRIVER'], 'Unknown')
-        d['District'] = _pick(x, up, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '')
-        d['Trip_Name'] = _pick(x, up, ['TRIP NAME', 'NAME'], '')
-        d['Trip_Date'] = pd.to_datetime(_pick(x, up, ['DATE', 'TRIP DATE'], None), errors='coerce')
-        d['Miles'] = _number_series(_pick(x, up, ['TOTAL MILES', 'MILES'], pd.Series(0, index=x.index))).fillna(0.0)
+        d['Driver_Name'] = _pick_norm(x, ['DRIVER NAME', 'DRIVER', 'DRIVER_NAME'], 'Unknown')
+        d['District'] = _pick_norm(x, ['DISTRICT', 'STATE', 'REGION', 'AREA'], '')
+        d['Trip_Name'] = _pick_norm(x, ['TRIP NAME', 'TRIP', 'NAME', 'ROUTE'], '')
+        d['Trip_Date'] = pd.to_datetime(_pick_norm(x, ['DATE', 'TRIP DATE', 'TRIP_DATE'], None), errors='coerce')
+        d['Miles'] = _number_series(_pick_norm(x, ['TOTAL MILES', 'MILES', 'DISTANCE', 'TRIP MILES'], 0)).fillna(0.0)
         d['First_Reported_Revenue'] = _number_series(
-            _pick(x, up, ['REVENUE'], pd.Series(pd.NA, index=x.index)))
+            _pick_norm(x, ['REVENUE', 'REV', 'GROSS PAY', 'GROSS'], pd.Series(pd.NA, index=x.index)))
         d['Net_Pay'] = _number_series(
-            _pick(x, up, ['NET PAY', 'NET'], pd.Series(pd.NA, index=x.index)))
+            _pick_norm(x, ['NET PAY', 'NETPAY', 'NET', 'PAID FARE', 'PAID'], pd.Series(pd.NA, index=x.index)))
         # First Alt's Net Pay is the paid fare. If the file has no Net Pay
         # column, use Revenue as the paid-fare field.
         d['Revenue'] = d['Net_Pay'].where(d['Net_Pay'].notna(),
                                          d['First_Reported_Revenue']).fillna(0.0)
         d['Paid_Fare_Source'] = d['Net_Pay'].notna().map(
             {True: 'First Alt Net Pay', False: 'First Alt Revenue'})
-        d['First_Gross'] = _number_series(_pick(x, up, ['GROSS PAY', 'GROSS'], pd.Series(0, index=x.index))).fillna(0.0)
-        d['Company'] = _pick(x, up, ['SP COMPANY', 'COMPANY'], '')
+        d['First_Gross'] = _number_series(_pick_norm(x, ['GROSS PAY', 'GROSS', 'REV', 'REVENUE'], 0)).fillna(0.0)
+        d['Company'] = _pick_norm(x, ['SP COMPANY', 'COMPANY'], '')
         d['Source_File'] = getattr(f, 'name', '')
         frames.append(d)
     if not frames:
@@ -1076,6 +1091,56 @@ def state_page(df, code, origin):
     with tab2:
         state_history_page(code, name)
 
+
+def state_only_page(origin, code):
+    """Legacy state-report view: REV and PAY come only from the uploaded state file."""
+    name = STATES.get(code, code)
+    info = origin.get(code)
+    if not info:
+        st.title(f'📊 {name} - Analysis Dashboard')
+        st.warning('No uploaded state report was detected for this state.')
+        return
+    rows = info['rows'].copy()
+    rev = float(pd.to_numeric(rows['State_Price'], errors='coerce').sum())
+    pay_values = pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
+    pay = float(pay_values.sum()) if pay_values.notna().any() else float('nan')
+    runs = int(len(rows))
+    profit = rev - pay if not pd.isna(pay) else float('nan')
+    margin = profit / rev * 100 if rev and not pd.isna(profit) else float('nan')
+    st.title(f'📊 {name} - Analysis Dashboard')
+    tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
+    with tab1:
+        st.header('Weekly Analysis')
+        a, b, c, d, e = st.columns(5)
+        a.metric('RUNS', f'{runs:,}')
+        b.metric('REV', _money(rev))
+        c.metric('PAY', _money(pay))
+        d.metric('PROFIT', _money(profit))
+        e.metric('MARGIN', _pct(margin))
+        st.subheader('Financial Summary')
+        summary = pd.DataFrame({
+            'Metric': ['Runs', f'{name} Revenue (REV)', 'Driver Payment (PAY)', 'Profit', 'Margin'],
+            'Value': [f'{runs:,}', _money(rev), _money(pay), _money(profit), _pct(margin)]
+        }).set_index('Metric')
+        st.table(summary)
+        st.subheader('State Report Trips')
+        display = rows.rename(columns={'State_Price': f'{name} Revenue (REV)',
+                                       'State_Pay': 'Driver Payment (PAY)',
+                                       'Driver_Key': 'Driver', 'Trip_Key': 'Trip',
+                                       'Miles_Key': 'Miles'})
+        st.dataframe(display[[c for c in ['Driver', 'Trip', 'Date_Key', 'Miles',
+                                          f'{name} Revenue (REV)', 'Driver Payment (PAY)']
+                                         if c in display.columns]],
+                     use_container_width=True, hide_index=True)
+        if st.button('💾 Save this Weekly Analysis to History', key=f'save_state_{code}'):
+            save_weekly_summary(code, rows.rename(columns={'State_Price': 'Revenue',
+                                                            'State_Pay': 'Policy_Pay'}),
+                                {'runs': runs, 'revenue': rev, 'payment': pay,
+                                 'profit': profit, 'loss': 0.0})
+            st.success(f'Analysis for {name} has been saved.')
+    with tab2:
+        state_history_page(code, name)
+
 # ---------------------------------------------------------------------------
 # APP ENTRY
 # ---------------------------------------------------------------------------
@@ -1116,20 +1181,37 @@ choice = st.sidebar.radio('Navigation', legacy_labels, key='nav')
 if df.empty:
     if choice == '📊 Consolidated Report':
         st.title("Hatem's B.T. Analyzer")
-        st.info('Upload a First Alt report in the left sidebar to begin.')
+        if origin:
+            st.info('State reports loaded. Select a state from Navigation to view its REV / PAY / RUNS report.')
+            state_rows = []
+            for state_code, info in origin.items():
+                r = info['rows']
+                rev = pd.to_numeric(r['State_Price'], errors='coerce').sum()
+                pay = pd.to_numeric(r.get('State_Pay', pd.Series(dtype=float)), errors='coerce').sum()
+                state_rows.append({'State': STATES.get(state_code, state_code), 'RUNS': len(r),
+                                   'REV': rev, 'PAY': pay, 'PROFIT': rev - pay})
+            if state_rows:
+                st.dataframe(pd.DataFrame(state_rows).style.format(
+                    {'REV': '${:,.2f}', 'PAY': '${:,.2f}', 'PROFIT': '${:,.2f}'}),
+                    use_container_width=True, hide_index=True)
+        else:
+            st.info('Upload a First Alt report or a state report in the left sidebar to begin.')
     else:
         code = next(k for k, v in STATES.items() if v == choice)
-        st.title(f'📊 {choice} - Analysis Dashboard')
-        tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
-        with tab1:
-            st.header('Weekly Analysis')
-            st.subheader('Official Pricing Policy')
-            pol = POLICY_DF[POLICY_DF.State == code]
-            st.table(pol[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay',
-                          'Per_Mile_Rate', 'Note']])
-            st.info('Upload a First Alt report in the left sidebar to calculate the weekly report.')
-        with tab2:
-            state_history_page(code, choice)
+        if origin:
+            state_only_page(origin, code)
+        else:
+            st.title(f'📊 {choice} - Analysis Dashboard')
+            tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
+            with tab1:
+                st.header('Weekly Analysis')
+                st.subheader('Official Pricing Policy')
+                pol = POLICY_DF[POLICY_DF.State == code]
+                st.table(pol[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay',
+                              'Per_Mile_Rate', 'Note']])
+                st.info('Upload a First Alt report in the left sidebar to calculate the weekly report.')
+            with tab2:
+                state_history_page(code, choice)
 else:
     if choice == '📊 Consolidated Report':
         consolidated_page(df, origin)
