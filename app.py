@@ -1058,6 +1058,40 @@ def weekly_report(d):
 CARD_CSS = """
 <style>
 .block-container {padding-top: 2rem;}
+.stApp {background: #f6f8fb;}
+[data-testid="stSidebar"] {background: #111827; border-right: 1px solid #243047;}
+[data-testid="stSidebar"] > div:first-child {padding: 1.4rem 1rem 2rem;}
+[data-testid="stSidebar"] .stMarkdown, [data-testid="stSidebar"] label,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] {color: #d8e1ef;}
+[data-testid="stSidebar"] .stCaption {color: #91a0b8;}
+[data-testid="stSidebar"] hr {border-color: #2b3850; margin: 1rem 0;}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] {
+  background: #192337; border: 1px solid #33445f; border-radius: 12px;
+  padding: .55rem; transition: border-color .2s ease, background .2s ease;
+}
+[data-testid="stSidebar"] [data-testid="stFileUploader"]:hover {
+  background: #1d2b43; border-color: #4e78b8;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+  background: #172235; border: 1px solid #2e405d; border-radius: 12px;
+  margin: .55rem 0;
+}
+[data-testid="stSidebar"] [data-testid="stExpander"] details summary {
+  color: #e7eef9; font-weight: 650;
+}
+.brand-card {background: linear-gradient(145deg,#1e3a5f 0%,#17223a 100%);
+  border: 1px solid #35527a; border-radius: 16px; padding: 16px 15px;
+  margin: 0 0 20px; box-shadow: 0 10px 26px rgba(0,0,0,.18);}
+.brand-mark {display:inline-flex; align-items:center; justify-content:center;
+  width:34px; height:34px; border-radius:10px; background:#4f8cff;
+  color:white; font-size:18px; margin-bottom:10px;}
+.brand-title {color:#fff; font-size:1.08rem; font-weight:750; letter-spacing:-.02em;}
+.brand-subtitle {color:#aebed5; font-size:.73rem; margin-top:4px;}
+.side-section {color:#f2f6fc; font-size:.84rem; font-weight:750;
+  letter-spacing:.01em; margin:14px 0 7px;}
+.side-note {color:#91a0b8; font-size:.72rem; line-height:1.45; margin:0 0 8px;}
+.upload-badge {display:inline-block; color:#9fc4ff; background:#1d3c68;
+  border-radius:20px; padding:3px 9px; font-size:.66rem; font-weight:700; margin:3px 0 8px;}
 .kpi {background: linear-gradient(135deg,#1e3a8a 0%,#2563eb 100%); color:#fff;
   border-radius:14px; padding:16px 18px; margin:4px 0;
   box-shadow:0 4px 14px rgba(0,0,0,.12);}
@@ -1432,8 +1466,14 @@ st.sidebar.title("Hatem's B.T. Analyzer")
 st.sidebar.caption('Beyond Transportation — financial & pricing control')
 
 with st.sidebar:
-    st.markdown('### 1. First detailed report')
-    first_files = st.file_uploader('Upload First report(s) — Excel / CSV', type=['xlsx', 'xls', 'csv'],
+    st.markdown('''<div class="brand-card">
+      <div class="brand-mark">▰</div>
+      <div class="brand-title">Hatem's B.T. Analyzer</div>
+      <div class="brand-subtitle">Financial control &amp; pricing intelligence</div>
+    </div>''', unsafe_allow_html=True)
+    st.markdown('<div class="side-section">01 &nbsp; First detailed report</div>', unsafe_allow_html=True)
+    st.markdown('<div class="side-note">Start here with the detailed trip report. You can upload multiple files.</div>', unsafe_allow_html=True)
+    first_files = st.file_uploader('Choose First report(s)', type=['xlsx', 'xls', 'csv'],
                                    accept_multiple_files=True, key='first_up',
                                    help='Upload one or more detailed First reports.')
     if first_files:
@@ -1455,9 +1495,10 @@ with st.sidebar:
                     st.error('The First report was loaded but no Net Pay/paid-fare values were found. Check the read-check table above; calculations are not reliable until a paid-fare column is detected.')
         except Exception as e:
             st.error(f'Could not read the First report(s): {e}')
-    st.markdown('### 2. State reports')
-    st.caption('Upload all state reports together, or use the individual boxes below.')
-    bulk_files = st.file_uploader('Upload all state reports', type=['xlsx', 'xls', 'csv'],
+    st.markdown('<div class="side-section">02 &nbsp; State reports</div>', unsafe_allow_html=True)
+    st.markdown('<div class="side-note">Use the bulk upload for the fastest workflow. Individual state upload is available under Advanced.</div>', unsafe_allow_html=True)
+    st.markdown('<span class="upload-badge">RECOMMENDED</span>', unsafe_allow_html=True)
+    bulk_files = st.file_uploader('Choose all state reports', type=['xlsx', 'xls', 'csv'],
                                   accept_multiple_files=True, key='state_bulk_up',
                                   help='The app reads each uploaded report directly and detects its state from the filename/content.')
 
@@ -1468,19 +1509,21 @@ with st.sidebar:
         'IL': '#059669', 'NM': '#16a34a', 'NE': '#65a30d', 'SAC': '#ca8a04',
         'MON': '#ea580c', 'RS&AZ': '#dc2626', 'AZ': '#b91c1c',
     }
-    for code in state_order:
-        color = state_colors.get(code, '#475569')
-        st.markdown(
-            f'<div style="border-left:4px solid {color};padding:4px 8px;margin:8px 0 2px;'
-            f'font-weight:700;color:{color};">{code} — {STATES.get(code, code)}</div>',
-            unsafe_allow_html=True,
-        )
-        files = st.file_uploader(
-            f'{STATES.get(code, code)} report(s)', type=['xlsx', 'xls', 'csv'],
-            accept_multiple_files=True, key=f'state_upload_{code.replace("&", "and").replace(".", "").lower()}',
-        )
-        if files:
-            state_uploads.append((code, files))
+    with st.expander('Advanced · upload by state', expanded=False):
+        st.caption('Choose this option only when reports need to be assigned manually.')
+        for code in state_order:
+            color = state_colors.get(code, '#475569')
+            st.markdown(
+                f'<div style="border-left:3px solid {color};padding:3px 8px;margin:9px 0 2px;'
+                f'font-size:.76rem;font-weight:700;color:{color};">{code} · {STATES.get(code, code)}</div>',
+                unsafe_allow_html=True,
+            )
+            files = st.file_uploader(
+                f'{STATES.get(code, code)} report(s)', type=['xlsx', 'xls', 'csv'],
+                accept_multiple_files=True, key=f'state_upload_{code.replace("&", "and").replace(".", "").lower()}',
+            )
+            if files:
+                state_uploads.append((code, files))
 
     origins = []
     if bulk_files:
