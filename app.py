@@ -986,7 +986,7 @@ def origin_vs_first(d_state, code, origin):
 
 
 def price_difference_report(df):
-    """Group matched trips by state and per-trip price difference."""
+    """Group matched trips: State contract revenue minus First paid Net Pay."""
     if df.empty or 'State_Price' not in df:
         return pd.DataFrame()
     x = df[df['State_Price'].notna()].copy()
@@ -1001,6 +1001,9 @@ def price_difference_report(df):
              .reset_index())
     out['Total_Difference'] = (out['State_Revenue'] - out['First_Revenue']).round(2)
     out['Amount_Due_From_First'] = out['Total_Difference'].clip(lower=0).round(2)
+    out['Difference_Direction'] = out['Total_Difference'].map(
+        lambda v: 'Beyond due from First' if v > 0.005
+        else ('First paid above contract' if v < -0.005 else 'No price difference'))
     out['State'] = out['State'].map(lambda c: STATES.get(c, c))
     return out.sort_values(['State', 'Difference_Per_Run'])
 
@@ -1210,7 +1213,7 @@ def state_page(df, code, origin):
         return
     st.markdown('---')
     st.header(f'{name} — First Alt Price Difference')
-    st.caption('This is an add-on only. The state report above remains unchanged. First Net Pay and Miles come from First Alt; State Revenue comes from matched state rows.')
+    st.caption('This is an add-on only. The state report above remains unchanged. Difference = State Revenue (contract) − First Net Pay (paid). A positive result is money due to Beyond from First.')
     first_total = float(pd.to_numeric(matched['Revenue'], errors='coerce').sum())
     state_total = float(pd.to_numeric(matched['State_Price'], errors='coerce').sum())
     difference = state_total - first_total
@@ -1266,7 +1269,7 @@ def state_page(df, code, origin):
     )
     diff_report = price_difference_report(matched)
     if not diff_report.empty:
-        st.subheader('Price Difference by Trip Price')
+        st.subheader('Price Difference by Trip Price — State Revenue − First Net Pay')
         st.dataframe(diff_report.style.format({
             'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
             'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
