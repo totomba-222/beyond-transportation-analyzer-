@@ -1110,21 +1110,32 @@ origin = st.session_state.get('origin', {})
 if not df.empty and origin:
     df = apply_state_prices(df, origin)
 
+legacy_labels = ['📊 Consolidated Report'] + list(STATES.values()) + ['⚠ Unassigned']
+choice = st.sidebar.radio('Navigation', legacy_labels, key='nav')
+
 if df.empty:
-    st.title("Hatem's B.T. Analyzer")
-    st.info('Upload a First report in the left sidebar to begin. The app assigns every run '
-            'to its state automatically and builds a financial report for each state plus a '
-            'consolidated view — no need to upload the state reports.')
+    if choice == '📊 Consolidated Report':
+        st.title("Hatem's B.T. Analyzer")
+        st.info('Upload a First Alt report in the left sidebar to begin.')
+    else:
+        code = next(k for k, v in STATES.items() if v == choice)
+        st.title(f'📊 {choice} - Analysis Dashboard')
+        tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
+        with tab1:
+            st.header('Weekly Analysis')
+            st.subheader('Official Pricing Policy')
+            pol = POLICY_DF[POLICY_DF.State == code]
+            st.table(pol[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay',
+                          'Per_Mile_Rate', 'Note']])
+            st.info('Upload a First Alt report in the left sidebar to calculate the weekly report.')
+        with tab2:
+            state_history_page(code, choice)
 else:
-    present = sorted(df['State'].unique(), key=lambda c: (c == 'Unassigned', STATES.get(c, c)))
-    labels = ['📊 Consolidated Report'] + [
-        ('⚠ Unassigned' if c == 'Unassigned' else STATES.get(c, c)) for c in present]
-    choice = st.sidebar.radio('Navigation', labels, key='nav')
     if choice == '📊 Consolidated Report':
         consolidated_page(df, origin)
     else:
-        idx = labels.index(choice) - 1
-        code = present[idx]
+        code = 'Unassigned' if choice == '⚠ Unassigned' else next(
+            (k for k, v in STATES.items() if v == choice), choice)
         if code == 'Unassigned':
             st.title('⚠ Unassigned runs')
             st.caption('These runs come from drivers not in the built-in state list. Add them '
