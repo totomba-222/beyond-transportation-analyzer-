@@ -1131,12 +1131,14 @@ def price_difference_report(df):
                   First_Net_Pay=('First Net Pay', 'sum'),
                   State_Revenue_Total=('State Revenue', 'sum'))
              .reset_index())
-    out['Total Difference'] = (out['State_Revenue_Total'] - out['First_Net_Pay']).round(2)
+    out['Amount Due'] = ((out['State_Revenue_Total'] - out['First_Net_Pay']).clip(lower=0)).round(2)
     out['State'] = out['State'].map(lambda c: STATES.get(c, c))
     out = out.rename(columns={'First_Net_Pay': 'First Net Pay',
                               'State_Revenue_Total': 'State Revenue'})
+    # Keep Difference per trip as the final explanatory column. Amount Due
+    # is shown before it so the table directly explains the claim.
     return out[['State', 'Runs', 'First Net Pay', 'State Revenue',
-                'Difference per trip', 'Total Difference']].sort_values(['State', 'Difference per trip'])
+                'Amount Due', 'Difference per trip']].sort_values(['State', 'Difference per trip'])
 
 
 def df_download(df, fname, key, sheets=None):
@@ -1315,13 +1317,14 @@ def consolidated_page(df, origin):
         'Margin %': '{:,.1f}%'}, na_rep='—'), use_container_width=True, hide_index=True)
 
     st.subheader('Price differences: First Net Pay vs State Revenue')
+    st.info(f"Amount Due from First is calculated per trip: only positive shortages are included. Current calculation: {int(total.get('below_contract_runs', 0)):,} shortage trip(s) within {int(total.get('claim_matched_runs', 0)):,} matched trip(s), for a total claim of {_money(total.get('amount_due'))}.")
     diff = price_difference_report(df)
     if diff.empty:
         st.info('No matched First/State rows with numeric prices were found.')
     else:
         st.dataframe(diff.style.format({
             'First Net Pay': '${:,.2f}', 'State Revenue': '${:,.2f}',
-            'Difference per trip': '${:,.2f}', 'Total Difference': '${:,.2f}'}, na_rep='—'),
+            'Amount Due': '${:,.2f}', 'Difference per trip': '${:,.2f}'}, na_rep='—'),
             use_container_width=True, hide_index=True)
 
     st.subheader('Non-compliant trips')
@@ -1388,11 +1391,12 @@ def state_page(df, code, origin):
                      use_container_width=True, hide_index=True)
 
     st.subheader('Price differences: First Net Pay vs State Revenue')
+    st.info(f"Amount Due = sum of positive per-trip shortages. This state has {int(total.get('below_contract_runs', 0)):,} shortage trip(s) among {int(total.get('claim_matched_runs', 0)):,} matched trip(s), totaling {_money(total.get('amount_due'))}.")
     diff = price_difference_report(d)
     if not diff.empty:
         st.dataframe(diff.style.format({'First Net Pay': '${:,.2f}',
-                     'State Revenue': '${:,.2f}', 'Difference per trip': '${:,.2f}',
-                     'Total Difference': '${:,.2f}'}, na_rep='—'),
+                     'State Revenue': '${:,.2f}', 'Amount Due': '${:,.2f}',
+                     'Difference per trip': '${:,.2f}'}, na_rep='—'),
                      use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
