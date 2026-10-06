@@ -979,7 +979,7 @@ def consolidated_page(df, origin):
                         'Price Differences': price_difference_report(df)})
 
 
-def state_page(df, code, origin):
+def _state_analysis_page(df, code, origin):
     name = STATES.get(code, code)
     st.title(f'📍 {name} — Weekly Financial Report')
     d = df[df['State'] == code].copy()
@@ -1007,17 +1007,6 @@ def state_page(df, code, origin):
     if st.button('💾 Save this Weekly Analysis to History', key=f'save_{code}'):
         save_weekly_summary(code, d, total)
         st.success(f'Analysis for {name} has been saved.')
-    with st.expander('Historical Performance'):
-        history = historical_summary(code)
-        if history.empty:
-            st.info('No historical data found for this state. Save a weekly analysis first.')
-        else:
-            st.dataframe(history, use_container_width=True, hide_index=True)
-            history['week_start_date'] = pd.to_datetime(history['week_start_date'], errors='coerce')
-            if history['week_start_date'].notna().any():
-                st.line_chart(history.set_index('week_start_date')[['total_revenue', 'total_margin']])
-                st.bar_chart(history.set_index('week_start_date')[['total_loss']])
-
     price_cols = ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name', 'Miles',
                   'First_Reported_Revenue', 'Net_Pay', 'Revenue', 'Paid_Fare_Source',
                   'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
@@ -1060,6 +1049,32 @@ def state_page(df, code, origin):
             direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
             st.warning(f"The state contract revenue is ${abs(ov['Difference']):,.2f} total {direction} First Revenue for {name}. This does not change Driver Payment or Profit.")
     df_download(rep, f'{code}_weekly_report.xlsx', f'dl_{code}')
+
+
+def state_history_page(code, name):
+    st.header('Historical Performance')
+    history = historical_summary(code)
+    if history.empty:
+        st.warning('No historical data found for this state. Save a weekly analysis first.')
+        return
+    st.subheader('Saved Weekly Summaries')
+    st.dataframe(history, use_container_width=True, hide_index=True)
+    history['week_start_date'] = pd.to_datetime(history['week_start_date'], errors='coerce')
+    history = history.dropna(subset=['week_start_date']).set_index('week_start_date')
+    if not history.empty:
+        st.subheader('Performance Over Time')
+        st.line_chart(history[['total_revenue', 'total_margin']])
+        st.bar_chart(history[['total_loss']])
+
+
+def state_page(df, code, origin):
+    """Legacy-looking state page with the new First/state matching inside it."""
+    name = STATES.get(code, code)
+    tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
+    with tab1:
+        _state_analysis_page(df, code, origin)
+    with tab2:
+        state_history_page(code, name)
 
 # ---------------------------------------------------------------------------
 # APP ENTRY
@@ -1104,7 +1119,7 @@ else:
     present = sorted(df['State'].unique(), key=lambda c: (c == 'Unassigned', STATES.get(c, c)))
     labels = ['📊 Consolidated Report'] + [
         ('⚠ Unassigned' if c == 'Unassigned' else STATES.get(c, c)) for c in present]
-    choice = st.sidebar.radio('States', labels, key='nav')
+    choice = st.sidebar.radio('Navigation', labels, key='nav')
     if choice == '📊 Consolidated Report':
         consolidated_page(df, origin)
     else:
