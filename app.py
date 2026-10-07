@@ -768,7 +768,6 @@ def apply_state_prices(d, origin):
             (['_driver_key', '_trip_key'], ['Driver_Key', 'Trip_Key']),
             (['_trip_key', '_date_key', '_miles_key'], ['Trip_Key', 'Date_Key', 'Miles_Key']),
             (['_trip_key', '_miles_key'], ['Trip_Key', 'Miles_Key']),
-            (['_driver_key'], ['Driver_Key']),
         ])
         d.loc[mask, 'State_Price'] = first['State_Price']
         d.loc[mask, 'State_Pay'] = first['State_Pay']
@@ -800,7 +799,6 @@ def unmatched_state_rows(first_df, origin, first_code):
         (['_driver_key', '_trip_key'], ['Driver_Key', 'Trip_Key']),
         (['_trip_key', '_date_key', '_miles_key'], ['Trip_Key', 'Date_Key', 'Miles_Key']),
         (['_trip_key', '_miles_key'], ['Trip_Key', 'Miles_Key']),
-        (['_driver_key'], ['Driver_Key']),
     ]
     used = set()
     for _, fr in first.iterrows():
@@ -834,7 +832,9 @@ def agg_block(d):
     state_values = pd.to_numeric(d.get('State_Revenue', pd.Series(dtype=float)), errors='coerce')
     diff_values = pd.to_numeric(d.get('Price_Difference', pd.Series(dtype=float)), errors='coerce')
     state_rev = float(state_values.sum()) if state_values.notna().any() else float('nan')
-    price_diff = float(diff_values.sum()) if diff_values.notna().any() else float('nan')
+    # Only a positive State Revenue minus First Net Pay is money due to Beyond.
+    # Never net a negative-price group against a positive group in Consolidated.
+    price_diff = float(diff_values.clip(lower=0).sum()) if diff_values.notna().any() else float('nan')
     chk = d[d['Checked']]
     policy_state = len(chk) > 0
     if policy_state:
@@ -846,7 +846,7 @@ def agg_block(d):
     else:
         pay = profit = loss = profit_if = float('nan')
         nc = 0
-    amount_due = max(price_diff, 0.0) if not pd.isna(price_diff) else float('nan')
+    amount_due = price_diff
     return {
         'runs': runs, 'revenue': rev, 'state_revenue': state_rev,
         'price_difference': price_diff, 'amount_due': amount_due,
@@ -994,7 +994,9 @@ def price_difference_report(df):
         return pd.DataFrame()
     x['Difference_Per_Run'] = (pd.to_numeric(x['State_Price'], errors='coerce') -
                                pd.to_numeric(x['Revenue'], errors='coerce')).round(2)
-    out = (x.groupby(['State', 'Difference_Per_Run'], dropna=False)
+    x['First_Price'] = pd.to_numeric(x['Revenue'], errors='coerce').round(2)
+    x['State_Price_Rate'] = pd.to_numeric(x['State_Price'], errors='coerce').round(2)
+    out = (x.groupby(['State', 'First_Price', 'State_Price_Rate', 'Difference_Per_Run'], dropna=False)
              .agg(Runs=('Revenue', 'size'),
                   First_Revenue=('Revenue', 'sum'),
                   State_Revenue=('State_Price', 'sum'))
@@ -1062,16 +1064,35 @@ def consolidated_page(df, origin):
         c2.bar_chart(mperf.set_index('State')[['Margin %']])
 
     if origin:
-        st.subheader('Price matching by state and difference per run')
         diff_report = price_difference_report(df)
-        if not diff_report.empty:
-            st.dataframe(diff_report.style.format({
+        positive_diff = diff_report[diff_report['Amount_Due_From_First'] > 0] if not diff_report.empty else diff_report
+        if not positive_diff.empty:
+            st.subheader('Price differences — State Revenue − First Net Pay')
+            st.dataframe(positive_diff.style.format({
+                'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
                 'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
                 'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
                 'Amount_Due_From_First': '${:,.2f}'}),
                 use_container_width=True, hide_index=True)
-        else:
-            st.warning('No state-report rows were matched to First Alt yet.')
+
+    # Show the actual policy used for each state, not just the compliance result.
+    st.subheader('Pricing Policy by State')
+    policy_view = POLICY_DF[POLICY_DF.State.isin(df['State'].dropna().unique())][
+        ['State', 'Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']].copy()
+    policy_view['State'] = policy_view['State'].map(lambda c: STATES.get(c, c))
+    if not policy_view.empty:
+        st.dataframe(policy_view, use_container_width=True, hide_index=True)
+
+    non_compliant = df[df['Non_Compliant']].copy() if 'Non_Compliant' in df else pd.DataFrame()
+    if not non_compliant.empty:
+        st.subheader('Non-Compliant Trips')
+        st.caption('These trips are shown only because First Net Pay is below the applicable driver-pay policy.')
+        nc_view = non_compliant[['State', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
+                                 'Policy_Pay', 'Loss']].copy()
+        nc_view['State'] = nc_view['State'].map(lambda c: STATES.get(c, c))
+        st.dataframe(nc_view.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}',
+                                           'Loss': '${:,.2f}'}),
+                     use_container_width=True, hide_index=True)
 
     if 'Unassigned' in df['State'].values:
         n = int((df['State'] == 'Unassigned').sum())
@@ -1079,7 +1100,7 @@ def consolidated_page(df, origin):
                    'built-in list). Open the "Unassigned" section to review them.')
     df_download(perf.set_index('State'), 'consolidated_report.xlsx', 'dl_cons',
                 sheets={'State Summary': perf.set_index('State'),
-                        'Price Differences': price_difference_report(df)})
+                        'Price Differences': positive_diff if origin and not positive_diff.empty else pd.DataFrame()})
 
 
 def _state_analysis_page(df, code, origin):
@@ -1270,7 +1291,20 @@ def state_page(df, code, origin):
     diff_report = price_difference_report(matched)
     if not diff_report.empty:
         st.subheader('Price Difference by Trip Price — State Revenue − First Net Pay')
-        st.dataframe(diff_report.style.format({
+        diff_filter = st.selectbox(
+            'Price difference filter',
+            ['Only First $42.50 → State $45.00', 'All price differences', 'Beyond due only'],
+            index=0, key=f'price_filter_{code}')
+        shown_diff = diff_report
+        if diff_filter == 'Only First $42.50 → State $45.00':
+            shown_diff = diff_report[(diff_report['First_Price'].round(2) == 42.50)
+                                     & (diff_report['State_Price_Rate'].round(2) == 45.00)]
+            if shown_diff.empty:
+                st.info('No matched trips with First $42.50 and state contract $45.00 were found.')
+        elif diff_filter == 'Beyond due only':
+            shown_diff = diff_report[diff_report['Amount_Due_From_First'] > 0]
+        st.dataframe(shown_diff.style.format({
+            'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
             'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
             'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
             'Amount_Due_From_First': '${:,.2f}'}),
