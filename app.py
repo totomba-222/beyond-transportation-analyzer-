@@ -932,11 +932,18 @@ def weekly_report(d):
 CARD_CSS = """
 <style>
 .block-container {padding-top: 2rem;}
-.kpi {background: linear-gradient(135deg,#1e3a8a 0%,#2563eb 100%); color:#fff;
-  border-radius:14px; padding:16px 18px; margin:4px 0;
-  box-shadow:0 4px 14px rgba(0,0,0,.12);}
-.kpi .lab {font-size:.78rem; letter-spacing:.04em; opacity:.85; text-transform:uppercase;}
-.kpi .val {font-size:1.55rem; font-weight:700; margin-top:4px;}
+.kpi {background: linear-gradient(135deg,#0f4c81 0%,#168aad 100%); color:#fff;
+  border-radius:16px; padding:18px 18px 16px; margin:5px 0; min-height:92px;
+  box-shadow:0 7px 18px rgba(15,76,129,.22); border:1px solid rgba(255,255,255,.18);}
+.kpi .lab {font-size:.76rem; letter-spacing:.055em; opacity:.92; text-transform:uppercase; font-weight:700;}
+.kpi .val {font-size:2.05rem; line-height:1.12; font-weight:800; margin-top:8px; letter-spacing:-.025em;}
+.kpi.g {box-shadow:0 7px 18px rgba(5,150,105,.22);}
+.kpi.r {box-shadow:0 7px 18px rgba(220,38,38,.22);}
+.kpi.o {box-shadow:0 7px 18px rgba(217,119,6,.22);}
+.kpi.p {box-shadow:0 7px 18px rgba(124,58,237,.22);}
+[data-testid=stDataFrame] {border-radius:12px; overflow:hidden;}
+[data-testid=stMetricValue] {font-size:1.85rem; font-weight:800;}
+@media (max-width: 900px) {.kpi .val {font-size:1.55rem;} .kpi {min-height:82px; padding:14px;}}
 .kpi.g {background:linear-gradient(135deg,#065f46 0%,#059669 100%);}
 .kpi.r {background:linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%);}
 .kpi.o {background:linear-gradient(135deg,#78350f 0%,#d97706 100%);}
@@ -948,6 +955,29 @@ CARD_CSS = """
 def kpi(col, label, value, tone=''):
     col.markdown(f'<div class="kpi {tone}"><div class="lab">{label}</div>'
                  f'<div class="val">{value}</div></div>', unsafe_allow_html=True)
+
+def render_table(data, *args, **kwargs):
+    """Render report tables with restrained semantic color cues; values are untouched."""
+    if not isinstance(data, pd.DataFrame):
+        return st.dataframe(data, *args, **kwargs)
+    styler = data.style
+    for col in data.columns:
+        label = str(col).lower()
+        if any(x in label for x in ('run', 'trip', 'count')):
+            styler = styler.set_properties(subset=[col], **{'background-color': '#e0f2fe', 'color': '#075985', 'font-weight': '700'})
+        elif any(x in label for x in ('loss', 'due', 'difference', 'variance', 'non-compliant')):
+            styler = styler.set_properties(subset=[col], **{'background-color': '#fff1f2', 'color': '#9f1239', 'font-weight': '600'})
+        elif any(x in label for x in ('profit', 'margin', 'compliant')):
+            styler = styler.set_properties(subset=[col], **{'background-color': '#ecfdf5', 'color': '#047857', 'font-weight': '600'})
+        elif any(x in label for x in ('revenue', 'gross', 'first paid', 'state price', 'contract')):
+            styler = styler.set_properties(subset=[col], **{'background-color': '#fffbeb', 'color': '#92400e', 'font-weight': '600'})
+        elif any(x in label for x in ('pay', 'cost', 'payment', 'net')):
+            styler = styler.set_properties(subset=[col], **{'background-color': '#f5f3ff', 'color': '#6d28d9', 'font-weight': '600'})
+    styler = styler.set_table_styles([
+        {'selector': 'th', 'props': [('background-color', '#0f172a'), ('color', 'white'), ('font-weight', '700')]},
+        {'selector': 'tbody tr:hover', 'props': [('background-color', '#f8fafc')]},
+    ])
+    return st.dataframe(styler, *args, **kwargs)
 
 
 def kpi_row(total, state_name=''):
@@ -1047,7 +1077,7 @@ def consolidated_page(df, origin):
             'Profit if compliant': b['profit_if'], 'Margin if compliant %': b['margin_if'],
         })
     perf = pd.DataFrame(rows)
-    st.dataframe(perf.style.format({
+    render_table(perf.style.format({
         'First Revenue': '${:,.2f}', 'State Revenue': '${:,.2f}',
         'Price Difference': '${:,.2f}', 'Amount Due': '${:,.2f}',
         'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
@@ -1068,7 +1098,7 @@ def consolidated_page(df, origin):
         positive_diff = diff_report[diff_report['Amount_Due_From_First'] > 0] if not diff_report.empty else diff_report
         if not positive_diff.empty:
             st.subheader('Price differences — State Revenue − First Net Pay')
-            st.dataframe(positive_diff.style.format({
+            render_table(positive_diff.style.format({
                 'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
                 'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
                 'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
@@ -1081,7 +1111,7 @@ def consolidated_page(df, origin):
         ['State', 'Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']].copy()
     policy_view['State'] = policy_view['State'].map(lambda c: STATES.get(c, c))
     if not policy_view.empty:
-        st.dataframe(policy_view, use_container_width=True, hide_index=True)
+        render_table(policy_view, use_container_width=True, hide_index=True)
 
     non_compliant = df[df['Non_Compliant']].copy() if 'Non_Compliant' in df else pd.DataFrame()
     if not non_compliant.empty:
@@ -1090,7 +1120,7 @@ def consolidated_page(df, origin):
         nc_view = non_compliant[['State', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
                                  'Policy_Pay', 'Loss']].copy()
         nc_view['State'] = nc_view['State'].map(lambda c: STATES.get(c, c))
-        st.dataframe(nc_view.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}',
+        render_table(nc_view.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}',
                                            'Loss': '${:,.2f}'}),
                      use_container_width=True, hide_index=True)
 
@@ -1121,18 +1151,18 @@ def _state_analysis_page(df, code, origin):
         st.subheader(f'{name} State Report — Original Totals')
         st.caption('These values come directly from the uploaded state report and include all state-report runs.')
         sa, sb, sc, sd, se = st.columns(5)
-        sa.metric('RUNS', f'{len(sr):,}')
-        sb.metric('REV', _money(state_rev))
-        sc.metric('PAY', _money(state_pay))
-        sd.metric('PROFIT', _money(state_profit))
-        se.metric('MARGIN', _pct(state_margin))
+        kpi(sa, 'Runs', f'{len(sr):,}')
+        kpi(sb, 'Revenue (REV)', _money(state_rev), 'o')
+        kpi(sc, 'Driver Pay (PAY)', _money(state_pay), 'p')
+        kpi(sd, 'Profit', _money(state_profit), 'g')
+        kpi(se, 'Margin', _pct(state_margin), 'g')
         state_summary = pd.DataFrame({
             'Metric': ['Total Trips', f'{name} Revenue (REV)', 'Total Driver Cost (PAY)',
                        'Total Margin (Profit)', 'Current Margin %'],
             'Value': [f'{len(sr):,}', _money(state_rev), _money(state_pay),
                       _money(state_profit), _pct(state_margin)]
         }).set_index('Metric')
-        st.table(state_summary)
+        render_table(state_summary)
         st.markdown('---')
         st.subheader(f'{name} First Alt — Paid Fare Matching')
         st.caption('The following section uses First Alt runs only. Net Pay is the paid fare from First Alt; state revenue is shown only for matched runs.')
@@ -1153,10 +1183,10 @@ def _state_analysis_page(df, code, origin):
                              'Policy_Pay': r['base'], 'Per_Mile_Rate': r['per_mile'],
                              'Note': r['note']}
                             for v, rs in SACRAMENTO_POLICIES.items() for r in rs])
-    st.table(pol)
+    render_table(pol)
 
     st.subheader('Weekly report')
-    st.dataframe(rep, use_container_width=True)
+    render_table(rep, use_container_width=True)
 
     # Legacy feature retained: save this state's weekly analysis and review history.
     if st.button('💾 Save this Weekly Analysis to History', key=f'save_{code}'):
@@ -1166,11 +1196,11 @@ def _state_analysis_page(df, code, origin):
                   'First_Reported_Revenue', 'Net_Pay', 'Revenue', 'Paid_Fare_Source',
                   'State_Price', 'State_Pay', 'Price_Difference', 'Price_Source']
     with st.expander('Matched contract prices from state report'):
-        st.dataframe(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
+        render_table(d[[c for c in price_cols if c in d.columns]], use_container_width=True, hide_index=True)
     st.caption('First Paid Fare is Net Pay from First Alt (Revenue is the fallback when Net Pay is absent). State Revenue is the contracted trip price from the state report. Driver Payment comes from Pricing Policy. Amount Due = State Revenue − First Paid Fare.')
     state_diff = price_difference_report(d)
     if not state_diff.empty:
-        st.dataframe(state_diff.style.format({
+        render_table(state_diff.style.format({
             'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
             'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
             'Amount_Due_From_First': '${:,.2f}'}),
@@ -1185,14 +1215,14 @@ def _state_analysis_page(df, code, origin):
         bad = d[d['Non_Compliant']][['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles',
                                      'Revenue', 'Policy_Pay', 'State_Price', 'Price_Difference', 'Price_Source', 'Loss']].sort_values('Loss', ascending=False)
         with st.expander(f'Show {len(bad)} loss-making runs'):
-            st.dataframe(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}', 'State_Pay': '${:,.2f}',
+            render_table(bad.style.format({'Revenue': '${:,.2f}', 'Policy_Pay': '${:,.2f}', 'State_Price': '${:,.2f}', 'State_Pay': '${:,.2f}',
                                            'Price_Difference': '${:,.2f}', 'Loss': '${:,.2f}'}),
                          use_container_width=True, hide_index=True)
 
     ov = origin_vs_first(d, code, origin)
     if ov and ov['Matched_Runs']:
         st.subheader('State Revenue vs First Revenue reconciliation')
-        st.dataframe(pd.DataFrame([{
+        render_table(pd.DataFrame([{
             'State': name, 'Matched Runs': ov['Matched_Runs'],
             'First Net Pay (F)': ov['First_Paid'], 'Matched State Revenue': ov['Origin_Price'],
             'Total Price Difference': ov['Difference'],
@@ -1215,7 +1245,7 @@ def state_history_page(code, name):
         st.warning('No historical data found for this state. Save a weekly analysis first.')
         return
     st.subheader('Saved Weekly Summaries')
-    st.dataframe(history, use_container_width=True, hide_index=True)
+    render_table(history, use_container_width=True, hide_index=True)
     history['week_start_date'] = pd.to_datetime(history['week_start_date'], errors='coerce')
     history = history.dropna(subset=['week_start_date']).set_index('week_start_date')
     if not history.empty:
@@ -1275,14 +1305,14 @@ def state_page(df, code, origin):
                 'Source_File': 'Source File'})
             cols = ['Driver', 'Route / Trip', 'Date', 'Miles', 'State Revenue',
                     'State PAY', 'Possible_State', 'Washington_Candidate', 'Source File']
-            st.dataframe(display[[c for c in cols if c in display.columns]].style.format({
+            render_table(display[[c for c in cols if c in display.columns]].style.format({
                 'State Revenue': '${:,.2f}', 'State PAY': '${:,.2f}'}),
                 use_container_width=True, hide_index=True)
     x1, x2, x3, x4 = st.columns(4)
-    x1.metric('Matched First Runs', f'{len(matched):,}')
-    x2.metric('First Net Pay (F)', _money(first_total))
-    x3.metric('Matched State Revenue', _money(state_total))
-    x4.metric('Amount Due From First', _money(max(difference, 0)))
+    kpi(x1, 'Matched First Runs', f'{len(matched):,}')
+    kpi(x2, 'First Net Pay (F)', _money(first_total), 'p')
+    kpi(x3, 'Matched State Revenue', _money(state_total), 'o')
+    kpi(x4, 'Amount Due From First', _money(max(difference, 0)), 'r')
     st.caption(
         f'Full state report: {state_run_count:,} runs / {_money(full_state_total)}. '
         f'Matched for price comparison: {len(matched):,} runs / {_money(state_total)}. '
@@ -1303,14 +1333,14 @@ def state_page(df, code, origin):
                 st.info('No matched trips with First $42.50 and state contract $45.00 were found.')
         elif diff_filter == 'Beyond due only':
             shown_diff = diff_report[diff_report['Amount_Due_From_First'] > 0]
-        st.dataframe(shown_diff.style.format({
+        render_table(shown_diff.style.format({
             'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
             'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
             'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
             'Amount_Due_From_First': '${:,.2f}'}),
             use_container_width=True, hide_index=True)
     st.subheader('First Alt Trips Used in Matching')
-    st.dataframe(matched[[c for c in ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name',
+    render_table(matched[[c for c in ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name',
                                       'Miles', 'Net_Pay', 'State_Price', 'Price_Difference']
                                      if c in matched.columns]].style.format({
                                          'Net_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
@@ -1350,23 +1380,23 @@ def state_only_page(origin, code):
         st.subheader('Official Pricing Policy')
         pol = POLICY_DF[POLICY_DF.State == code][
             ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']]
-        st.table(pol)
+        render_table(pol)
         st.subheader('Financial Summary')
         summary = pd.DataFrame({
             'Metric': ['Total Trips', 'Total Revenue (Gross Pay)',
                        'Total Driver Cost (Net Pay)', 'Total Margin (Profit)', 'Current Margin %'],
             'Value': [f'{runs:,}', _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
         }).set_index('Metric')
-        st.table(summary)
+        render_table(summary)
         st.subheader('Compliance Impact Summary')
         non_compliant = rows[rows['Is_Non_Compliant']]
         ratio = len(non_compliant) / runs if runs else 0
         c1, c2 = st.columns(2)
-        c1.metric('Total Loss from Non-Compliance', _money(loss))
-        c2.metric('Non-Compliant Trips %', f'{ratio:.2%}')
+        kpi(c1, 'Total Loss from Non-Compliance', _money(loss), 'r')
+        kpi(c2, 'Non-Compliant Trips %', f'{ratio:.2%}', 'r')
         potential = profit + loss if not pd.isna(profit) else float('nan')
         st.subheader('Potential Profit Analysis')
-        st.table(pd.DataFrame({
+        render_table(pd.DataFrame({
             'Amount': [_money(profit), _money(potential), _money(loss)],
             'Margin %': [f'{margin:.2%}', f'{(potential / rev if rev else 0):.2%}',
                          f'+{((potential - profit) / rev if rev and not pd.isna(profit) else 0):.2%}']
@@ -1378,7 +1408,7 @@ def state_only_page(origin, code):
                            'Net_Pay': 'Current Driver Pay',
                            'Policy_Driver_Pay': 'POLICY DRIVER PAY',
                            'Loss_Amount': 'Loss'})
-        st.dataframe(detail.style.format({c: '${:,.2f}' for c in
+        render_table(detail.style.format({c: '${:,.2f}' for c in
                                           ['Gross Pay', 'Current Driver Pay',
                                            'POLICY DRIVER PAY', 'Loss']}),
                      use_container_width=True, hide_index=True)
@@ -1440,7 +1470,7 @@ if df.empty:
                 state_rows.append({'State': STATES.get(state_code, state_code), 'RUNS': len(r),
                                    'REV': rev, 'PAY': pay, 'PROFIT': rev - pay})
             if state_rows:
-                st.dataframe(pd.DataFrame(state_rows).style.format(
+                render_table(pd.DataFrame(state_rows).style.format(
                     {'REV': '${:,.2f}', 'PAY': '${:,.2f}', 'PROFIT': '${:,.2f}'}),
                     use_container_width=True, hide_index=True)
         else:
@@ -1456,7 +1486,7 @@ if df.empty:
                 st.header('Weekly Analysis')
                 st.subheader('Official Pricing Policy')
                 pol = POLICY_DF[POLICY_DF.State == code]
-                st.table(pol[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay',
+                render_table(pol[['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay',
                               'Per_Mile_Rate', 'Note']])
                 st.info('Upload a First Alt report in the left sidebar to calculate the weekly report.')
             with tab2:
@@ -1473,7 +1503,7 @@ else:
                        'to a state report once and they will be recognised automatically.')
             u = df[df['State'] == 'Unassigned']
             st.metric('Runs', f'{len(u):,}')
-            st.dataframe(u[['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
+            render_table(u[['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
                             'Source_File']], use_container_width=True, hide_index=True)
         else:
             state_page(df, code, origin)
