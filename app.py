@@ -12,6 +12,7 @@ STATES = {
     'AK': 'Alaska', 'IL': 'Illinois', 'NM': 'New Mexico',
     'SAC': 'Sacramento', 'MON': 'Monterey',
     'RS&AZ': 'Riverside & Arizona', 'AZ': 'Arizona', 'WA': 'Washington',
+    'NE': 'Nebraska', 'KS': 'Kansas',
 }
 
 SPECIAL_DRIVER_STATE = {
@@ -31,6 +32,8 @@ CITIES = {
     'IL': ['Elgin', 'Carol Stream', 'Chicago'],
     'NM': ['Albuquerque'],
     'MON': ['Monterey'],
+    'NE': ['Omaha', 'Lincoln'],
+    'KS': ['Wichita', 'Topeka', 'Overland Park', 'Kansas City'],
 }
 
 
@@ -51,7 +54,8 @@ def city_from(name):
         'Troutdale', 'Corvallis', 'Woodburn', 'Clackamas', 'West Linn', 'Milwaukie',
         'Benicia', 'Berkeley', 'Richmond', 'San Leandro', 'Sacramento', 'San Diego',
         'Los Angeles', 'Anchorage', 'Monterey', 'Elgin', 'Carol Stream', 'Chicago',
-        'Albuquerque',
+        'Albuquerque', 'Omaha', 'Lincoln', 'Wichita', 'Topeka', 'Overland Park',
+        'Kansas City',
     ]
     for city in cities:
         if city.upper() in s:
@@ -79,6 +83,10 @@ def state_from(name, company=''):
         return 'S.CA'
     if 'SACRAMENTO' in s:
         return 'SAC'
+    if 'NEBRASKA' in s or 'OMAHA' in s:
+        return 'NE'
+    if 'KANSAS' in s or 'WICHITA' in s or 'TOPEKA' in s or 'OVERLAND PARK' in s:
+        return 'KS'
     if ('ILLINOIS' in s or 'ELGIN' in s or 'CAROL STREAM' in s or 'SCHAUMBURG' in s
             or 'CHICAGO' in s or 'AURORA' in s or 'NAPERVILLE' in s):
         return 'IL'
@@ -135,6 +143,8 @@ POLICIES = [
     {'State': 'RS&AZ', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
     {'State': 'SAC', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'See Sacramento sedan/minivan schedule'},
     {'State': 'WA', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
+    {'State': 'NE', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
+    {'State': 'KS', 'Vehicle_Type': 'ANY', 'Min_Miles': 0, 'Max_Miles': 9999, 'Policy_Pay': 0.0, 'Per_Mile_Rate': 0, 'Note': 'Not supplied'},
 ]
 POLICY_DF = pd.DataFrame(POLICIES)
 
@@ -330,7 +340,7 @@ DRIVER_STATE = {
 #                         reconciliation; it is never used as driver payment)
 #   States with no supplied policy (NM, IL, RS&AZ, AZ) are NOT checked.
 # ---------------------------------------------------------------------------
-NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ', 'SAC', 'WA'}
+NO_POLICY = {'NM', 'IL', 'RS&AZ', 'AZ', 'SAC', 'WA', 'NE', 'KS'}
 
 
 def has_policy(state):
@@ -344,11 +354,74 @@ def iso_week(dt):
         return 0
 
 
+def _read_pdf_candidates(file_obj):
+    """Extract table candidates from a PDF report using pdfplumber.
+
+    Each returned DataFrame is a possible trip table; the shared scoring logic
+    in _read_report_table then picks the best one by column names.
+    """
+    try:
+        import pdfplumber
+    except Exception:
+        return []
+    wanted = {'DRIVER NAME', 'DRIVER', 'TRIP NAME', 'REVENUE', 'NET PAY',
+              'TOTAL MILES', 'MILES', 'PAY', 'PAYMENT', 'DATE', 'TRIP DATE', 'GROSS PAY'}
+    candidates = []
+    try:
+        file_obj.seek(0)
+    except Exception:
+        pass
+    try:
+        pdf = pdfplumber.open(file_obj)
+    except Exception:
+        return []
+    with pdf:
+        for page in pdf.pages:
+            try:
+                tables = page.extract_tables()
+            except Exception:
+                tables = []
+            for table in tables:
+                if not table or len(table) < 2:
+                    continue
+                grid = [[('' if cell is None else str(cell).strip()) for cell in row]
+                        for row in table]
+                # Locate the header row inside the first rows of the table.
+                header_idx = 0
+                for i in range(min(12, len(grid))):
+                    vals = {clean(v).upper() for v in grid[i]}
+                    if vals & wanted:
+                        header_idx = i
+                        break
+                header = grid[header_idx]
+                cols, seen = [], {}
+                for j, h in enumerate(header):
+                    label = h or f'col{j}'
+                    if label in seen:
+                        seen[label] += 1
+                        label = f'{label}.{seen[label]}'
+                    else:
+                        seen[label] = 0
+                    cols.append(label)
+                body = grid[header_idx + 1:]
+                if not body:
+                    continue
+                width = len(cols)
+                body = [(r + [''] * width)[:width] for r in body]
+                frame = pd.DataFrame(body, columns=cols)
+                frame = frame.replace('', pd.NA).dropna(how='all')
+                if not frame.empty:
+                    candidates.append(frame)
+    return candidates
+
+
 def _read_report_table(file_obj, preferred_sheet=None):
     """Read a report even when Excel has title rows above the real header."""
     name = str(getattr(file_obj, 'name', '')).lower()
     if name.endswith('.csv'):
         candidates = [pd.read_csv(file_obj, header=0)]
+    elif name.endswith('.pdf'):
+        candidates = _read_pdf_candidates(file_obj)
     else:
         book = pd.ExcelFile(file_obj, engine='openpyxl')
         sheets = ([preferred_sheet] if preferred_sheet in book.sheet_names else []) + [
@@ -450,6 +523,10 @@ def _state_code_from_text(text):
         return 'SAC'
     if 'MONTEREY' in s or re.search(r'(^| )MON( |$)', s):
         return 'MON'
+    if 'NEBRASKA' in s or 'OMAHA' in s or re.search(r'(^| )NE( |$)', s):
+        return 'NE'
+    if 'KANSAS' in s or 'WICHITA' in s or 'TOPEKA' in s or 'OVERLAND PARK' in s or re.search(r'(^| )KS( |$)', s):
+        return 'KS'
     if 'ILLINOIS' in s or re.search(r'(^| )IL( |$)', s):
         return 'IL'
     return 'Unknown'
@@ -872,6 +949,21 @@ def _pct(v):
 def _int(v):
     return '-' if pd.isna(v) else f'{int(v):,}'
 
+
+def _color_pos_neg(val):
+    """Green for positive money/margin, red for negative, used in styled tables."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ''
+    if pd.isna(v):
+        return ''
+    if v > 0.005:
+        return 'background-color:#dcfce7; color:#065f46; font-weight:700;'
+    if v < -0.005:
+        return 'background-color:#fee2e2; color:#991b1b; font-weight:700;'
+    return ''
+
 def weekly_report(d):
     """Image-style weekly report: metrics as rows, weeks + total/vertical/variance cols."""
     weeks = sorted(w for w in d['Week'].dropna().unique() if w)
@@ -949,6 +1041,12 @@ h2, h3 {font-weight: 750 !important;}
 .kpi.r {background:linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%);}
 .kpi.o {background:linear-gradient(135deg,#78350f 0%,#d97706 100%);}
 .kpi.p {background:linear-gradient(135deg,#4c1d95 0%,#7c3aed 100%);}
+[data-testid=stTable] table {border-collapse:collapse; width:100%;}
+[data-testid=stTable] thead th {background:#1e3a8a; color:#fff; font-weight:700;
+  text-align:center; padding:10px;}
+[data-testid=stTable] tbody th {background:#eef2ff; font-weight:600;}
+[data-testid=stTable] tbody td {padding:8px 10px;}
+[data-testid=stTable] tbody tr:nth-child(even) td {background:#f8fafc;}
 </style>
 """
 
@@ -1076,27 +1174,58 @@ def df_download(df, fname, key, sheets=None):
 # ---------------------------------------------------------------------------
 def state_reports_consolidated_page(origin):
     st.title('\U0001F4DA State Reports \u2014 Consolidated')
-    st.caption('This report is built directly from the uploaded state workbooks. It does not use First data.')
-    summary=[]; sheets={}
+    st.caption('Built directly from the uploaded state workbooks (Excel / CSV / PDF). '
+               'Profit = State Revenue \u2212 Driver Pay. It does not use First data.')
+    summary = []
+    sheets = {}
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
-        rows=info.get('rows', pd.DataFrame()).copy()
-        rev=float(pd.to_numeric(rows.get('State_Price', pd.Series(dtype=float)), errors='coerce').sum())
-        pay_series=pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
-        pay=float(pay_series.sum()) if pay_series.notna().any() else float('nan')
-        summary.append({'State':STATES.get(code,code),'Runs':len(rows),'State Revenue':rev,
-                        'State Driver Pay':pay,'Profit':rev-pay if not pd.isna(pay) else float('nan'),
-                        'Source File':rows.get('Source_File',pd.Series([''])).iloc[0] if not rows.empty else ''})
-        sheets[f'{code} Trips']=state_report_detail(info,code)
-    rep=pd.DataFrame(summary)
+        rows = info.get('rows', pd.DataFrame()).copy()
+        rev = float(pd.to_numeric(rows.get('State_Price', pd.Series(dtype=float)), errors='coerce').sum())
+        pay_series = pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
+        pay = float(pay_series.sum()) if pay_series.notna().any() else float('nan')
+        profit = rev - pay if not pd.isna(pay) else float('nan')
+        margin = (profit / rev * 100) if rev and not pd.isna(profit) else float('nan')
+        summary.append({'State': STATES.get(code, code), 'Runs': len(rows),
+                        'State Revenue': rev, 'Driver Pay': pay, 'Profit': profit,
+                        'Margin %': margin,
+                        'Source File': rows.get('Source_File', pd.Series([''])).iloc[0] if not rows.empty else ''})
+        sheets[f'{code} Trips'] = state_report_detail(info, code)
+    rep = pd.DataFrame(summary)
     if not rep.empty:
-        st.dataframe(rep.style.format({'State Revenue':'${:,.2f}','State Driver Pay':'${:,.2f}','Profit':'${:,.2f}'}),use_container_width=True,hide_index=True)
-        st.bar_chart(rep.set_index('State')[['State Revenue','State Driver Pay']])
+        tot_runs = int(rep['Runs'].sum())
+        tot_rev = float(pd.to_numeric(rep['State Revenue'], errors='coerce').sum())
+        pay_vals = pd.to_numeric(rep['Driver Pay'], errors='coerce')
+        tot_pay = float(pay_vals.sum()) if pay_vals.notna().any() else float('nan')
+        tot_profit = tot_rev - tot_pay if not pd.isna(tot_pay) else float('nan')
+        tot_margin = (tot_profit / tot_rev * 100) if tot_rev and not pd.isna(tot_profit) else float('nan')
+        st.subheader('Overview')
+        a, b, c, d, e = st.columns(5)
+        state_kpi(a, 'Total Runs', _int(tot_runs))
+        state_kpi(b, 'State Revenue', _money(tot_rev), 'o')
+        state_kpi(c, 'Driver Pay', _money(tot_pay), 'p')
+        state_kpi(d, 'Profit', _money(tot_profit), 'g')
+        state_kpi(e, 'Margin', _pct(tot_margin), 'g')
+        st.subheader('Profit & Margin by State')
+        sty = (rep.style
+               .format({'State Revenue': '${:,.2f}', 'Driver Pay': '${:,.2f}',
+                        'Profit': '${:,.2f}', 'Margin %': '{:,.1f}%'}, na_rep='\u2014')
+               .map(_color_pos_neg, subset=['Profit', 'Margin %'])
+               .set_properties(**{'font-size': '1.05rem', 'text-align': 'center'})
+               .set_properties(subset=['State'], **{'font-weight': '700', 'text-align': 'left'}))
+        st.dataframe(sty, use_container_width=True, hide_index=True)
+        cc1, cc2 = st.columns(2)
+        cc1.caption('State Revenue vs Driver Pay')
+        cc1.bar_chart(rep.set_index('State')[['State Revenue', 'Driver Pay']])
+        mrep = rep.dropna(subset=['Margin %'])
+        if not mrep.empty:
+            cc2.caption('Margin % by State')
+            cc2.bar_chart(mrep.set_index('State')[['Margin %']])
     st.subheader('State trip detail')
     st.caption('Every uploaded state row with miles, contract price, and driver payment is available in the Excel export.')
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
         with st.expander(f"{STATES.get(code,code)} \u2014 {info.get('runs',0):,} runs"):
-            st.dataframe(state_report_detail(info,code),use_container_width=True,hide_index=True)
-    df_download(rep.set_index('State') if not rep.empty else rep,'state_reports_consolidated.xlsx','dl_state_cons',sheets={'State Summary':rep.set_index('State') if not rep.empty else rep,**sheets})
+            st.dataframe(state_report_detail(info, code), use_container_width=True, hide_index=True)
+    df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
 
 def consolidated_page(df, origin):
@@ -1495,7 +1624,7 @@ st.sidebar.title("Hatem's B.T. Analyzer")
 st.sidebar.caption('Beyond Transportation \u2014 financial & pricing control')
 
 with st.sidebar:
-    first_files = st.file_uploader('First report(s) \u2014 Excel / CSV', type=['xlsx', 'xls', 'csv'],
+    first_files = st.file_uploader('First report(s) \u2014 Excel / CSV / PDF', type=['xlsx', 'xls', 'csv', 'pdf'],
                                    accept_multiple_files=True, key='first_up')
     if first_files:
         try:
@@ -1504,7 +1633,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f'Could not read the First report(s): {e}')
     with st.expander('Optional: state reports (origin price)'):
-        state_files = st.file_uploader('Weekly state reports', type=['xlsx', 'xls', 'csv'],
+        state_files = st.file_uploader('Weekly state reports (Excel / CSV / PDF)', type=['xlsx', 'xls', 'csv', 'pdf'],
                                        accept_multiple_files=True, key='state_up')
         if state_files:
             st.session_state['origin'] = read_state_origin(state_files)
