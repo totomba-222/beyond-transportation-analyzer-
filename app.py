@@ -916,9 +916,15 @@ def agg_block(d):
     price_diff = float(diff_values.clip(lower=0).sum()) if diff_values.notna().any() else float('nan')
     chk = d[d['Checked']]
     policy_state = len(chk) > 0
+    # Profit must compare revenue and driver pay on the SAME set of runs.
+    # Only runs that actually have a driver payment (policy or state-Pay fallback)
+    # may enter the profit/margin figures; otherwise revenue from no-policy runs
+    # would inflate profit because their driver cost is unknown ($0).
+    covered_runs = int(len(chk))
+    covered_rev = float(chk['Revenue'].sum()) if policy_state else 0.0
     if policy_state:
         pay = float(chk['Policy_Pay'].sum())
-        profit = rev - pay
+        profit = covered_rev - pay
         nc = int(d['Non_Compliant'].sum())
         loss = float(d['Loss'].sum())
         profit_if = profit + loss
@@ -928,12 +934,14 @@ def agg_block(d):
     amount_due = price_diff
     return {
         'runs': runs, 'revenue': rev, 'state_revenue': state_rev,
+        'covered_runs': covered_runs, 'covered_revenue': covered_rev,
+        'uncovered_runs': runs - covered_runs,
         'price_difference': price_diff, 'amount_due': amount_due,
         'payment': pay, 'profit': profit,
-        'margin': (profit / rev * 100) if (policy_state and rev) else float('nan'),
+        'margin': (profit / covered_rev * 100) if (policy_state and covered_rev) else float('nan'),
         'total_runs': runs, 'compliant': (runs - nc) if policy_state else runs,
         'non_compliant': nc, 'loss': loss, 'profit_if': profit_if,
-        'margin_if': (profit_if / rev * 100) if (policy_state and rev) else float('nan'),
+        'margin_if': (profit_if / covered_rev * 100) if (policy_state and covered_rev) else float('nan'),
         'policy_state': policy_state,
     }
 
@@ -1076,9 +1084,17 @@ def kpi_row(total, state_name=''):
     kpi(f, 'Amount due from First', _money(total['amount_due']), 'r')
     kpi(g, 'Margin', _pct(total['margin']), 'g')
     kpi(h, 'Revenue / run', _money(total['revenue'] / total['runs']) if total['runs'] else '-')
-    kpi(i, 'Profit / run',
-        _money(total['profit'] / total['runs']) if (total['runs'] and total['policy_state']) else '-', 'g')
+    kpi(i, 'Profit / covered run',
+        _money(total['profit'] / total['covered_runs']) if (total.get('covered_runs') and total['policy_state']) else '-', 'g')
     kpi(j, 'Non-compliant runs', _int(total['non_compliant']), 'r')
+    if total.get('uncovered_runs'):
+        st.warning(
+            f"\u26A0\uFE0F Profit & Margin cover only {total['covered_runs']:,} of {total['runs']:,} runs "
+            f"(revenue {_money(total['covered_revenue'])}). The other {total['uncovered_runs']:,} runs are in "
+            'states with no pricing policy and no uploaded state Pay, so their driver cost is unknown and they are '
+            'excluded from Profit/Margin to avoid inflating them. Add those state policies (or upload the state Pay '
+            'reports) to include them.'
+        )
 
 def origin_vs_first(d_state, code, origin):
     info = origin.get(code)
