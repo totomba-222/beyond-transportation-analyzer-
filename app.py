@@ -1032,33 +1032,29 @@ def weekly_report(d):
 # ---------------------------------------------------------------------------
 CARD_CSS = """
 <style>
-/* Force a clean, consistent LIGHT theme (overrides dark mode) */
-.stApp, [data-testid=stAppViewContainer], [data-testid=stHeader] {background:#f5f7fa !important;}
-[data-testid=stSidebar] {background:#ffffff !important; border-right:1px solid #e5e9f0;}
-.stApp, .stApp p, .stApp span, .stApp label, .stApp li, .stApp td, .stApp th,
-h1, h2, h3, h4 {color:#0f172a !important;}
+/* Keep the dark theme \u2014 only polish layout, cards and tables */
 .block-container {padding-top: 2rem; max-width: 1700px;}
 h1 {font-size: 2.1rem !important; font-weight: 800 !important;}
 h2, h3 {font-weight: 700 !important;}
 [data-testid=stDataFrame] {font-size: .98rem;}
-/* KPI cards: soft, flat, professional (no loud gradients) */
-.kpi {background:#ffffff; color:#0f172a; border:1px solid #e5e9f0;
-  border-left:5px solid #2563eb; border-radius:10px; padding:14px 16px; margin:4px 0;
-  box-shadow:0 1px 3px rgba(15,23,42,.06);}
-.kpi .lab {font-size:.74rem; letter-spacing:.03em; color:#64748b !important; text-transform:uppercase;}
-.kpi .val {font-size:1.5rem; font-weight:800; margin-top:4px; color:#0f172a !important;}
+/* KPI cards tuned for a dark background */
+.kpi {background:#1e293b; color:#e2e8f0; border:1px solid #334155;
+  border-left:5px solid #3b82f6; border-radius:10px; padding:14px 16px; margin:4px 0;
+  box-shadow:0 2px 6px rgba(0,0,0,.35);}
+.kpi .lab {font-size:.74rem; letter-spacing:.03em; color:#94a3b8 !important; text-transform:uppercase;}
+.kpi .val {font-size:1.5rem; font-weight:800; margin-top:4px; color:#f1f5f9 !important;}
 .state-kpi .val {font-size:1.75rem;}
-.kpi.g {border-left-color:#059669;} .kpi.g .val {color:#047857 !important;}
-.kpi.r {border-left-color:#dc2626;} .kpi.r .val {color:#b91c1c !important;}
-.kpi.o {border-left-color:#d97706;}
-.kpi.p {border-left-color:#7c3aed;}
-/* Clean tables */
-[data-testid=stTable] table {border-collapse:collapse; width:100%; background:#fff;}
-[data-testid=stTable] thead th {background:#1e3a8a; color:#fff !important; font-weight:700;
-  text-align:center; padding:10px;}
-[data-testid=stTable] tbody th {background:#f1f5f9; font-weight:600;}
-[data-testid=stTable] tbody td {padding:8px 10px;}
-[data-testid=stTable] tbody tr:nth-child(even) td {background:#f8fafc;}
+.kpi.g {border-left-color:#22c55e;} .kpi.g .val {color:#4ade80 !important;}
+.kpi.r {border-left-color:#ef4444;} .kpi.r .val {color:#f87171 !important;}
+.kpi.o {border-left-color:#f59e0b;}
+.kpi.p {border-left-color:#a855f7;}
+/* Dark-friendly static tables */
+[data-testid=stTable] table {border-collapse:collapse; width:100%; background:#1e293b;}
+[data-testid=stTable] thead th {background:#1d4ed8; color:#ffffff !important; font-weight:700;
+  text-align:center; padding:10px; border:1px solid #334155;}
+[data-testid=stTable] tbody th {background:#0f172a; color:#e2e8f0 !important; font-weight:600; border:1px solid #334155;}
+[data-testid=stTable] tbody td {padding:8px 10px; color:#e2e8f0; border:1px solid #334155;}
+[data-testid=stTable] tbody tr:nth-child(even) td {background:#172033;}
 </style>
 """
 
