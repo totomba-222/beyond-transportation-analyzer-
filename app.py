@@ -1220,12 +1220,50 @@ def state_reports_consolidated_page(origin):
         if not mrep.empty:
             cc2.caption('Margin % by State')
             cc2.bar_chart(mrep.set_index('State')[['Margin %']])
+        st.subheader('\U0001F4C8 Profit Margin Comparison by State')
+        st.caption('States ranked by profit margin \u2014 green bars are profitable, red bars are below break-even.')
+        margin_comparison_chart(rep)
     st.subheader('State trip detail')
     st.caption('Every uploaded state row with miles, contract price, and driver payment is available in the Excel export.')
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
         with st.expander(f"{STATES.get(code,code)} \u2014 {info.get('runs',0):,} runs"):
             st.dataframe(state_report_detail(info, code), use_container_width=True, hide_index=True)
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
+
+
+def margin_comparison_chart(frame, state_col='State', margin_col='Margin %'):
+    """Horizontal, sorted, color-coded profit-margin comparison across states.
+
+    Green bars = positive margin, red = negative, so weak states are obvious.
+    Falls back to st.bar_chart if Altair is unavailable.
+    """
+    data = frame[[state_col, margin_col]].dropna(subset=[margin_col]).copy()
+    if data.empty:
+        st.info('No margin data available to compare yet.')
+        return
+    data = data.sort_values(margin_col, ascending=False)
+    try:
+        import altair as alt
+    except Exception:
+        st.bar_chart(data.set_index(state_col)[[margin_col]])
+        return
+    data['Sign'] = data[margin_col].map(lambda v: 'Positive' if v >= 0 else 'Negative')
+    data['Label'] = data[margin_col].map(lambda v: f'{v:,.1f}%')
+    base = alt.Chart(data)
+    bars = base.mark_bar(cornerRadiusEnd=4).encode(
+        x=alt.X(f'{margin_col}:Q', title='Profit Margin (%)'),
+        y=alt.Y(f'{state_col}:N', sort='-x', title=None),
+        color=alt.Color('Sign:N',
+                        scale=alt.Scale(domain=['Positive', 'Negative'],
+                                        range=['#059669', '#dc2626']),
+                        legend=alt.Legend(title='Margin')),
+        tooltip=[alt.Tooltip(f'{state_col}:N', title='State'),
+                 alt.Tooltip(f'{margin_col}:Q', title='Margin %', format=',.1f')])
+    text = base.mark_text(align='left', baseline='middle', dx=4, color='#111827').encode(
+        x=alt.X(f'{margin_col}:Q'), y=alt.Y(f'{state_col}:N', sort='-x'),
+        text='Label:N')
+    st.altair_chart((bars + text).properties(height=max(220, 32 * len(data))),
+                    use_container_width=True)
 
 
 def consolidated_page(df, origin):
@@ -1268,6 +1306,10 @@ def consolidated_page(df, origin):
     if not mperf.empty:
         c2.caption('Margin % by state')
         c2.bar_chart(mperf.set_index('State')[['Margin %']])
+
+    st.subheader('\U0001F4C8 Profit Margin Comparison by State')
+    st.caption('States ranked by profit margin \u2014 green bars are profitable, red bars are below break-even.')
+    margin_comparison_chart(perf)
 
     if origin:
         diff_report = price_difference_report(df)
