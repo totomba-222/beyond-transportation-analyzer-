@@ -1032,27 +1032,31 @@ def weekly_report(d):
 # ---------------------------------------------------------------------------
 CARD_CSS = """
 <style>
-.block-container {padding-top: 2rem; max-width: 1800px;}
-body {background: #f4f7fb;}
-h1 {font-size: 2.35rem !important; font-weight: 800 !important;}
-h2, h3 {font-weight: 750 !important;}
-[data-testid=stDataFrame] {font-size: 1rem;}
-[data-testid=stMetricValue] {font-size: 1.65rem;}
-[data-testid=stMetricLabel] {font-weight: 700;}
-.kpi {background: linear-gradient(135deg,#1e3a8a 0%,#2563eb 100%); color:#fff;
-  border-radius:14px; padding:16px 18px; margin:4px 0;
-  box-shadow:0 4px 14px rgba(0,0,0,.12);}
-.kpi .lab {font-size:.78rem; letter-spacing:.04em; opacity:.85; text-transform:uppercase;}
-.kpi .val {font-size:1.55rem; font-weight:700; margin-top:4px;}
-.state-kpi .val {font-size:1.85rem;}
-.kpi.g {background:linear-gradient(135deg,#065f46 0%,#059669 100%);}
-.kpi.r {background:linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%);}
-.kpi.o {background:linear-gradient(135deg,#78350f 0%,#d97706 100%);}
-.kpi.p {background:linear-gradient(135deg,#4c1d95 0%,#7c3aed 100%);}
-[data-testid=stTable] table {border-collapse:collapse; width:100%;}
-[data-testid=stTable] thead th {background:#1e3a8a; color:#fff; font-weight:700;
+/* Force a clean, consistent LIGHT theme (overrides dark mode) */
+.stApp, [data-testid=stAppViewContainer], [data-testid=stHeader] {background:#f5f7fa !important;}
+[data-testid=stSidebar] {background:#ffffff !important; border-right:1px solid #e5e9f0;}
+.stApp, .stApp p, .stApp span, .stApp label, .stApp li, .stApp td, .stApp th,
+h1, h2, h3, h4 {color:#0f172a !important;}
+.block-container {padding-top: 2rem; max-width: 1700px;}
+h1 {font-size: 2.1rem !important; font-weight: 800 !important;}
+h2, h3 {font-weight: 700 !important;}
+[data-testid=stDataFrame] {font-size: .98rem;}
+/* KPI cards: soft, flat, professional (no loud gradients) */
+.kpi {background:#ffffff; color:#0f172a; border:1px solid #e5e9f0;
+  border-left:5px solid #2563eb; border-radius:10px; padding:14px 16px; margin:4px 0;
+  box-shadow:0 1px 3px rgba(15,23,42,.06);}
+.kpi .lab {font-size:.74rem; letter-spacing:.03em; color:#64748b !important; text-transform:uppercase;}
+.kpi .val {font-size:1.5rem; font-weight:800; margin-top:4px; color:#0f172a !important;}
+.state-kpi .val {font-size:1.75rem;}
+.kpi.g {border-left-color:#059669;} .kpi.g .val {color:#047857 !important;}
+.kpi.r {border-left-color:#dc2626;} .kpi.r .val {color:#b91c1c !important;}
+.kpi.o {border-left-color:#d97706;}
+.kpi.p {border-left-color:#7c3aed;}
+/* Clean tables */
+[data-testid=stTable] table {border-collapse:collapse; width:100%; background:#fff;}
+[data-testid=stTable] thead th {background:#1e3a8a; color:#fff !important; font-weight:700;
   text-align:center; padding:10px;}
-[data-testid=stTable] tbody th {background:#eef2ff; font-weight:600;}
+[data-testid=stTable] tbody th {background:#f1f5f9; font-weight:600;}
 [data-testid=stTable] tbody td {padding:8px 10px;}
 [data-testid=stTable] tbody tr:nth-child(even) td {background:#f8fafc;}
 </style>
@@ -1282,13 +1286,35 @@ def margin_comparison_chart(frame, state_col='State', margin_col='Margin %'):
                     use_container_width=True)
 
 
+def _consolidated_summary(total, perf):
+    """Short, decision-ready bottom line for management."""
+    bullets = []
+    per_trip = _money(total['revenue'] / total['runs']) if total['runs'] else '-'
+    bullets.append(f"**Business volume:** {total['runs']:,} trips produced **{_money(total['revenue'])}** "
+                   f"in First Net Pay (about {per_trip} per trip).")
+    if total['policy_state'] and total.get('covered_runs'):
+        bullets.append(f"**Profit (where driver cost is known):** **{_money(total['profit'])}** on "
+                       f"{total['covered_runs']:,} covered trips \u2014 a **{_pct(total['margin'])} margin** "
+                       f"after paying drivers {_money(total['payment'])}.")
+    mperf = perf.dropna(subset=['Margin %'])
+    if not mperf.empty:
+        best = mperf.loc[mperf['Margin %'].idxmax()]
+        worst = mperf.loc[mperf['Margin %'].idxmin()]
+        bullets.append(f"**Strongest state:** {best['State']} ({best['Margin %']:.1f}% margin). "
+                       f"**Weakest:** {worst['State']} ({worst['Margin %']:.1f}%).")
+    if total.get('uncovered_runs'):
+        bullets.append(f"**Needs rates:** {total['uncovered_runs']:,} trips are in states with no pricing policy "
+                       f"and no uploaded driver Pay, so their true profit is unknown. Add those rates to complete the picture.")
+    if total.get('non_compliant'):
+        bullets.append(f"**Recoverable:** {total['non_compliant']:,} trips were underpaid vs policy, worth "
+                       f"**{_money(total['loss'])}** (profit would rise to {_money(total['profit_if'])} if corrected).")
+    st.success('\n\n'.join('- ' + b for b in bullets))
+
+
 def consolidated_page(df, origin):
     st.title('\U0001F4CA Consolidated Financial Report \u2014 All States')
-    st.caption('Built from First Alt. Price comparison: First Net Pay vs State Contract Revenue. Driver Payment is separate and comes from state Pay or policy fallback.')
+    st.caption('First Net Pay is the revenue source of truth. Driver Payment comes from your pricing policy, or the uploaded state Pay for states with no policy.')
     total = agg_block(df)
-    kpi_row(total)
-
-    st.subheader('Performance by state')
     rows = []
     for code in sorted(df['State'].unique(), key=lambda c: STATES.get(c, c)):
         b = agg_block(df[df['State'] == code])
@@ -1307,13 +1333,20 @@ def consolidated_page(df, origin):
             'Profit if compliant': b['profit_if'], 'Margin if compliant %': b['margin_if'],
         })
     perf = pd.DataFrame(rows)
-    st.dataframe(perf.style.format({
-        'First Net Pay': '${:,.2f}', 'Matched State Revenue': '${:,.2f}', 'State Report Revenue': '${:,.2f}',
-        'Price Difference': '${:,.2f}', 'Amount Due': '${:,.2f}',
-        'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
-        'Margin %': '{:,.1f}%', 'Loss': '${:,.2f}', 'Profit if compliant': '${:,.2f}',
-        'Margin if compliant %': '{:,.1f}%'}, na_rep='\u2014'),
-        use_container_width=True, hide_index=True)
+
+    st.subheader('\U0001F3AF Executive Summary \u2014 Bottom Line')
+    _consolidated_summary(total, perf)
+
+    st.subheader('Headline KPIs')
+    kpi_row(total)
+
+    with st.expander('Full performance table by state', expanded=False):
+        st.dataframe(perf.style.format({
+            'First Net Pay': '${:,.2f}', 'Matched State Revenue': '${:,.2f}', 'State Report Revenue': '${:,.2f}',
+            'Price Difference': '${:,.2f}', 'Amount Due': '${:,.2f}',
+            'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
+            'Margin %': '{:,.1f}%', 'Loss': '${:,.2f}', 'Profit if compliant': '${:,.2f}',
+            'Margin if compliant %': '{:,.1f}%'}, na_rep='\u2014').map(_color_pos_neg, subset=['Profit', 'Margin %']), use_container_width=True, hide_index=True)
 
     c1, c2 = st.columns(2)
     c1.caption('First Net Pay vs matched state contract revenue')
