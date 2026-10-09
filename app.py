@@ -1120,6 +1120,71 @@ def state_kpi(col, label, value, tone=''):
                  f'<div class="val">{value}</div></div>', unsafe_allow_html=True)
 
 
+def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
+                           profit, margin, loss, detail):
+    """Build a self-contained, color-coded HTML report for printing to PDF.
+    No scripts or event handlers \u2014 static, print-friendly markup only."""
+    from html import escape
+    gen = datetime.now().strftime('%Y-%m-%d %H:%M')
+    kpis = [
+        ('Driver Trips', f'{driver_trips:,}', '#3b82f6'),
+        ('Monitor / Escort Rides', f'{monitor_rides:,}', '#a855f7'),
+        ('Total Revenue', _money(rev), '#22c55e'),
+        ('Driver Cost', _money(pay), '#f59e0b'),
+        ('Profit', _money(profit), '#22c55e'),
+        ('Margin', f'{margin:.2%}', '#22c55e'),
+    ]
+    cards = ''.join(
+        f'<div class="card" style="border-left:6px solid {c}">'
+        f'<div class="lab">{escape(l)}</div><div class="val">{escape(str(v))}</div></div>'
+        for l, v, c in kpis)
+    body_rows = ''
+    for _, r in detail.iterrows():
+        try:
+            lossv = float(r['Loss'])
+        except (TypeError, ValueError):
+            lossv = 0.0
+        loss_style = 'color:#b91c1c;font-weight:700' if lossv > 0.005 else 'color:#065f46'
+        body_rows += (
+            '<tr>'
+            f'<td>{escape(str(r["Driver"]))}</td>'
+            f'<td class="n">{escape(str(r["Miles"]))}</td>'
+            f'<td class="n">{escape(_money(r["Gross Pay"]))}</td>'
+            f'<td class="n">{escape(_money(r["Current Driver Pay"]))}</td>'
+            f'<td class="n">{escape(_money(r["POLICY DRIVER PAY"]))}</td>'
+            f'<td class="n" style="{loss_style}">{escape(_money(r["Loss"]))}</td>'
+            '</tr>')
+    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>{escape(name)} \u2014 Financial Report</title>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;padding:28px;background:#fff}}
+h1{{font-size:22px;margin:0 0 2px;color:#1d4ed8}}
+.sub{{color:#64748b;font-size:12px;margin-bottom:16px}}
+.cards{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}}
+.card{{flex:1 1 150px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px}}
+.card .lab{{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:#64748b}}
+.card .val{{font-size:18px;font-weight:800;margin-top:3px}}
+.note{{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e3a8a;margin-bottom:16px}}
+table{{border-collapse:collapse;width:100%;font-size:11px}}
+thead th{{background:#1d4ed8;color:#fff;text-align:left;padding:7px 8px;border:1px solid #1e40af}}
+tbody td{{padding:5px 8px;border:1px solid #e2e8f0}}
+tbody tr:nth-child(even){{background:#f1f5f9}}
+td.n{{text-align:right}}
+@media print{{body{{padding:0}} .card{{break-inside:avoid}} thead{{display:table-header-group}}}}
+</style></head><body>
+<h1>{escape(name)} \u2014 Weekly Financial Report</h1>
+<div class="sub">Beyond Transportation \u00b7 generated {gen}</div>
+<div class="cards">{cards}</div>
+<div class="note"><b>Trip reconciliation:</b> {driver_trips:,} driver trips + {monitor_rides:,} monitor / escort rides
+= {runs:,} billable rows. Monitors ride along with a driver and are not standalone trips.
+<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.</div>
+<h3 style="color:#1d4ed8">Detailed Trip Analysis</h3>
+<table><thead><tr><th>Driver</th><th>Miles</th><th>Gross Pay</th><th>Current Driver Pay</th>
+<th>Policy Driver Pay</th><th>Loss</th></tr></thead><tbody>{body_rows}</tbody></table>
+</body></html>"""
+
+
 def kpi_row(total, state_name=''):
     comp_rate = (total['compliant'] / total['total_runs'] * 100) if total['total_runs'] else 0
     revenue_f_label = f'{state_name} Paid Fare / Net Pay (F)' if state_name else 'First Paid Fare / Net Pay (F)'
@@ -1782,12 +1847,24 @@ def state_page(df, code, origin):
         f'Matched for price comparison: {len(matched):,} runs / {_money(state_total)}. '
         f'Price difference is calculated only on those {len(matched):,} matched runs.'
     )
+    # Keep the matched trip detail available, but collapsed, so the Price Difference
+    # section below is the final thing the report ends on (per request).
+    with st.expander('First Alt Trips Used in Matching', expanded=False):
+        st.dataframe(matched[[c for c in ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name',
+                                          'Miles', 'Net_Pay', 'State_Price', 'Price_Difference']
+                                         if c in matched.columns]].style.format({
+                                             'Net_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
+                                             'Price_Difference': '${:,.2f}'}),
+                     use_container_width=True, hide_index=True)
+
     diff_report = price_difference_report(matched)
     if not diff_report.empty:
         st.subheader('Price Difference by Trip Price \u2014 State Revenue \u2212 First Net Pay')
+        st.caption('Difference per run = State contract revenue \u2212 First Net Pay (what Beyond was actually paid). '
+                   'A positive \u201cAmount Due From First\u201d is money owed to Beyond. This is the final section of the report.')
         diff_filter = st.selectbox(
             'Price difference filter',
-            ['Only First $42.50 \u2192 State $45.00', 'All price differences', 'Beyond due only'],
+            ['All price differences', 'Beyond due only', 'Only First $42.50 \u2192 State $45.00'],
             index=0, key=f'price_filter_{code}')
         shown_diff = diff_report
         if diff_filter == 'Only First $42.50 \u2192 State $45.00':
@@ -1797,19 +1874,14 @@ def state_page(df, code, origin):
                 st.info('No matched trips with First $42.50 and state contract $45.00 were found.')
         elif diff_filter == 'Beyond due only':
             shown_diff = diff_report[diff_report['Amount_Due_From_First'] > 0]
+            if shown_diff.empty:
+                st.info('No matched trips where the state contract is above First Net Pay.')
         st.dataframe(shown_diff.style.format({
             'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
             'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
             'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
             'Amount_Due_From_First': '${:,.2f}'}),
             use_container_width=True, hide_index=True)
-    st.subheader('First Alt Trips Used in Matching')
-    st.dataframe(matched[[c for c in ['Trip_Date', 'Driver_Name', 'District', 'Trip_Name',
-                                      'Miles', 'Net_Pay', 'State_Price', 'Price_Difference']
-                                     if c in matched.columns]].style.format({
-                                         'Net_Pay': '${:,.2f}', 'State_Price': '${:,.2f}',
-                                         'Price_Difference': '${:,.2f}'}),
-                 use_container_width=True, hide_index=True)
 
 def state_only_page(origin, code):
     """The original state-report page; First matching is intentionally not mixed into it."""
@@ -1827,6 +1899,12 @@ def state_only_page(origin, code):
     rows['Miles'] = miles
     rows['Gross_Pay'] = pd.to_numeric(rows['State_Price'], errors='coerce')
     rows['Net_Pay'] = actual_pay
+    # Monitors / escorts ride ALONG with a driver (marked "(MO)" or "(Monitor)");
+    # they are not standalone driver trips, so they are counted separately.
+    dnames = rows['Driver_Name'].astype(str)
+    rows['Is_Monitor'] = dnames.str.contains(r'\(mo\)|\(monitor\)|monitor', case=False, regex=True, na=False)
+    monitor_rides = int(rows['Is_Monitor'].sum())
+    driver_trips = int((~rows['Is_Monitor']).sum())
     # State-only files often omit vehicle/route; do not invent a vehicle-specific Alaska policy.
     if code == 'AK':
         rows['Policy_Driver_Pay'] = pd.NA
@@ -1852,11 +1930,20 @@ def state_only_page(origin, code):
         st.table(pol)
         st.subheader('Financial Summary')
         summary = pd.DataFrame({
-            'Metric': ['Total Trips', 'Total Revenue (Gross Pay)',
-                       'Total Driver Cost (Net Pay)', 'Total Margin (Profit)', 'Current Margin %'],
-            'Value': [f'{runs:,}', _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
+            'Metric': ['Driver Trips', 'Monitor / Escort Rides', 'Total Billable Rows',
+                       'Total Revenue (Gross Pay)', 'Total Driver Cost (Net Pay)',
+                       'Total Margin (Profit)', 'Current Margin %'],
+            'Value': [f'{driver_trips:,}', f'{monitor_rides:,}', f'{runs:,}',
+                      _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
         }).set_index('Metric')
         st.table(summary)
+        if monitor_rides:
+            st.caption(
+                f'Trip count reconciliation: **{driver_trips:,} driver trips** + '
+                f'**{monitor_rides:,} monitor / escort rides** = {runs:,} billable rows. '
+                'Monitors ride along with a driver (marked "(MO)" / "(Monitor)") and are not standalone '
+                'driver trips, so they are reported on their own line. Revenue and driver cost above '
+                'still include every billable row.')
         if code == 'AK':
             st.info('Alaska state rows do not include vehicle type or trip route. Alaska policy compliance is calculated only after First trip detail is uploaded and matched.')
         st.subheader('Compliance Impact Summary')
@@ -1873,6 +1960,9 @@ def state_only_page(origin, code):
                          f'+{((potential - profit) / rev if rev and not pd.isna(profit) else 0):.2%}']
         }, index=['Current Margin (Actual)', 'Potential Margin (If Compliant)', 'Profit Increase']))
         st.subheader('Detailed Trip Analysis')
+        st.caption('**Loss** = POLICY DRIVER PAY \u2212 Current Driver Pay, counted only when the driver was paid '
+                   '**below** policy. Example: policy says the driver should get $50 but was paid $33 \u2192 Loss = $17. '
+                   'Rows at or above policy show $0.')
         detail = rows[['Driver_Name', 'Miles', 'Gross_Pay', 'Net_Pay',
                        'Policy_Driver_Pay', 'Loss_Amount']].rename(columns={
                            'Driver_Name': 'Driver', 'Gross_Pay': 'Gross Pay',
@@ -1881,8 +1971,26 @@ def state_only_page(origin, code):
                            'Loss_Amount': 'Loss'})
         st.dataframe(detail.style.format({c: '${:,.2f}' for c in
                                           ['Gross Pay', 'Current Driver Pay',
-                                           'POLICY DRIVER PAY', 'Loss']}),
+                                           'POLICY DRIVER PAY', 'Loss']}).map(
+                                               _color_pos_neg, subset=['Loss']),
                      use_container_width=True, hide_index=True)
+        if monitor_rides:
+            with st.expander(f'Monitor / Escort rides ({monitor_rides:,})', expanded=False):
+                mon = rows[rows['Is_Monitor']][['Driver_Name', 'Gross_Pay', 'Net_Pay']].rename(
+                    columns={'Driver_Name': 'Monitor', 'Gross_Pay': 'Billed', 'Net_Pay': 'Monitor Pay'})
+                st.caption('These ride along with a driver and are billed/paid separately from the trip itself.')
+                st.dataframe(mon.style.format({'Billed': '${:,.2f}', 'Monitor Pay': '${:,.2f}'}),
+                             use_container_width=True, hide_index=True)
+
+        html_report = build_printable_report(
+            name, driver_trips, monitor_rides, runs, rev, pay, profit, margin, loss, detail)
+        st.download_button(
+            '\U0001F5A8\uFE0F Download printable report (open & print to PDF)',
+            html_report, file_name=f'{code}_report.html', mime='text/html',
+            key=f'print_{code}')
+        st.caption('Downloads a clean, color-coded one/two-page report. Open it in your browser and use '
+                   'Print \u2192 Save as PDF.')
+
         if st.button('\U0001F4BE Save this Weekly Analysis to History', key=f'save_state_{code}'):
             save_weekly_summary(code, rows,
                                 {'runs': runs, 'revenue': rev, 'payment': pay,
