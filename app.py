@@ -187,9 +187,54 @@ def init_db():
             (id INTEGER PRIMARY KEY AUTOINCREMENT, analysis_date TEXT, state TEXT,
              week_start_date TEXT, week_end_date TEXT, total_trips INTEGER,
              total_revenue REAL, total_driver_cost REAL, total_margin REAL, total_loss REAL)''')
+        # Consolidated month-end snapshots used for month-over-month KPI comparison.
+        c.execute('''CREATE TABLE IF NOT EXISTS monthly_summary
+            (period TEXT PRIMARY KEY, saved_on TEXT, runs INTEGER, covered_runs INTEGER,
+             revenue REAL, state_revenue REAL, payment REAL, profit REAL, margin REAL,
+             amount_due REAL, non_compliant INTEGER, loss REAL)''')
 
 
 init_db()
+
+
+def save_monthly_snapshot(period, total):
+    """Store/overwrite the consolidated KPIs for a given period (e.g. '2026-10')."""
+    with sqlite3.connect(DB_FILE) as c:
+        c.execute('''INSERT OR REPLACE INTO monthly_summary
+            (period, saved_on, runs, covered_runs, revenue, state_revenue, payment,
+             profit, margin, amount_due, non_compliant, loss)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (period, datetime.now().strftime('%Y-%m-%d %H:%M'),
+             int(total['runs']), int(total.get('covered_runs') or 0),
+             _num(total['revenue']), _num(total['state_revenue']), _num(total['payment']),
+             _num(total['profit']), _num(total['margin']), _num(total['amount_due']),
+             int(total['non_compliant']), _num(total['loss'])))
+
+
+def all_monthly_snapshots():
+    with sqlite3.connect(DB_FILE) as c:
+        return pd.read_sql_query(
+            'SELECT * FROM monthly_summary ORDER BY period ASC', c)
+
+
+def previous_monthly_snapshot(exclude_period=None):
+    """Return the most recent saved snapshot, optionally skipping the current period."""
+    snaps = all_monthly_snapshots()
+    if snaps.empty:
+        return None
+    if exclude_period is not None:
+        snaps = snaps[snaps['period'] != exclude_period]
+    if snaps.empty:
+        return None
+    return snaps.iloc[-1].to_dict()
+
+
+def _num(v):
+    """NaN-safe float for SQLite storage."""
+    try:
+        return None if pd.isna(v) else float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def save_weekly_summary(state_code, d, total):
@@ -1043,6 +1088,11 @@ h2, h3 {font-weight: 700 !important;}
   box-shadow:0 2px 6px rgba(0,0,0,.35);}
 .kpi .lab {font-size:.74rem; letter-spacing:.03em; color:#94a3b8 !important; text-transform:uppercase;}
 .kpi .val {font-size:1.5rem; font-weight:800; margin-top:4px; color:#f1f5f9 !important;}
+.kpi .delta {font-size:.82rem; font-weight:700; margin-top:3px;}
+.kpi .delta.up {color:#4ade80 !important;}
+.kpi .delta.down {color:#f87171 !important;}
+.kpi .delta.flat {color:#94a3b8 !important;}
+.kpi .prevv {font-size:.7rem; color:#94a3b8 !important; margin-top:1px;}
 .state-kpi .val {font-size:1.75rem;}
 .kpi.g {border-left-color:#22c55e;} .kpi.g .val {color:#4ade80 !important;}
 .kpi.r {border-left-color:#ef4444;} .kpi.r .val {color:#f87171 !important;}
@@ -1239,12 +1289,65 @@ def state_reports_consolidated_page(origin):
         st.subheader('\U0001F4C8 Profit Margin Comparison by State')
         st.caption('States ranked by profit margin \u2014 green bars are profitable, red bars are below break-even.')
         margin_comparison_chart(rep)
+        st.subheader('\U0001F4B0 Profit Distribution by State')
+        st.caption('How total profit is split across states \u2014 dollar amounts and each state\u2019s share.')
+        profit_distribution_chart(rep)
     st.subheader('State trip detail')
     st.caption('Every uploaded state row with miles, contract price, and driver payment is available in the Excel export.')
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
         with st.expander(f"{STATES.get(code,code)} \u2014 {info.get('runs',0):,} runs"):
             st.dataframe(state_report_detail(info, code), use_container_width=True, hide_index=True)
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
+
+
+def profit_distribution_chart(frame, state_col='State', profit_col='Profit'):
+    """Profit distribution by state: ranked $ bars + share-of-profit donut.
+
+    Labels use light text so they stay readable on the dark theme.
+    Falls back to st.bar_chart if Altair is unavailable.
+    """
+    data = frame[[state_col, profit_col]].dropna(subset=[profit_col]).copy()
+    if data.empty:
+        st.info('No profit data available to chart yet.')
+        return
+    data = data.sort_values(profit_col, ascending=False)
+    try:
+        import altair as alt
+    except Exception:
+        st.bar_chart(data.set_index(state_col)[[profit_col]])
+        return
+    data['Sign'] = data[profit_col].map(lambda v: 'Profit' if v >= 0 else 'Loss')
+    data['Label'] = data[profit_col].map(lambda v: f'${v:,.0f}')
+    c1, c2 = st.columns([3, 2])
+    base = alt.Chart(data)
+    bars = base.mark_bar(cornerRadiusEnd=4).encode(
+        x=alt.X(f'{profit_col}:Q', title='Profit (USD)'),
+        y=alt.Y(f'{state_col}:N', sort='-x', title=None),
+        color=alt.Color('Sign:N',
+                        scale=alt.Scale(domain=['Profit', 'Loss'],
+                                        range=['#22c55e', '#ef4444']),
+                        legend=alt.Legend(title=None)),
+        tooltip=[alt.Tooltip(f'{state_col}:N', title='State'),
+                 alt.Tooltip(f'{profit_col}:Q', title='Profit', format='$,.2f')])
+    text = base.mark_text(align='left', baseline='middle', dx=4, color='#e2e8f0').encode(
+        x=alt.X(f'{profit_col}:Q'), y=alt.Y(f'{state_col}:N', sort='-x'), text='Label:N')
+    c1.caption('Profit by state (USD)')
+    c1.altair_chart((bars + text).properties(height=max(220, 34 * len(data))),
+                    use_container_width=True)
+    # Share-of-profit donut over states that actually made money.
+    share = data[data[profit_col] > 0].copy()
+    if not share.empty:
+        total_profit = float(share[profit_col].sum())
+        share['Share'] = share[profit_col] / total_profit * 100
+        donut = alt.Chart(share).mark_arc(innerRadius=55, stroke='#0f172a', strokeWidth=1).encode(
+            theta=alt.Theta(f'{profit_col}:Q', stack=True),
+            color=alt.Color(f'{state_col}:N', legend=alt.Legend(title='State')),
+            tooltip=[alt.Tooltip(f'{state_col}:N', title='State'),
+                     alt.Tooltip(f'{profit_col}:Q', title='Profit', format='$,.2f'),
+                     alt.Tooltip('Share:Q', title='Share of profit', format=',.1f')])
+        c2.caption('Share of total profit')
+        c2.altair_chart(donut.properties(height=max(220, 34 * len(data))),
+                        use_container_width=True)
 
 
 def margin_comparison_chart(frame, state_col='State', margin_col='Margin %'):
@@ -1280,6 +1383,87 @@ def margin_comparison_chart(frame, state_col='State', margin_col='Margin %'):
         text='Label:N')
     st.altair_chart((bars + text).properties(height=max(220, 32 * len(data))),
                     use_container_width=True)
+
+
+def _delta_kpi(col, label, cur, prev, kind='money', higher_is_better=True, tone=''):
+    """KPI card that also shows the change vs the previous month's snapshot."""
+    fmt = {'money': _money, 'pct': _pct, 'int': _int}.get(kind, _money)
+    val = fmt(cur)
+    delta_html = ''
+    if prev is not None and not pd.isna(prev) and not (cur is None or pd.isna(cur)):
+        diff = float(cur) - float(prev)
+        if kind == 'pct':
+            change_txt = f'{diff:+.1f} pts'
+        elif kind == 'int':
+            change_txt = f'{int(round(diff)):+,}'
+        else:
+            change_txt = f'{diff:+,.2f}'.replace('+', '+$').replace('-', '-$')
+        pct_txt = ''
+        if kind != 'pct' and abs(float(prev)) > 1e-9:
+            pct_txt = f' ({diff / abs(float(prev)) * 100:+.1f}%)'
+        if abs(diff) < 1e-9:
+            cls, arrow = 'flat', '→'
+        else:
+            good = (diff > 0) if higher_is_better else (diff < 0)
+            cls = 'up' if good else 'down'
+            arrow = '▲' if diff > 0 else '▼'
+        delta_html = (f'<div class="delta {cls}">{arrow} {change_txt}{pct_txt}</div>'
+                      f'<div class="prevv">prev: {fmt(prev)}</div>')
+    elif prev is None:
+        delta_html = '<div class="prevv">no prior month saved</div>'
+    col.markdown(f'<div class="kpi {tone}"><div class="lab">{label}</div>'
+                 f'<div class="val">{val}</div>{delta_html}</div>', unsafe_allow_html=True)
+
+
+def monthly_comparison_block(total):
+    """Save the current consolidated KPIs as a month snapshot and compare to the prior month."""
+    st.subheader('\U0001F5D3\uFE0F Month-over-Month Comparison')
+    default_period = datetime.now().strftime('%Y-%m')
+    c1, c2, c3 = st.columns([2, 2, 3])
+    period = c1.text_input('Current period label', value=default_period, key='mom_period',
+                           help='e.g. 2026-10. Save it, then next month save again to see the change.')
+    if c2.button('\U0001F4BE Save this month\u2019s KPIs', key='save_month'):
+        save_monthly_snapshot(period.strip() or default_period, total)
+        st.success(f'Saved consolidated KPIs for {period.strip() or default_period}.')
+    prev = previous_monthly_snapshot(exclude_period=(period.strip() or default_period))
+    if prev is None:
+        c3.info('No earlier month saved yet. Save this month, then come back next month '
+                'to see the trend against it.')
+    else:
+        c3.caption(f'Comparing against **{prev["period"]}** (saved {prev.get("saved_on", "")}).')
+
+    a, b, cc, d, e = st.columns(5)
+    _delta_kpi(a, 'Runs', total['runs'], (prev or {}).get('runs'), 'int')
+    _delta_kpi(b, 'First Net Pay', total['revenue'], (prev or {}).get('revenue'), 'money', True, 'p')
+    _delta_kpi(cc, 'Profit', total['profit'], (prev or {}).get('profit'), 'money', True, 'g')
+    _delta_kpi(d, 'Margin', total['margin'], (prev or {}).get('margin'), 'pct', True, 'g')
+    _delta_kpi(e, 'Driver Payment', total['payment'], (prev or {}).get('payment'), 'money', True, 'o')
+    f, g, h, i, j = st.columns(5)
+    _delta_kpi(f, 'Revenue / run', (total['revenue'] / total['runs']) if total['runs'] else float('nan'),
+               ((prev or {}).get('revenue') / prev['runs']) if (prev and prev.get('runs')) else None, 'money')
+    _delta_kpi(g, 'Amount due from First', total['amount_due'], (prev or {}).get('amount_due'), 'money', True, 'r')
+    _delta_kpi(h, 'State Revenue', total['state_revenue'], (prev or {}).get('state_revenue'), 'money', True, 'o')
+    _delta_kpi(i, 'Non-compliant runs', total['non_compliant'], (prev or {}).get('non_compliant'), 'int', False, 'r')
+    _delta_kpi(j, 'Recoverable loss', total['loss'], (prev or {}).get('loss'), 'money', False, 'r')
+
+    snaps = all_monthly_snapshots()
+    if len(snaps) >= 2:
+        with st.expander('Saved monthly snapshots & trend', expanded=False):
+            show = snaps.rename(columns={
+                'period': 'Period', 'runs': 'Runs', 'revenue': 'First Net Pay',
+                'profit': 'Profit', 'margin': 'Margin %', 'payment': 'Driver Payment',
+                'loss': 'Loss', 'non_compliant': 'Non-compliant', 'saved_on': 'Saved on'})
+            st.dataframe(show[['Period', 'Runs', 'First Net Pay', 'Driver Payment', 'Profit',
+                               'Margin %', 'Non-compliant', 'Loss', 'Saved on']].style.format({
+                'First Net Pay': '${:,.2f}', 'Driver Payment': '${:,.2f}', 'Profit': '${:,.2f}',
+                'Margin %': '{:,.1f}%', 'Loss': '${:,.2f}'}, na_rep='\u2014'),
+                use_container_width=True, hide_index=True)
+            trend = snaps.set_index('period')
+            st.caption('First Net Pay & Profit by period')
+            st.bar_chart(trend[['revenue', 'profit']])
+            if trend['margin'].notna().any():
+                st.caption('Margin % by period')
+                st.line_chart(trend[['margin']])
 
 
 def _consolidated_summary(total, perf):
@@ -1333,6 +1517,8 @@ def consolidated_page(df, origin):
     st.subheader('\U0001F3AF Executive Summary \u2014 Bottom Line')
     _consolidated_summary(total, perf)
 
+    monthly_comparison_block(total)
+
     st.subheader('Headline KPIs')
     kpi_row(total)
 
@@ -1355,6 +1541,10 @@ def consolidated_page(df, origin):
     st.subheader('\U0001F4C8 Profit Margin Comparison by State')
     st.caption('States ranked by profit margin \u2014 green bars are profitable, red bars are below break-even.')
     margin_comparison_chart(perf)
+
+    st.subheader('\U0001F4B0 Profit Distribution by State')
+    st.caption('How total profit is split across states \u2014 dollar amounts and each state\u2019s share.')
+    profit_distribution_chart(perf)
 
     if origin:
         diff_report = price_difference_report(df)
