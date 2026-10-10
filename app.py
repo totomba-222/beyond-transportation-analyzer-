@@ -1008,6 +1008,21 @@ def _int(v):
     return '-' if pd.isna(v) else f'{int(v):,}'
 
 
+# Monitors / escorts ride ALONG with a driver (marked "(MO)" or "(Monitor)").
+# Driver keys are normalised (parentheses become spaces) so "(MO)" becomes a bare
+# "mo" token — match that plus the explicit "(mo)"/"(monitor)"/"monitor" forms.
+_MONITOR_RX = r'\(mo\)|\(monitor\)|\bmonitor\b|\bmo\b'
+
+
+def _monitor_mask(rows):
+    """Boolean mask of monitor/escort rows (NOT real trips). Checks driver name/key."""
+    for col in ('Driver_Name', 'Driver_Key', 'Driver'):
+        if col in rows.columns:
+            return rows[col].astype(str).str.contains(
+                _MONITOR_RX, case=False, regex=True, na=False)
+    return pd.Series(False, index=rows.index)
+
+
 def _color_pos_neg(val):
     """Attractive, dark-theme-friendly colouring for Profit / Margin cells.
     Positive = emerald, negative = rose, zero/blank = slate blue — never plain white."""
@@ -1215,6 +1230,63 @@ def _ratio_bars_png(pairs):
     return _mpl_png(fig)
 
 
+def _grouped_bars_png(labels, series, colors, title=''):
+    """Grouped vertical bars (e.g. State Revenue vs Driver Pay) -> PNG bytes.
+    `series` = list of (name, [values]); `colors` matches series order."""
+    if not HAS_MPL or not labels:
+        return b''
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    n = len(series)
+    x = range(len(labels))
+    width = 0.8 / max(1, n)
+    fig, ax = plt.subplots(figsize=(6.2, 3.1))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    for i, (name, vals) in enumerate(series):
+        off = [xi + i * width - 0.4 + width / 2 for xi in x]
+        ax.bar(off, vals, width=width, label=name, color=colors[i % len(colors)])
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, color='#e2e8f0', fontsize=8, rotation=30, ha='right')
+    ax.tick_params(axis='y', colors='#94a3b8', labelsize=7)
+    ax.grid(axis='y', color='#334155', linewidth=0.6, alpha=0.6)
+    ax.set_axisbelow(True)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.legend(frameon=False, fontsize=8, labelcolor='#e2e8f0', ncol=n, loc='upper right')
+    if title:
+        ax.set_title(title, color='#f1f5f9', fontsize=10, fontweight='bold')
+    return _mpl_png(fig)
+
+
+def _state_bars_png(labels, values, title=''):
+    """Horizontal bars per state, green positive / red negative -> PNG bytes."""
+    if not HAS_MPL or not labels:
+        return b''
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    order = sorted(range(len(values)), key=lambda i: (values[i] if values[i] == values[i] else -1e9))
+    labs = [labels[i] for i in order]
+    vals = [0.0 if values[i] != values[i] else float(values[i]) for i in order]
+    cols = ['#22c55e' if v >= 0 else '#ef4444' for v in vals]
+    fig, ax = plt.subplots(figsize=(6.2, 0.45 * len(labs) + 0.8))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    ax.barh(range(len(labs)), vals, color=cols, height=0.6)
+    ax.set_yticks(range(len(labs)))
+    ax.set_yticklabels(labs, color='#e2e8f0', fontsize=8)
+    ax.tick_params(axis='x', colors='#94a3b8', labelsize=7)
+    ax.grid(axis='x', color='#334155', linewidth=0.6, alpha=0.6)
+    ax.set_axisbelow(True)
+    for s in ax.spines.values():
+        s.set_visible(False)
+    if title:
+        ax.set_title(title, color='#f1f5f9', fontsize=10, fontweight='bold')
+    return _mpl_png(fig)
+
+
 def _png_data_uri(png):
     import base64
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
@@ -1263,7 +1335,7 @@ def _pdf_friendly_html(spec):
             continue
         chart_block += (
             f'<table width="100%"><tr><td align="center" style="padding:4px">'
-            f'<img src="{_png_data_uri(png)}" style="width:340px"/><br/>'
+            f'<img src="{_png_data_uri(png)}" style="width:440px"/><br/>'
             f'<span style="font-size:7pt;color:#94a3b8">{escape(cap)}</span></td></tr></table><br/>')
     sections = ''
     for sec_title, df, fmt, posneg in tables:
@@ -1287,9 +1359,9 @@ def _pdf_friendly_html(spec):
                     try:
                         fv = float(v)
                         if fv > 0.005:
-                            bg, fg, bold = '#dcfce7', '#065f46', 'b'
+                            bg, fg, bold = '#064e3b', '#6ee7b7', 'b'
                         elif fv < -0.005:
-                            bg, fg, bold = '#fee2e2', '#991b1b', 'b'
+                            bg, fg, bold = '#7f1d1d', '#fca5a5', 'b'
                     except (TypeError, ValueError):
                         pass
                 inner = escape(txt)
@@ -1674,8 +1746,13 @@ def state_reports_consolidated_page(origin):
                'Profit = State Revenue \u2212 Driver Pay. It does not use First data.')
     summary = []
     sheets = {}
+    total_monitor_rides = 0
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
         rows = info.get('rows', pd.DataFrame()).copy()
+        # Monitors / escorts are NOT trips: drop them from runs, revenue and pay.
+        mon = _monitor_mask(rows)
+        total_monitor_rides += int(mon.sum())
+        rows = rows[~mon]
         rev = float(pd.to_numeric(rows.get('State_Price', pd.Series(dtype=float)), errors='coerce').sum())
         pay_series = pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
         pay = float(pay_series.sum()) if pay_series.notna().any() else float('nan')
@@ -1701,6 +1778,9 @@ def state_reports_consolidated_page(origin):
         state_kpi(c, 'Driver Pay', _money(tot_pay), 'p')
         state_kpi(d, 'Profit', _money(tot_profit), 'g')
         state_kpi(e, 'Margin', _pct(tot_margin), 'g')
+        if total_monitor_rides:
+            st.caption(f'\u2139\ufe0f {total_monitor_rides:,} monitor / escort rows marked "(MO)" / "(Monitor)" '
+                       'were excluded \u2014 they ride along and are not billable trips.')
         st.subheader('Profit & Margin by State')
         sty = (rep.style
                .format({'State Revenue': '${:,.2f}', 'Driver Pay': '${:,.2f}',
@@ -1740,6 +1820,18 @@ def state_reports_consolidated_page(origin):
                         ['#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#ef4444',
                          '#14b8a6', '#eab308', '#ec4899'] * 4,
                         center=_money(tot_profit))) if not rep.empty else ('', b''),
+            ('State Revenue vs Driver Pay',
+             _grouped_bars_png(
+                 list(rep['State'].astype(str)),
+                 [('State Revenue', list(pd.to_numeric(rep['State Revenue'], errors='coerce').fillna(0))),
+                  ('Driver Pay', list(pd.to_numeric(rep['Driver Pay'], errors='coerce').fillna(0)))],
+                 ['#3b82f6', '#f59e0b'])),
+            ('Profit by state (USD)',
+             _state_bars_png(list(rep['State'].astype(str)),
+                             list(pd.to_numeric(rep['Profit'], errors='coerce')))),
+            ('Profit margin % by state',
+             _state_bars_png(list(rep['State'].astype(str)),
+                             list(pd.to_numeric(rep['Margin %'], errors='coerce')))),
         ]
         report_spec = {
             'title': 'State Reports \u2014 Consolidated',
