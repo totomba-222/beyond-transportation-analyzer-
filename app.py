@@ -1350,6 +1350,71 @@ def _html_to_pdf(screen_html, spec=None):
                 return buf.getvalue()
         except Exception:
             pass
+    # Last-resort fallback for hosted environments where neither WeasyPrint nor
+    # xhtml2pdf is installed. Matplotlib is already used by the dashboard charts
+    # and can create a real, downloadable PDF without system PDF libraries.
+    if spec is not None:
+        try:
+            import textwrap
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_pdf import PdfPages
+
+            output = io.BytesIO()
+            with PdfPages(output) as pdf_file:
+                def add_text_page(title, lines):
+                    fig = plt.figure(figsize=(11.69, 8.27), facecolor='#0e1117')
+                    ax = fig.add_axes([0.05, 0.05, 0.90, 0.90])
+                    ax.set_facecolor('#0e1117')
+                    ax.axis('off')
+                    ax.text(0.0, 0.97, title, color='#f8fafc', fontsize=20,
+                            fontweight='bold', va='top')
+                    y = 0.90
+                    for line in lines:
+                        ax.text(0.0, y, line, color='#e2e8f0', fontsize=10,
+                                va='top', family='DejaVu Sans Mono')
+                        y -= 0.035
+                        if y < 0.06:
+                            pdf_file.savefig(fig, facecolor=fig.get_facecolor(),
+                                             bbox_inches='tight')
+                            plt.close(fig)
+                            fig = plt.figure(figsize=(11.69, 8.27), facecolor='#0e1117')
+                            ax = fig.add_axes([0.05, 0.05, 0.90, 0.90])
+                            ax.set_facecolor('#0e1117')
+                            ax.axis('off')
+                            y = 0.97
+                    pdf_file.savefig(fig, facecolor=fig.get_facecolor(),
+                                     bbox_inches='tight')
+                    plt.close(fig)
+
+                kpi_lines = [f'{label}: {value}' for label, value, _tone in spec.get('kpis', [])]
+                ratio_lines = [f'{label}: {value}' for label, value, _tone in spec.get('ratios', [])]
+                add_text_page(spec.get('title', 'Financial Report'),
+                              kpi_lines + (['', 'Financial Ratios'] + ratio_lines if ratio_lines else []))
+
+                for section_title, frame, fmt, _posneg in spec.get('tables', []):
+                    if frame is None or frame.empty:
+                        continue
+                    frame = frame.copy()
+                    cols = list(frame.columns)
+                    lines = [section_title, ' | '.join(str(c) for c in cols)]
+                    for _, row in frame.iterrows():
+                        values = []
+                        for col in cols:
+                            value = row[col]
+                            formatter = fmt.get(col) if fmt else None
+                            try:
+                                value = formatter(value) if formatter else value
+                            except Exception:
+                                pass
+                            values.append(str(value))
+                        lines.append(' | '.join(values))
+                    add_text_page(section_title, [x for line in lines
+                                                  for x in textwrap.wrap(line, 150) or ['']])
+            return output.getvalue()
+        except Exception:
+            pass
     return None
 
 
