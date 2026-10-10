@@ -324,7 +324,7 @@ DRIVER_STATE = {
     'abdulrahman alnagar alnagar': 'N.CA', 'abeer ahmad dhaifallah': 'N.CA', 'ahmed musaad almakkawi': 'N.CA',
     'alal mohammed bosh': 'N.CA', 'ali saleh hassan': 'N.CA', 'alsadig m mohammed': 'N.CA',
     'amer ali alabshalah': 'N.CA', 'ammar alammari': 'N.CA', 'asma mohammed alhamdani': 'N.CA',
-    'fares ameen alshalh': 'N.CA', 'habes al tayyeb': 'N.CA', 'hassan mahmoud hassan': 'N.CA',
+    'fares ameen alshalh': 'N.CA', 'habes al tayyeb': 'SAC', 'hassan mahmoud hassan': 'N.CA',
     'hesham alrawhani': 'N.CA', 'hiadar elsayed': 'N.CA', 'husni mubarik': 'N.CA', 'ibrahim m elsayed': 'N.CA',
     'isam qadari': 'N.CA', 'lulit girma bune': 'N.CA', 'mohamed ahmed hugais': 'N.CA',
     'mohamed hussein altayeb abdalla': 'N.CA', 'mohamed omar ali': 'N.CA', 'mohamed omir': 'N.CA',
@@ -332,7 +332,7 @@ DRIVER_STATE = {
     'muhammad laiq': 'N.CA', 'mustafa ali albarea': 'N.CA', 'mustafa hassan abdalkareem': 'N.CA',
     'nagi alnaeem': 'N.CA', 'nagibah e alghazali': 'N.CA', 'omer omer': 'N.CA', 'rashid masood malik': 'N.CA',
     'salah hassan': 'N.CA', 'samir m abas': 'N.CA', 'siddieg basher khair': 'N.CA',
-    'snose omar hamid ali': 'N.CA', 'solomon bekkele': 'N.CA', 'suhaib yousef batayneh': 'N.CA',
+    'snose omar hamid ali': 'N.CA', 'solomon bekkele': 'N.CA', 'suhaib yousef batayneh': 'SAC',
     'sultan alhalemi': 'N.CA', 'wadah alomaisi alomaisi': 'N.CA', 'yeshi challa': 'N.CA',
     'yousef yahya alzawkari': 'N.CA', 'abdelaziz dafi': 'NM', 'adam ait azzat': 'NM', 'adonis gonzalez': 'NM',
     'alexis santos': 'NM', 'angely wladiuska carrero': 'NM', 'ayman awad': 'NM', 'brahim bouhamadi': 'NM',
@@ -364,13 +364,13 @@ DRIVER_STATE = {
     'jihane benchaouch': 'RS&AZ', 'khalid abu sarriyeh': 'RS&AZ', 'leen albahnassi': 'RS&AZ',
     'leila hamad rayan': 'RS&AZ', 'lithe farouk abdullah': 'RS&AZ', 'mandeep singh': 'RS&AZ',
     'maria rivera-ramirez': 'RS&AZ', 'miriam dawod rayan': 'RS&AZ', 'mohammad hamdan ahmad alsutari': 'RS&AZ',
-    'mohammed emad bedaer': 'RS&AZ', 'mona bazzoun': 'RS&AZ', 'mostafa safwan alhakim': 'RS&AZ',
+    'mohammed emad bedaer': 'AZ', 'mona bazzoun': 'RS&AZ', 'mostafa safwan alhakim': 'RS&AZ',
     'mostafa sharaby': 'RS&AZ', 'mukesh kumar': 'RS&AZ', 'mustafa f m zatar': 'RS&AZ',
     'nabeel aldabbas': 'RS&AZ', 'nada a suleiman': 'RS&AZ', 'nada abusnoubar': 'RS&AZ',
     'nesrin elshabasy': 'RS&AZ', 'niveen mohd abdel aziz abbad': 'RS&AZ', 'rana muhammad abrar bashir': 'RS&AZ',
     'rana nazmi abu samrah salaymeh': 'RS&AZ', 'rehan ahmad malik': 'RS&AZ',
     'ruben bruno ramirez rivera': 'RS&AZ', 'safwan alhakim': 'RS&AZ', 'sagar sagar': 'RS&AZ',
-    'saif said awda': 'RS&AZ', 'salah musa hussein': 'RS&AZ', 'sandeep singh bajwa': 'RS&AZ',
+    'saif said awda': 'AZ', 'salah musa hussein': 'RS&AZ', 'sandeep singh bajwa': 'RS&AZ',
     'saqib hussain': 'RS&AZ', 'sukhjit singh': 'RS&AZ', 'syed saleem ahmad': 'RS&AZ', 'tahani hussain': 'RS&AZ',
     'taquia davis': 'RS&AZ', 'taranjeet singh': 'RS&AZ', 'thaer abusnoubar': 'RS&AZ',
 }
@@ -1096,8 +1096,8 @@ h2, h3 {font-weight: 700 !important;}
 .state-kpi .val {font-size:1.75rem;}
 .kpi.g {border-left-color:#22c55e;} .kpi.g .val {color:#4ade80 !important;}
 .kpi.r {border-left-color:#ef4444;} .kpi.r .val {color:#f87171 !important;}
-.kpi.o {border-left-color:#f59e0b;}
-.kpi.p {border-left-color:#a855f7;}
+.kpi.o {border-left-color:#f59e0b;} .kpi.o .val {color:#fbbf24 !important;}
+.kpi.p {border-left-color:#a855f7;} .kpi.p .val {color:#c084fc !important;}
 /* Dark-friendly static tables */
 [data-testid=stTable] table {border-collapse:collapse; width:100%; background:#1e293b;}
 [data-testid=stTable] thead th {background:#1d4ed8; color:#ffffff !important; font-weight:700;
@@ -1121,21 +1121,124 @@ def state_kpi(col, label, value, tone=''):
 
 
 _TONE_COLORS = {'g': '#22c55e', 'r': '#ef4444', 'o': '#f59e0b', 'p': '#a855f7', '': '#3b82f6'}
+# Brighter text colors so KPI values never look plain white.
+_VAL_COLORS = {'g': '#4ade80', 'r': '#f87171', 'o': '#fbbf24', 'p': '#c084fc', '': '#60a5fa'}
 
 
-def _pdf_friendly_html(title, subtitle, kpis, note_html, tables):
+def _mpl_png(fig):
+    """Serialize a matplotlib figure to PNG bytes on the dark canvas."""
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', facecolor='#0e1117', dpi=130, bbox_inches='tight')
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _donut_png(values, labels, colors, center=''):
+    """Dark donut chart -> PNG bytes. Zero/negative slices are dropped."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    data = [(v, l, c) for v, l, c in zip(values, labels, colors) if v and v > 0]
+    if not data:
+        data = [(1, 'n/a', '#334155')]
+    vals = [d[0] for d in data]
+    labs = [d[1] for d in data]
+    cols = [d[2] for d in data]
+    fig, ax = plt.subplots(figsize=(3.1, 3.1))
+    fig.patch.set_facecolor('#0e1117')
+    wedges, _ = ax.pie(vals, colors=cols, startangle=90,
+                       wedgeprops=dict(width=0.42, edgecolor='#0e1117', linewidth=2))
+    total = sum(vals)
+    ax.legend(wedges, [f'{l}  ({v/total:.0%})' for l, v in zip(labs, vals)],
+              loc='center', bbox_to_anchor=(0.5, -0.08), ncol=1, frameon=False,
+              fontsize=8, labelcolor='#e2e8f0')
+    if center:
+        ax.text(0, 0, center, ha='center', va='center', color='#f1f5f9',
+                fontsize=11, fontweight='bold')
+    ax.set_aspect('equal')
+    return _mpl_png(fig)
+
+
+def _ratio_bars_png(pairs):
+    """Horizontal percentage bars (label, pct 0-100, color) -> PNG bytes."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    labels = [p[0] for p in pairs]
+    vals = [max(0.0, min(100.0, float(p[1]))) for p in pairs]
+    cols = [p[2] for p in pairs]
+    fig, ax = plt.subplots(figsize=(5.4, 0.62 * len(pairs) + 0.6))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    y = range(len(pairs))
+    ax.barh(list(y), [100] * len(pairs), color='#1e293b', edgecolor='#334155', height=0.6)
+    ax.barh(list(y), vals, color=cols, height=0.6)
+    ax.set_yticks(list(y))
+    ax.set_yticklabels(labels, color='#e2e8f0', fontsize=9)
+    ax.set_xlim(0, 100)
+    ax.invert_yaxis()
+    for i, v in enumerate(vals):
+        ax.text(min(v + 2, 99), i, f'{v:.1f}%', va='center', ha='left',
+                color='#f1f5f9', fontsize=9, fontweight='bold')
+    for s in ax.spines.values():
+        s.set_visible(False)
+    ax.tick_params(axis='x', colors='#64748b', labelsize=7)
+    ax.set_xticks([0, 25, 50, 75, 100])
+    return _mpl_png(fig)
+
+
+def _png_data_uri(png):
+    import base64
+    return 'data:image/png;base64,' + base64.b64encode(png).decode()
+
+
+def _pdf_friendly_html(spec):
     """Dark report markup that xhtml2pdf can render (table-based, no flexbox,
-    inline row striping). Pure-pip engine \u2014 needs no system libraries."""
+    inline row striping, base64 charts). Pure-pip engine \u2014 no system libraries."""
     from html import escape
+    title = spec['title']
+    subtitle = spec.get('subtitle', '')
+    kpis = spec.get('kpis', [])
+    note_html = spec.get('note', '')
+    tables = spec.get('tables', [])
+    ratios = spec.get('ratios', [])
+    charts = spec.get('charts', [])
     gen = datetime.now().strftime('%Y-%m-%d %H:%M')
-    n = max(1, len(kpis))
-    w = max(16, int(100 / n))
-    kpi_cells = ''.join(
-        f'<td width="{w}%" valign="top" style="background:#1e293b;border:1px solid #334155;'
-        f'border-left:5px solid {col};padding:8px">'
-        f'<span style="font-size:6pt;color:#94a3b8">{escape(str(lab)).upper()}</span><br/>'
-        f'<span style="font-size:12pt;color:#f1f5f9"><b>{escape(str(val))}</b></span></td>'
-        for lab, val, col in kpis)
+    report_date = datetime.now().strftime('%B %d, %Y')
+
+    def kpi_table(items):
+        if not items:
+            return ''
+        w = max(16, int(100 / max(1, len(items))))
+        cells = ''.join(
+            f'<td width="{w}%" valign="top" style="background:#1e293b;border:1px solid #334155;'
+            f'border-left:5px solid {_TONE_COLORS.get(tone, tone)};padding:8px">'
+            f'<span style="font-size:6pt;color:#94a3b8">{escape(str(lab)).upper()}</span><br/>'
+            f'<span style="font-size:12pt;color:{_VAL_COLORS.get(tone, "#f1f5f9")}"><b>{escape(str(val))}</b></span></td>'
+            for lab, val, tone in items)
+        return (f'<table border="0" cellspacing="3" cellpadding="0" width="100%">'
+                f'<tr>{cells}</tr></table><br/>')
+
+    kpi_block = kpi_table(kpis)
+    note_block = ''
+    if note_html:
+        note_block = (f'<table width="100%"><tr><td style="background:#172033;border:1px solid #334155;'
+                      f'border-left:5px solid #3b82f6;padding:9px">'
+                      f'<span style="font-size:7pt;color:#cbd5e1">{note_html}</span></td></tr></table><br/>')
+    ratio_block = ''
+    if ratios:
+        ratio_block = ('<p><span style="font-size:11pt;color:#f1f5f9"><b>Financial Ratios</b></span></p>'
+                       + kpi_table(ratios))
+    chart_block = ''
+    for cap, png in charts:
+        if not png:
+            continue
+        chart_block += (
+            f'<table width="100%"><tr><td align="center" style="padding:4px">'
+            f'<img src="{_png_data_uri(png)}" style="width:340px"/><br/>'
+            f'<span style="font-size:7pt;color:#94a3b8">{escape(cap)}</span></td></tr></table><br/>')
     sections = ''
     for sec_title, df, fmt, posneg in tables:
         if df is None or df.empty:
@@ -1172,23 +1275,33 @@ def _pdf_friendly_html(title, subtitle, kpis, note_html, tables):
         sections += (
             f'<p><span style="font-size:11pt;color:#f1f5f9"><b>{escape(sec_title)}</b></span></p>'
             f'<table border="0" cellspacing="0" cellpadding="0" width="100%">'
-            f'<tr>{thead}</tr>{body}</table>')
-    note_block = ''
-    if note_html:
-        note_block = (f'<table width="100%"><tr><td style="background:#172033;border:1px solid #334155;'
-                      f'border-left:5px solid #3b82f6;padding:9px">'
-                      f'<span style="font-size:7pt;color:#cbd5e1">{note_html}</span></td></tr></table><br/>')
+            f'<tr>{thead}</tr>{body}</table><br/>')
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
-@page {{ size: a4 landscape; margin: 1.2cm; background-color: #0e1117; }}
+@page {{
+  size: a4 landscape; margin: 1.2cm; background-color: #0e1117;
+  @frame content_frame {{ left:1.2cm; width:27.3cm; top:1.2cm; height:17.3cm; }}
+  @frame footer_frame {{ -pdf-frame-content: footerContent; left:1.2cm; width:27.3cm; top:18.7cm; height:0.9cm; }}
+}}
 body {{ background-color:#0e1117; font-family: Helvetica, Arial, sans-serif; }}
 td {{ font-family: Helvetica, Arial, sans-serif; }}
 </style></head>
 <body>
+<table width="100%"><tr><td align="center" valign="middle" height="430">
+<span style="font-size:12pt;color:#60a5fa;letter-spacing:3px"><b>BEYOND TRANSPORTATION</b></span><br/><br/>
+<span style="font-size:30pt;color:#f8fafc"><b>{escape(title)}</b></span><br/><br/>
+<span style="font-size:11pt;color:#94a3b8">{escape(subtitle)}</span><br/><br/><br/>
+<span style="font-size:9pt;color:#cbd5e1"><b>&nbsp;&nbsp;FINANCIAL REPORT&nbsp;&nbsp;</b></span><br/><br/>
+<span style="font-size:14pt;color:#e2e8f0"><b>{report_date}</b></span><br/><br/><br/>
+<span style="font-size:8pt;color:#64748b">Hatem&#39;s B.T. Analyzer &#183; Confidential</span>
+</td></tr></table>
+<pdf:nextpage />
 <p><span style="font-size:17pt;color:#f1f5f9"><b>{escape(title)}</b></span></p>
 <p><span style="font-size:8pt;color:#94a3b8">{escape(subtitle)} &#183; generated {gen}</span></p>
-<table border="0" cellspacing="3" cellpadding="0" width="100%"><tr>{kpi_cells}</tr></table>
-<br/>{note_block}{sections}
+{kpi_block}{note_block}{ratio_block}{chart_block}{sections}
+<div id="footerContent" style="text-align:center">
+<span style="font-size:7pt;color:#64748b">Beyond Transportation &#183; {report_date} &#183; Page <pdf:pagenumber /> of <pdf:pagecount /></span>
+</div>
 </body></html>"""
 
 
@@ -1206,7 +1319,7 @@ def _html_to_pdf(screen_html, spec=None):
             import io
             from xhtml2pdf import pisa
             buf = io.BytesIO()
-            result = pisa.CreatePDF(src=_pdf_friendly_html(*spec), dest=buf,
+            result = pisa.CreatePDF(src=_pdf_friendly_html(spec), dest=buf,
                                     encoding='utf-8')
             if not result.err:
                 return buf.getvalue()
@@ -1216,15 +1329,16 @@ def _html_to_pdf(screen_html, spec=None):
 
 
 def _report_downloads(spec, base_name, key):
-    """spec = (title, subtitle, kpis, note_html, tables).
+    """spec = dict(title, subtitle, kpis, note, tables, ratios, charts).
     Offers a dark PDF (same look as the screen) plus an HTML fallback."""
-    screen_html = _dark_report_html(*spec)
+    screen_html = _dark_report_html(spec)
     pdf = _html_to_pdf(screen_html, spec)
     if pdf:
         st.download_button(
-            '\U0001F4C4 Download report as PDF (matches this screen)',
+            '\U0001F4C4 Download full report as PDF (charts, ratios & tables)',
             pdf, file_name=f'{base_name}.pdf', mime='application/pdf', key=f'pdf_{key}')
-        st.caption('A dark, color-coded PDF that looks like this screen \u2014 ready to share.')
+        st.caption('A dark, color-coded PDF with a cover page, page numbers & report date, '
+                   'plus the KPIs, donut charts, ratios and tables \u2014 ready to share.')
     else:
         st.info('PDF export is not available in this environment. Use the HTML report below, '
                 'then Print \u2192 Save as PDF in your browser.')
@@ -1233,16 +1347,39 @@ def _report_downloads(spec, base_name, key):
         screen_html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
 
 
-def _dark_report_html(title, subtitle, kpis, note_html, tables):
-    """Build a self-contained DARK-THEMED HTML report that mirrors the app screen.
-    Static markup only \u2014 no scripts or event handlers.
-    kpis: list of (label, value, color). tables: list of (section_title, df, fmt_map, posneg_cols)."""
+def _dark_report_html(spec):
+    """Self-contained DARK HTML report mirroring the app screen (KPIs, ratios,
+    donut charts, tables). Static markup only \u2014 no scripts or event handlers."""
     from html import escape
+    title = spec['title']
+    subtitle = spec.get('subtitle', '')
+    kpis = spec.get('kpis', [])
+    note_html = spec.get('note', '')
+    tables = spec.get('tables', [])
+    ratios = spec.get('ratios', [])
+    charts = spec.get('charts', [])
     gen = datetime.now().strftime('%Y-%m-%d %H:%M')
-    cards = ''.join(
-        f'<div class="card" style="border-left:6px solid {col}">'
-        f'<div class="lab">{escape(str(lab))}</div><div class="val">{escape(str(val))}</div></div>'
-        for lab, val, col in kpis)
+    report_date = datetime.now().strftime('%B %d, %Y')
+
+    def card_html(items, cls='card'):
+        return ''.join(
+            f'<div class="{cls}" style="border-left:6px solid {_TONE_COLORS.get(tone, tone)}">'
+            f'<div class="lab">{escape(str(lab))}</div>'
+            f'<div class="val" style="color:{_VAL_COLORS.get(tone, "#f1f5f9")}">{escape(str(val))}</div></div>'
+            for lab, val, tone in items)
+
+    cards = card_html(kpis)
+    ratio_block = ''
+    if ratios:
+        ratio_block = f'<h3>Financial Ratios</h3><div class="cards">{card_html(ratios)}</div>'
+    chart_block = ''
+    if charts:
+        imgs = ''.join(
+            f'<div class="chart"><img src="{_png_data_uri(png)}"/>'
+            f'<div class="cap">{escape(cap)}</div></div>'
+            for cap, png in charts if png)
+        if imgs:
+            chart_block = f'<h3>Visual Breakdown</h3><div class="charts">{imgs}</div>'
     sections = ''
     for sec_title, df, fmt, posneg in tables:
         if df is None or df.empty:
@@ -1276,6 +1413,19 @@ def _dark_report_html(title, subtitle, kpis, note_html, tables):
 <title>{escape(title)}</title>
 <style>
 *{{box-sizing:border-box}}
+@page{{size:A4;margin:1.4cm 1.4cm 1.7cm;background:#0e1117;
+  @bottom-left{{content:"Beyond Transportation";color:#64748b;font-size:9px}}
+  @bottom-center{{content:"{report_date}";color:#64748b;font-size:9px}}
+  @bottom-right{{content:"Page " counter(page) " of " counter(pages);color:#64748b;font-size:9px}}}}
+@page cover{{@bottom-left{{content:none}}@bottom-center{{content:none}}@bottom-right{{content:none}}}}
+.cover{{page:cover;page-break-after:always;text-align:center;padding-top:24%}}
+.cv-brand{{color:#60a5fa;font-size:14px;letter-spacing:.35em;font-weight:700}}
+.cv-rule{{width:120px;height:4px;background:#2563eb;margin:18px auto 30px;border-radius:3px}}
+.cv-title{{font-size:40px;color:#f8fafc;font-weight:800;margin:0 0 12px;line-height:1.15}}
+.cv-sub{{color:#94a3b8;font-size:15px;margin-bottom:46px}}
+.cv-chip{{display:inline-block;background:#1e293b;border:1px solid #334155;color:#cbd5e1;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:7px 18px;border-radius:20px;margin-bottom:18px}}
+.cv-date{{color:#e2e8f0;font-size:17px;font-weight:600}}
+.cv-foot{{margin-top:64px;color:#64748b;font-size:11px;letter-spacing:.1em}}
 body{{font-family:Segoe UI,Arial,sans-serif;color:#e2e8f0;margin:0;padding:28px;
   background:#0e1117;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
 h1{{font-size:24px;margin:0 0 2px;color:#f1f5f9;font-weight:800}}
@@ -1285,7 +1435,11 @@ h3{{font-size:16px;color:#f1f5f9;margin:22px 0 8px;font-weight:700}}
 .card{{flex:1 1 160px;background:#1e293b;border:1px solid #334155;border-radius:10px;
   padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,.35)}}
 .card .lab{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8}}
-.card .val{{font-size:20px;font-weight:800;margin-top:4px;color:#f1f5f9}}
+.card .val{{font-size:20px;font-weight:800;margin-top:4px}}
+.charts{{display:flex;flex-wrap:wrap;gap:18px;margin-bottom:16px;align-items:flex-start}}
+.chart{{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px;text-align:center}}
+.chart img{{max-width:360px;width:100%}}
+.chart .cap{{color:#94a3b8;font-size:11px;margin-top:6px}}
 .note{{background:#172033;border:1px solid #334155;border-left:5px solid #3b82f6;border-radius:10px;
   padding:12px 14px;font-size:13px;color:#cbd5e1;margin-bottom:8px}}
 table{{border-collapse:collapse;width:100%;font-size:12px;background:#1e293b;margin-bottom:6px}}
@@ -1293,36 +1447,80 @@ thead th{{background:#1d4ed8;color:#fff;text-align:center;padding:9px 10px;borde
 tbody td{{padding:7px 10px;border:1px solid #334155;color:#e2e8f0}}
 tbody tr:nth-child(even) td{{background:#172033}}
 td.n{{text-align:right}}
-@media print{{body{{padding:0;background:#0e1117}} .card{{break-inside:avoid}} thead{{display:table-header-group}}}}
+@media print{{body{{padding:0;background:#0e1117}} .card,.chart{{break-inside:avoid}} thead{{display:table-header-group}}}}
 </style></head><body>
+<section class="cover">
+  <div class="cv-brand">BEYOND TRANSPORTATION</div>
+  <div class="cv-rule"></div>
+  <div class="cv-title">{escape(title)}</div>
+  <div class="cv-sub">{escape(subtitle)}</div>
+  <div class="cv-chip">Financial Report</div>
+  <div class="cv-date">{report_date}</div>
+  <div class="cv-foot">Hatem&#39;s B.T. Analyzer &middot; Confidential</div>
+</section>
 <h1>{escape(title)}</h1>
 <div class="sub">{escape(subtitle)} \u00b7 generated {gen}</div>
 <div class="cards">{cards}</div>
 {note_block}
+{ratio_block}
+{chart_block}
 {sections}
 </body></html>"""
 
 
 def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
-                           profit, margin, loss, detail):
-    """Return a report spec (title, subtitle, kpis, note, tables) for a single state."""
+                           profit, margin, loss, detail, non_compliant_pct=0.0,
+                           potential_profit=None):
+    """Return a full report spec (dict) for a single state: KPIs, financial ratios,
+    donut/ratio charts and the trip table. Monitors must already be excluded from `detail`."""
+    safe_profit = 0.0 if (profit is None or pd.isna(profit)) else float(profit)
+    safe_pay = 0.0 if (pay is None or pd.isna(pay)) else float(pay)
     kpis = [
-        ('Driver Trips', f'{driver_trips:,}', _TONE_COLORS['']),
-        ('Monitor / Escort Rides', f'{monitor_rides:,}', _TONE_COLORS['p']),
-        ('Total Revenue', _money(rev), _TONE_COLORS['g']),
-        ('Driver Cost', _money(pay), _TONE_COLORS['o']),
-        ('Profit', _money(profit), _TONE_COLORS['g']),
-        ('Margin', f'{margin:.2%}', _TONE_COLORS['g']),
+        ('Driver Trips', f'{driver_trips:,}', ''),
+        ('Monitor / Escort Rides', f'{monitor_rides:,}', 'p'),
+        ('Total Revenue', _money(rev), 'g'),
+        ('Driver Cost', _money(pay), 'o'),
+        ('Profit', _money(profit), 'g' if safe_profit >= 0 else 'r'),
+        ('Margin', f'{margin:.2%}', 'g' if margin >= 0 else 'r'),
+    ]
+    cost_ratio = (safe_pay / rev * 100) if rev else 0.0
+    profit_ratio = (safe_profit / rev * 100) if rev else 0.0
+    ratios = [
+        ('Profit Margin', f'{margin:.1%}', 'g' if margin >= 0 else 'r'),
+        ('Driver-Cost Ratio', f'{cost_ratio:.1f}%', 'o'),
+        ('Profit Ratio', f'{profit_ratio:.1f}%', 'g' if profit_ratio >= 0 else 'r'),
+        ('Non-Compliant Trips', f'{non_compliant_pct:.1f}%',
+         'r' if non_compliant_pct > 0 else 'g'),
+    ]
+    charts = [
+        ('Revenue split: driver cost vs. profit',
+         _donut_png([safe_pay, max(safe_profit, 0.0)],
+                    ['Driver Cost', 'Profit'], ['#f59e0b', '#22c55e'],
+                    center=_money(rev))),
+        ('Trip mix: driver trips vs. monitor rides',
+         _donut_png([driver_trips, monitor_rides],
+                    ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
+                    center=f'{runs:,}')),
+        ('Key financial ratios',
+         _ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
+                          ('Driver-Cost Ratio', cost_ratio, '#f59e0b'),
+                          ('Non-Compliant %', non_compliant_pct, '#ef4444')])),
     ]
     note = (f'<b>Trip reconciliation:</b> {driver_trips:,} driver trips + {monitor_rides:,} '
-            f'monitor / escort rides = {runs:,} billable rows. Monitors ride along with a driver '
-            f'and are not standalone trips. &nbsp;<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.')
+            f'monitor / escort rides = {runs:,} billable rows. Anything marked "(MO)" / "(Monitor)" '
+            f'is an escort riding ALONG with students and the driver \u2014 it is NOT a standalone trip, '
+            f'so it is reported separately and kept out of the trip table. '
+            f'&nbsp;<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.')
     money = lambda v: _money(v)
     fmt = {'Gross Pay': money, 'Current Driver Pay': money,
            'POLICY DRIVER PAY': money, 'Loss': money}
-    tables = [('Detailed Trip Analysis', detail, fmt, ['Loss'])]
-    return (f'{name} \u2014 Weekly Financial Report', 'Beyond Transportation',
-            kpis, note, tables)
+    tables = [('Detailed Trip Analysis (driver trips only)', detail, fmt, ['Loss'])]
+    return {
+        'title': f'{name} \u2014 Weekly Financial Report',
+        'subtitle': 'Beyond Transportation',
+        'kpis': kpis, 'ratios': ratios, 'charts': charts,
+        'note': note, 'tables': tables,
+    }
 
 
 
@@ -1500,17 +1698,29 @@ def state_reports_consolidated_page(origin):
         profit_distribution_chart(rep)
 
         kpis = [
-            ('Total Runs', _int(tot_runs), _TONE_COLORS['']),
-            ('State Revenue', _money(tot_rev), _TONE_COLORS['o']),
-            ('Driver Pay', _money(tot_pay), _TONE_COLORS['p']),
-            ('Profit', _money(tot_profit), _TONE_COLORS['g']),
-            ('Margin', _pct(tot_margin), _TONE_COLORS['g']),
+            ('Total Runs', _int(tot_runs), ''),
+            ('State Revenue', _money(tot_rev), 'o'),
+            ('Driver Pay', _money(tot_pay), 'p'),
+            ('Profit', _money(tot_profit), 'g' if (tot_profit or 0) >= 0 else 'r'),
+            ('Margin', _pct(tot_margin), 'g' if (tot_margin or 0) >= 0 else 'r'),
         ]
         money = lambda v: _money(v)
         fmt = {'Runs': _int, 'State Revenue': money, 'Driver Pay': money,
                'Profit': money, 'Margin %': _pct}
-        report_spec = ('State Reports \u2014 Consolidated', 'Beyond Transportation', kpis, '',
-                       [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])])
+        cons_charts = [
+            ('Profit share by state',
+             _donut_png(list(pd.to_numeric(rep['Profit'], errors='coerce').clip(lower=0).fillna(0)),
+                        list(rep['State'].astype(str)),
+                        ['#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#ef4444',
+                         '#14b8a6', '#eab308', '#ec4899'] * 4,
+                        center=_money(tot_profit))) if not rep.empty else ('', b''),
+        ]
+        report_spec = {
+            'title': 'State Reports \u2014 Consolidated',
+            'subtitle': 'Beyond Transportation',
+            'kpis': kpis, 'note': '', 'charts': cons_charts,
+            'tables': [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])],
+        }
         _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons')
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
@@ -2079,6 +2289,17 @@ def state_only_page(origin, code):
             ['Vehicle_Type', 'Min_Miles', 'Max_Miles', 'Policy_Pay', 'Per_Mile_Rate', 'Note']]
         st.table(pol)
         st.subheader('Financial Summary')
+        k1, k2, k3 = st.columns(3)
+        state_kpi(k1, 'Driver Trips', f'{driver_trips:,}', '')
+        state_kpi(k2, 'Monitor / Escort Rides', f'{monitor_rides:,}', 'p')
+        state_kpi(k3, 'Total Billable Rows', f'{runs:,}', '')
+        k4, k5, k6 = st.columns(3)
+        state_kpi(k4, 'Total Revenue', _money(rev), 'g')
+        state_kpi(k5, 'Driver Cost', _money(pay), 'o')
+        prof_tone = 'g' if (pd.isna(profit) or profit >= 0) else 'r'
+        state_kpi(k6, 'Profit', _money(profit), prof_tone)
+        m1, _m2, _m3 = st.columns(3)
+        state_kpi(m1, 'Current Margin', f'{margin:.2%}', 'g' if margin >= 0 else 'r')
         summary = pd.DataFrame({
             'Metric': ['Driver Trips', 'Monitor / Escort Rides', 'Total Billable Rows',
                        'Total Revenue (Gross Pay)', 'Total Driver Cost (Net Pay)',
@@ -2086,7 +2307,8 @@ def state_only_page(origin, code):
             'Value': [f'{driver_trips:,}', f'{monitor_rides:,}', f'{runs:,}',
                       _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
         }).set_index('Metric')
-        st.table(summary)
+        with st.expander('Financial summary (table)', expanded=False):
+            st.table(summary)
         if monitor_rides:
             st.caption(
                 f'Trip count reconciliation: **{driver_trips:,} driver trips** + '
@@ -2109,16 +2331,36 @@ def state_only_page(origin, code):
             'Margin %': [f'{margin:.2%}', f'{(potential / rev if rev else 0):.2%}',
                          f'+{((potential - profit) / rev if rev and not pd.isna(profit) else 0):.2%}']
         }, index=['Current Margin (Actual)', 'Potential Margin (If Compliant)', 'Profit Increase']))
+
+        nc_pct = ratio * 100
+        safe_profit = 0.0 if pd.isna(profit) else float(profit)
+        safe_pay = 0.0 if pd.isna(pay) else float(pay)
+        st.subheader('\U0001F4C8 Visual Breakdown')
+        v1, v2 = st.columns(2)
+        v1.image(_donut_png([safe_pay, max(safe_profit, 0.0)],
+                            ['Driver Cost', 'Profit'], ['#f59e0b', '#22c55e'],
+                            center=_money(rev)),
+                 caption='Revenue split: driver cost vs. profit', use_container_width=True)
+        v2.image(_donut_png([driver_trips, monitor_rides],
+                            ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
+                            center=f'{runs:,}'),
+                 caption='Trip mix: driver trips vs. monitor rides', use_container_width=True)
+        st.image(_ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
+                                  ('Driver-Cost Ratio', (safe_pay / rev * 100) if rev else 0, '#f59e0b'),
+                                  ('Non-Compliant %', nc_pct, '#ef4444')]),
+                 caption='Key financial ratios', use_container_width=False)
         st.subheader('Detailed Trip Analysis')
         st.caption('**Loss** = POLICY DRIVER PAY \u2212 Current Driver Pay, counted only when the driver was paid '
                    '**below** policy. Example: policy says the driver should get $50 but was paid $33 \u2192 Loss = $17. '
                    'Rows at or above policy show $0.')
-        detail = rows[['Driver_Name', 'Miles', 'Gross_Pay', 'Net_Pay',
+        detail = rows[~rows['Is_Monitor']][['Driver_Name', 'Miles', 'Gross_Pay', 'Net_Pay',
                        'Policy_Driver_Pay', 'Loss_Amount']].rename(columns={
                            'Driver_Name': 'Driver', 'Gross_Pay': 'Gross Pay',
                            'Net_Pay': 'Current Driver Pay',
                            'Policy_Driver_Pay': 'POLICY DRIVER PAY',
                            'Loss_Amount': 'Loss'})
+        st.caption('Monitors / escorts (marked "(MO)" / "(Monitor)") are excluded here \u2014 '
+                   'they are not trips. They are listed in their own section below.')
         st.dataframe(detail.style.format({c: '${:,.2f}' for c in
                                           ['Gross Pay', 'Current Driver Pay',
                                            'POLICY DRIVER PAY', 'Loss']}).map(
@@ -2133,7 +2375,8 @@ def state_only_page(origin, code):
                              use_container_width=True, hide_index=True)
 
         report_spec = build_printable_report(
-            name, driver_trips, monitor_rides, runs, rev, pay, profit, margin, loss, detail)
+            name, driver_trips, monitor_rides, runs, rev, pay, profit, margin, loss, detail,
+            non_compliant_pct=nc_pct, potential_profit=potential)
         _report_downloads(report_spec, f'{code}_report', code)
 
         if st.button('\U0001F4BE Save this Weekly Analysis to History', key=f'save_state_{code}'):
