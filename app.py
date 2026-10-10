@@ -1123,30 +1123,114 @@ def state_kpi(col, label, value, tone=''):
 _TONE_COLORS = {'g': '#22c55e', 'r': '#ef4444', 'o': '#f59e0b', 'p': '#a855f7', '': '#3b82f6'}
 
 
-def _html_to_pdf(html):
-    """Render the dark report HTML into PDF bytes using WeasyPrint.
-    Returns None if WeasyPrint (or its system libraries) is unavailable."""
+def _pdf_friendly_html(title, subtitle, kpis, note_html, tables):
+    """Dark report markup that xhtml2pdf can render (table-based, no flexbox,
+    inline row striping). Pure-pip engine \u2014 needs no system libraries."""
+    from html import escape
+    gen = datetime.now().strftime('%Y-%m-%d %H:%M')
+    n = max(1, len(kpis))
+    w = max(16, int(100 / n))
+    kpi_cells = ''.join(
+        f'<td width="{w}%" valign="top" style="background:#1e293b;border:1px solid #334155;'
+        f'border-left:5px solid {col};padding:8px">'
+        f'<span style="font-size:6pt;color:#94a3b8">{escape(str(lab)).upper()}</span><br/>'
+        f'<span style="font-size:12pt;color:#f1f5f9"><b>{escape(str(val))}</b></span></td>'
+        for lab, val, col in kpis)
+    sections = ''
+    for sec_title, df, fmt, posneg in tables:
+        if df is None or df.empty:
+            continue
+        cols = list(df.columns)
+        thead = ''.join(
+            f'<td style="background:#1d4ed8;border:1px solid #334155;padding:6px">'
+            f'<span style="font-size:8pt;color:#ffffff"><b>{escape(str(c))}</b></span></td>' for c in cols)
+        body = ''
+        for i, (_, r) in enumerate(df.iterrows()):
+            rowbg = '#172033' if i % 2 else '#1e293b'
+            tds = ''
+            for c in cols:
+                v = r[c]
+                f = fmt.get(c)
+                txt = f(v) if f else ('\u2014' if (v is None or (not isinstance(v, str) and pd.isna(v))) else str(v))
+                align = 'right' if f else 'left'
+                bg, fg, bold = rowbg, '#e2e8f0', ''
+                if c in posneg:
+                    try:
+                        fv = float(v)
+                        if fv > 0.005:
+                            bg, fg, bold = '#dcfce7', '#065f46', 'b'
+                        elif fv < -0.005:
+                            bg, fg, bold = '#fee2e2', '#991b1b', 'b'
+                    except (TypeError, ValueError):
+                        pass
+                inner = escape(txt)
+                if bold:
+                    inner = f'<b>{inner}</b>'
+                tds += (f'<td align="{align}" valign="top" style="background:{bg};border:1px solid #334155;'
+                        f'padding:5px"><span style="font-size:7pt;color:{fg}">{inner}</span></td>')
+            body += f'<tr>{tds}</tr>'
+        sections += (
+            f'<p><span style="font-size:11pt;color:#f1f5f9"><b>{escape(sec_title)}</b></span></p>'
+            f'<table border="0" cellspacing="0" cellpadding="0" width="100%">'
+            f'<tr>{thead}</tr>{body}</table>')
+    note_block = ''
+    if note_html:
+        note_block = (f'<table width="100%"><tr><td style="background:#172033;border:1px solid #334155;'
+                      f'border-left:5px solid #3b82f6;padding:9px">'
+                      f'<span style="font-size:7pt;color:#cbd5e1">{note_html}</span></td></tr></table><br/>')
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+@page {{ size: a4 landscape; margin: 1.2cm; background-color: #0e1117; }}
+body {{ background-color:#0e1117; font-family: Helvetica, Arial, sans-serif; }}
+td {{ font-family: Helvetica, Arial, sans-serif; }}
+</style></head>
+<body>
+<p><span style="font-size:17pt;color:#f1f5f9"><b>{escape(title)}</b></span></p>
+<p><span style="font-size:8pt;color:#94a3b8">{escape(subtitle)} &#183; generated {gen}</span></p>
+<table border="0" cellspacing="3" cellpadding="0" width="100%"><tr>{kpi_cells}</tr></table>
+<br/>{note_block}{sections}
+</body></html>"""
+
+
+def _html_to_pdf(screen_html, spec=None):
+    """Render report to PDF bytes. Prefers WeasyPrint (pixel-faithful to the screen);
+    falls back to xhtml2pdf (pure-pip, no system libraries) when WeasyPrint is
+    unavailable. Returns None only if both engines fail."""
     try:
         from weasyprint import HTML
-        return HTML(string=html).write_pdf()
+        return HTML(string=screen_html).write_pdf()
     except Exception:
-        return None
+        pass
+    if spec is not None:
+        try:
+            import io
+            from xhtml2pdf import pisa
+            buf = io.BytesIO()
+            result = pisa.CreatePDF(src=_pdf_friendly_html(*spec), dest=buf,
+                                    encoding='utf-8')
+            if not result.err:
+                return buf.getvalue()
+        except Exception:
+            pass
+    return None
 
 
-def _report_downloads(html, base_name, key):
-    """Offer a PDF download (same dark look as the screen) plus an HTML fallback."""
-    pdf = _html_to_pdf(html)
+def _report_downloads(spec, base_name, key):
+    """spec = (title, subtitle, kpis, note_html, tables).
+    Offers a dark PDF (same look as the screen) plus an HTML fallback."""
+    screen_html = _dark_report_html(*spec)
+    pdf = _html_to_pdf(screen_html, spec)
     if pdf:
         st.download_button(
             '\U0001F4C4 Download report as PDF (matches this screen)',
             pdf, file_name=f'{base_name}.pdf', mime='application/pdf', key=f'pdf_{key}')
-        st.caption('A dark, color-coded PDF that looks exactly like this screen \u2014 ready to share.')
+        st.caption('A dark, color-coded PDF that looks like this screen \u2014 ready to share.')
     else:
         st.info('PDF export is not available in this environment. Use the HTML report below, '
                 'then Print \u2192 Save as PDF in your browser.')
     st.download_button(
         '\U0001F5A8\uFE0F Download printable report (HTML)',
-        html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
+        screen_html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
 
 
 def _dark_report_html(title, subtitle, kpis, note_html, tables):
@@ -1221,7 +1305,7 @@ td.n{{text-align:right}}
 
 def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
                            profit, margin, loss, detail):
-    """Dark, screen-matching printable report for a single state."""
+    """Return a report spec (title, subtitle, kpis, note, tables) for a single state."""
     kpis = [
         ('Driver Trips', f'{driver_trips:,}', _TONE_COLORS['']),
         ('Monitor / Escort Rides', f'{monitor_rides:,}', _TONE_COLORS['p']),
@@ -1237,8 +1321,8 @@ def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
     fmt = {'Gross Pay': money, 'Current Driver Pay': money,
            'POLICY DRIVER PAY': money, 'Loss': money}
     tables = [('Detailed Trip Analysis', detail, fmt, ['Loss'])]
-    return _dark_report_html(f'{name} \u2014 Weekly Financial Report',
-                             'Beyond Transportation', kpis, note, tables)
+    return (f'{name} \u2014 Weekly Financial Report', 'Beyond Transportation',
+            kpis, note, tables)
 
 
 
@@ -1425,10 +1509,9 @@ def state_reports_consolidated_page(origin):
         money = lambda v: _money(v)
         fmt = {'Runs': _int, 'State Revenue': money, 'Driver Pay': money,
                'Profit': money, 'Margin %': _pct}
-        html_report = _dark_report_html(
-            'State Reports \u2014 Consolidated', 'Beyond Transportation', kpis, '',
-            [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])])
-        _report_downloads(html_report, 'state_reports_consolidated', 'state_cons')
+        report_spec = ('State Reports \u2014 Consolidated', 'Beyond Transportation', kpis, '',
+                       [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])])
+        _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons')
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
 
@@ -2049,9 +2132,9 @@ def state_only_page(origin, code):
                 st.dataframe(mon.style.format({'Billed': '${:,.2f}', 'Monitor Pay': '${:,.2f}'}),
                              use_container_width=True, hide_index=True)
 
-        html_report = build_printable_report(
+        report_spec = build_printable_report(
             name, driver_trips, monitor_rides, runs, rev, pay, profit, margin, loss, detail)
-        _report_downloads(html_report, f'{code}_report', code)
+        _report_downloads(report_spec, f'{code}_report', code)
 
         if st.button('\U0001F4BE Save this Weekly Analysis to History', key=f'save_state_{code}'):
             save_weekly_summary(code, rows,
