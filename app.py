@@ -1120,69 +1120,126 @@ def state_kpi(col, label, value, tone=''):
                  f'<div class="val">{value}</div></div>', unsafe_allow_html=True)
 
 
-def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
-                           profit, margin, loss, detail):
-    """Build a self-contained, color-coded HTML report for printing to PDF.
-    No scripts or event handlers \u2014 static, print-friendly markup only."""
+_TONE_COLORS = {'g': '#22c55e', 'r': '#ef4444', 'o': '#f59e0b', 'p': '#a855f7', '': '#3b82f6'}
+
+
+def _html_to_pdf(html):
+    """Render the dark report HTML into PDF bytes using WeasyPrint.
+    Returns None if WeasyPrint (or its system libraries) is unavailable."""
+    try:
+        from weasyprint import HTML
+        return HTML(string=html).write_pdf()
+    except Exception:
+        return None
+
+
+def _report_downloads(html, base_name, key):
+    """Offer a PDF download (same dark look as the screen) plus an HTML fallback."""
+    pdf = _html_to_pdf(html)
+    if pdf:
+        st.download_button(
+            '\U0001F4C4 Download report as PDF (matches this screen)',
+            pdf, file_name=f'{base_name}.pdf', mime='application/pdf', key=f'pdf_{key}')
+        st.caption('A dark, color-coded PDF that looks exactly like this screen \u2014 ready to share.')
+    else:
+        st.info('PDF export is not available in this environment. Use the HTML report below, '
+                'then Print \u2192 Save as PDF in your browser.')
+    st.download_button(
+        '\U0001F5A8\uFE0F Download printable report (HTML)',
+        html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
+
+
+def _dark_report_html(title, subtitle, kpis, note_html, tables):
+    """Build a self-contained DARK-THEMED HTML report that mirrors the app screen.
+    Static markup only \u2014 no scripts or event handlers.
+    kpis: list of (label, value, color). tables: list of (section_title, df, fmt_map, posneg_cols)."""
     from html import escape
     gen = datetime.now().strftime('%Y-%m-%d %H:%M')
-    kpis = [
-        ('Driver Trips', f'{driver_trips:,}', '#3b82f6'),
-        ('Monitor / Escort Rides', f'{monitor_rides:,}', '#a855f7'),
-        ('Total Revenue', _money(rev), '#22c55e'),
-        ('Driver Cost', _money(pay), '#f59e0b'),
-        ('Profit', _money(profit), '#22c55e'),
-        ('Margin', f'{margin:.2%}', '#22c55e'),
-    ]
     cards = ''.join(
-        f'<div class="card" style="border-left:6px solid {c}">'
-        f'<div class="lab">{escape(l)}</div><div class="val">{escape(str(v))}</div></div>'
-        for l, v, c in kpis)
-    body_rows = ''
-    for _, r in detail.iterrows():
-        try:
-            lossv = float(r['Loss'])
-        except (TypeError, ValueError):
-            lossv = 0.0
-        loss_style = 'color:#b91c1c;font-weight:700' if lossv > 0.005 else 'color:#065f46'
-        body_rows += (
-            '<tr>'
-            f'<td>{escape(str(r["Driver"]))}</td>'
-            f'<td class="n">{escape(str(r["Miles"]))}</td>'
-            f'<td class="n">{escape(_money(r["Gross Pay"]))}</td>'
-            f'<td class="n">{escape(_money(r["Current Driver Pay"]))}</td>'
-            f'<td class="n">{escape(_money(r["POLICY DRIVER PAY"]))}</td>'
-            f'<td class="n" style="{loss_style}">{escape(_money(r["Loss"]))}</td>'
-            '</tr>')
+        f'<div class="card" style="border-left:6px solid {col}">'
+        f'<div class="lab">{escape(str(lab))}</div><div class="val">{escape(str(val))}</div></div>'
+        for lab, val, col in kpis)
+    sections = ''
+    for sec_title, df, fmt, posneg in tables:
+        if df is None or df.empty:
+            continue
+        cols = list(df.columns)
+        thead = ''.join(f'<th>{escape(str(c))}</th>' for c in cols)
+        body = ''
+        for _, r in df.iterrows():
+            tds = ''
+            for c in cols:
+                v = r[c]
+                f = fmt.get(c)
+                txt = f(v) if f else ('\u2014' if (v is None or (not isinstance(v, str) and pd.isna(v))) else str(v))
+                cls = 'n' if f else ''
+                style = ''
+                if c in posneg:
+                    try:
+                        fv = float(v)
+                        if fv > 0.005:
+                            style = 'background:#dcfce7;color:#065f46;font-weight:700'
+                        elif fv < -0.005:
+                            style = 'background:#fee2e2;color:#991b1b;font-weight:700'
+                    except (TypeError, ValueError):
+                        pass
+                tds += f'<td class="{cls}" style="{style}">{escape(txt)}</td>'
+            body += f'<tr>{tds}</tr>'
+        sections += (f'<h3>{escape(sec_title)}</h3>'
+                     f'<table><thead><tr>{thead}</tr></thead><tbody>{body}</tbody></table>')
+    note_block = f'<div class="note">{note_html}</div>' if note_html else ''
     return f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<title>{escape(name)} \u2014 Financial Report</title>
+<title>{escape(title)}</title>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;padding:28px;background:#fff}}
-h1{{font-size:22px;margin:0 0 2px;color:#1d4ed8}}
-.sub{{color:#64748b;font-size:12px;margin-bottom:16px}}
-.cards{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}}
-.card{{flex:1 1 150px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px}}
-.card .lab{{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:#64748b}}
-.card .val{{font-size:18px;font-weight:800;margin-top:3px}}
-.note{{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e3a8a;margin-bottom:16px}}
-table{{border-collapse:collapse;width:100%;font-size:11px}}
-thead th{{background:#1d4ed8;color:#fff;text-align:left;padding:7px 8px;border:1px solid #1e40af}}
-tbody td{{padding:5px 8px;border:1px solid #e2e8f0}}
-tbody tr:nth-child(even){{background:#f1f5f9}}
+body{{font-family:Segoe UI,Arial,sans-serif;color:#e2e8f0;margin:0;padding:28px;
+  background:#0e1117;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+h1{{font-size:24px;margin:0 0 2px;color:#f1f5f9;font-weight:800}}
+h3{{font-size:16px;color:#f1f5f9;margin:22px 0 8px;font-weight:700}}
+.sub{{color:#94a3b8;font-size:12px;margin-bottom:18px}}
+.cards{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px}}
+.card{{flex:1 1 160px;background:#1e293b;border:1px solid #334155;border-radius:10px;
+  padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,.35)}}
+.card .lab{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8}}
+.card .val{{font-size:20px;font-weight:800;margin-top:4px;color:#f1f5f9}}
+.note{{background:#172033;border:1px solid #334155;border-left:5px solid #3b82f6;border-radius:10px;
+  padding:12px 14px;font-size:13px;color:#cbd5e1;margin-bottom:8px}}
+table{{border-collapse:collapse;width:100%;font-size:12px;background:#1e293b;margin-bottom:6px}}
+thead th{{background:#1d4ed8;color:#fff;text-align:center;padding:9px 10px;border:1px solid #334155;font-weight:700}}
+tbody td{{padding:7px 10px;border:1px solid #334155;color:#e2e8f0}}
+tbody tr:nth-child(even) td{{background:#172033}}
 td.n{{text-align:right}}
-@media print{{body{{padding:0}} .card{{break-inside:avoid}} thead{{display:table-header-group}}}}
+@media print{{body{{padding:0;background:#0e1117}} .card{{break-inside:avoid}} thead{{display:table-header-group}}}}
 </style></head><body>
-<h1>{escape(name)} \u2014 Weekly Financial Report</h1>
-<div class="sub">Beyond Transportation \u00b7 generated {gen}</div>
+<h1>{escape(title)}</h1>
+<div class="sub">{escape(subtitle)} \u00b7 generated {gen}</div>
 <div class="cards">{cards}</div>
-<div class="note"><b>Trip reconciliation:</b> {driver_trips:,} driver trips + {monitor_rides:,} monitor / escort rides
-= {runs:,} billable rows. Monitors ride along with a driver and are not standalone trips.
-<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.</div>
-<h3 style="color:#1d4ed8">Detailed Trip Analysis</h3>
-<table><thead><tr><th>Driver</th><th>Miles</th><th>Gross Pay</th><th>Current Driver Pay</th>
-<th>Policy Driver Pay</th><th>Loss</th></tr></thead><tbody>{body_rows}</tbody></table>
+{note_block}
+{sections}
 </body></html>"""
+
+
+def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
+                           profit, margin, loss, detail):
+    """Dark, screen-matching printable report for a single state."""
+    kpis = [
+        ('Driver Trips', f'{driver_trips:,}', _TONE_COLORS['']),
+        ('Monitor / Escort Rides', f'{monitor_rides:,}', _TONE_COLORS['p']),
+        ('Total Revenue', _money(rev), _TONE_COLORS['g']),
+        ('Driver Cost', _money(pay), _TONE_COLORS['o']),
+        ('Profit', _money(profit), _TONE_COLORS['g']),
+        ('Margin', f'{margin:.2%}', _TONE_COLORS['g']),
+    ]
+    note = (f'<b>Trip reconciliation:</b> {driver_trips:,} driver trips + {monitor_rides:,} '
+            f'monitor / escort rides = {runs:,} billable rows. Monitors ride along with a driver '
+            f'and are not standalone trips. &nbsp;<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.')
+    money = lambda v: _money(v)
+    fmt = {'Gross Pay': money, 'Current Driver Pay': money,
+           'POLICY DRIVER PAY': money, 'Loss': money}
+    tables = [('Detailed Trip Analysis', detail, fmt, ['Loss'])]
+    return _dark_report_html(f'{name} \u2014 Weekly Financial Report',
+                             'Beyond Transportation', kpis, note, tables)
+
 
 
 def kpi_row(total, state_name=''):
@@ -1357,11 +1414,21 @@ def state_reports_consolidated_page(origin):
         st.subheader('\U0001F4B0 Profit Distribution by State')
         st.caption('How total profit is split across states \u2014 dollar amounts and each state\u2019s share.')
         profit_distribution_chart(rep)
-    st.subheader('State trip detail')
-    st.caption('Every uploaded state row with miles, contract price, and driver payment is available in the Excel export.')
-    for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
-        with st.expander(f"{STATES.get(code,code)} \u2014 {info.get('runs',0):,} runs"):
-            st.dataframe(state_report_detail(info, code), use_container_width=True, hide_index=True)
+
+        kpis = [
+            ('Total Runs', _int(tot_runs), _TONE_COLORS['']),
+            ('State Revenue', _money(tot_rev), _TONE_COLORS['o']),
+            ('Driver Pay', _money(tot_pay), _TONE_COLORS['p']),
+            ('Profit', _money(tot_profit), _TONE_COLORS['g']),
+            ('Margin', _pct(tot_margin), _TONE_COLORS['g']),
+        ]
+        money = lambda v: _money(v)
+        fmt = {'Runs': _int, 'State Revenue': money, 'Driver Pay': money,
+               'Profit': money, 'Margin %': _pct}
+        html_report = _dark_report_html(
+            'State Reports \u2014 Consolidated', 'Beyond Transportation', kpis, '',
+            [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])])
+        _report_downloads(html_report, 'state_reports_consolidated', 'state_cons')
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
 
@@ -1984,12 +2051,7 @@ def state_only_page(origin, code):
 
         html_report = build_printable_report(
             name, driver_trips, monitor_rides, runs, rev, pay, profit, margin, loss, detail)
-        st.download_button(
-            '\U0001F5A8\uFE0F Download printable report (open & print to PDF)',
-            html_report, file_name=f'{code}_report.html', mime='text/html',
-            key=f'print_{code}')
-        st.caption('Downloads a clean, color-coded one/two-page report. Open it in your browser and use '
-                   'Print \u2192 Save as PDF.')
+        _report_downloads(html_report, f'{code}_report', code)
 
         if st.button('\U0001F4BE Save this Weekly Analysis to History', key=f'save_state_{code}'):
             save_weekly_summary(code, rows,
