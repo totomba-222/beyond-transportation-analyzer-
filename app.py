@@ -2040,6 +2040,33 @@ def consolidated_page(df, origin):
     if not unmatched_trips.empty:
         st.subheader('First trips not matched to a state row')
         st.dataframe(unmatched_trips,use_container_width=True,hide_index=True)
+
+    # PDF export for the same consolidated report shown on this page.
+    cons_kpis = [
+        ('Runs', _int(total['runs']), ''),
+        ('First Net Pay', _money(total['revenue']), 'p'),
+        ('Driver Payment', _money(total['payment']), 'o'),
+        ('Profit', _money(total['profit']), 'g' if total['profit'] >= 0 else 'r'),
+        ('Margin', _pct(total['margin']), 'g' if total['margin'] >= 0 else 'r'),
+        ('Amount Due', _money(total['amount_due']), 'r' if total['amount_due'] > 0 else 'g'),
+    ]
+    cons_fmt = {
+        'First Runs': _int, 'First Net Pay': _money,
+        'Matched Runs': _int, 'Matched State Revenue': _money,
+        'State Report Runs': _int, 'State Report Revenue': _money,
+        'Price Difference': _money, 'Amount Due': _money,
+        'Driver Payment': _money, 'Profit': _money,
+        'Margin %': _pct, 'Non-compliant': _int, 'Loss': _money,
+        'Profit if compliant': _money, 'Margin if compliant %': _pct,
+    }
+    _report_downloads({
+        'title': 'Consolidated Financial Report — All States',
+        'subtitle': 'Beyond Transportation',
+        'kpis': cons_kpis,
+        'note': 'First Net Pay is compared with matched state contract revenue. '
+                'Driver Payment and Profit use the applicable pricing policy.',
+        'tables': [('Performance by State', perf, cons_fmt, ['Profit', 'Margin %', 'Amount Due'])],
+    }, 'consolidated_report', 'pdf_cons')
     df_download(perf.set_index('State'), 'consolidated_report.xlsx', 'dl_cons',
                 sheets={'State Summary': perf.set_index('State'),
                         'Price Differences': different_trips,
@@ -2150,6 +2177,25 @@ def _state_analysis_page(df, code, origin):
         if abs(ov['Difference']) > 0.05:
             direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
             st.warning(f"The state contract revenue is ${abs(ov['Difference']):,.2f} total {direction} First Revenue for {name}. This does not change Driver Payment or Profit.")
+    weekly_kpis = [
+        ('Runs', _int(total['runs']), ''),
+        ('First Net Pay', _money(total['revenue']), 'p'),
+        ('State Revenue', _money(total['state_revenue']), 'o'),
+        ('Driver Payment', _money(total['payment']), 'o'),
+        ('Profit', _money(total['profit']), 'g' if total['profit'] >= 0 else 'r'),
+        ('Margin', _pct(total['margin']), 'g' if total['margin'] >= 0 else 'r'),
+    ]
+    weekly_fmt = {
+        c: _money for c in ['Revenue', 'State_Price', 'State_Pay', 'Price_Difference',
+                            'Driver_Pay', 'Policy_Pay', 'Loss'] if c in rep.columns
+    }
+    _report_downloads({
+        'title': f'{name} — Weekly Financial Report',
+        'subtitle': 'Beyond Transportation',
+        'kpis': weekly_kpis,
+        'note': 'Weekly analysis generated from the uploaded First Alt report and matched state report data.',
+        'tables': [('Weekly Report', rep, weekly_fmt, ['Price_Difference', 'Loss'])],
+    }, f'{code}_weekly_report', f'pdf_weekly_{code}')
     df_download(rep, f'{code}_weekly_report.xlsx', f'dl_{code}')
 
 
