@@ -1412,7 +1412,7 @@ def _html_to_pdf(screen_html, spec=None):
             import io
             from xhtml2pdf import pisa
             buf = io.BytesIO()
-            result = pisa.CreatePDF(src=_pdf_friendly_html(spec), dest=buf,
+            result = pisa.CreatePDF(src=screen_html, dest=buf,
                                     encoding='utf-8')
             if not result.err:
                 return buf.getvalue()
@@ -1486,10 +1486,10 @@ def _html_to_pdf(screen_html, spec=None):
     return None
 
 
-def _report_downloads(spec, base_name, key):
+def _report_downloads(spec, base_name, key, html_override=None):
     """spec = dict(title, subtitle, kpis, note, tables, ratios, charts).
     Offers a dark PDF (same look as the screen) plus an HTML fallback."""
-    screen_html = _dark_report_html(spec)
+    screen_html = html_override or _dark_report_html(spec)
     pdf = _html_to_pdf(screen_html, spec)
     if pdf:
         st.download_button(
@@ -1503,6 +1503,92 @@ def _report_downloads(spec, base_name, key):
     st.download_button(
         '\U0001F5A8\uFE0F Download printable report (HTML)',
         screen_html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
+
+
+def _consolidated_two_page_html(rep, kpis, charts, fmt):
+    """Exact two-page layout for the State Reports consolidated screen."""
+    from html import escape
+
+    def table_html(frame):
+        headers = ''.join(f'<th>{escape(str(c))}</th>' for c in frame.columns)
+        rows = []
+        for _, row in frame.iterrows():
+            cells = []
+            for col in frame.columns:
+                value = row[col]
+                formatter = fmt.get(col)
+                try:
+                    text = formatter(value) if formatter else value
+                except Exception:
+                    text = value
+                cls = 'positive' if col in ('Profit', 'Margin %') else ''
+                cells.append(f'<td class="{cls}">{escape(str(text))}</td>')
+            rows.append('<tr>' + ''.join(cells) + '</tr>')
+        return f'<table><thead><tr>{headers}</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+
+    def chart_block(title, png, extra=''):
+        if not png:
+            return ''
+        return (f'<div class="chart-block"><h3>{escape(title)}</h3>{extra}'
+                f'<img src="{_png_data_uri(png)}"></div>')
+
+    kpi_html = ''.join(
+        f'<div class="kpi"><span>{escape(str(label))}</span><b>{escape(str(value))}</b></div>'
+        for label, value, _tone in kpis)
+    revenue_chart = next((png for title, png in charts if title == 'State Revenue vs Driver Pay'), b'')
+    margin_chart = next((png for title, png in charts if title == 'Margin % by State'), b'')
+    profit_chart = next((png for title, png in charts if title == 'Profit by State'), b'')
+    donut_chart = next((png for title, png in charts if title == 'Profit share by state'), b'')
+    return f'''<!doctype html><html><head><meta charset="utf-8"><style>
+@page {{ size: A4 landscape; margin: 0.8cm; background: #0e1117; }}
+* {{ box-sizing: border-box; }}
+html, body {{ margin:0; padding:0; background:#0e1117; color:#e2e8f0; font-family:Arial, sans-serif; }}
+.page {{ width:100%; min-height:18.7cm; page-break-after:always; position:relative; }}
+.page:last-child {{ page-break-after:auto; }}
+h1 {{ color:#f8fafc; font-size:22px; margin:0 0 3px; }}
+h2 {{ color:#f8fafc; font-size:18px; margin:7px 0 7px; }}
+h3 {{ color:#f1f5f9; font-size:13px; margin:7px 0 4px; }}
+.sub {{ color:#94a3b8; font-size:9px; margin-bottom:9px; }}
+.kpis {{ display:flex; gap:7px; margin:8px 0 10px; }}
+.kpi {{ flex:1; background:#1e293b; border:1px solid #334155; border-left:4px solid #3b82f6; padding:8px 9px; min-height:45px; }}
+.kpi span {{ display:block; color:#94a3b8; text-transform:uppercase; font-size:7px; letter-spacing:.04em; }}
+.kpi b {{ display:block; color:#4ade80; font-size:15px; margin-top:4px; }}
+table {{ border-collapse:collapse; width:100%; font-size:8px; background:#1e293b; }}
+th {{ background:#1d4ed8; color:#fff; padding:5px 4px; border:1px solid #334155; text-align:center; }}
+td {{ padding:5px 4px; border:1px solid #334155; color:#e2e8f0; }}
+tr:nth-child(even) td {{ background:#172033; }}
+td.positive {{ background:#dcfce7; color:#065f46; font-weight:bold; }}
+.charts-row {{ display:flex; gap:10px; align-items:flex-start; }}
+.chart-block {{ flex:1; min-width:0; }}
+.chart-block img {{ display:block; width:100%; max-height:6.4cm; object-fit:contain; background:#0e1117; }}
+.page2 .chart-block img {{ max-height:6.9cm; }}
+.two {{ display:flex; gap:12px; align-items:flex-start; }}
+.two .chart-block {{ flex:1; }}
+.footer {{ position:absolute; bottom:0; width:100%; text-align:center; color:#64748b; font-size:7px; }}
+</style></head><body>
+<section class="page page1">
+  <h1>State Reports — Consolidated</h1><div class="sub">Beyond Transportation · complete dashboard report</div>
+  <div class="kpis">{kpi_html}</div>
+  <h2>Profit &amp; Margin by State</h2>{table_html(rep)}
+  <div class="charts-row">
+    {chart_block('State Revenue vs Driver Pay', revenue_chart)}
+    {chart_block('Margin % by State', margin_chart)}
+  </div>
+  <div class="footer">Beyond Transportation · Page 1 of 2</div>
+</section>
+<section class="page page2">
+  <h1>State Reports — Consolidated</h1><div class="sub">Beyond Transportation · visual analysis</div>
+  <h2>Profit Margin Comparison by State</h2>
+  <div class="sub">States ranked by profit margin — green bars are profitable, red bars are below break-even.</div>
+  {chart_block('Profit Margin Comparison by State', margin_chart)}
+  <h2>Profit Distribution by State</h2>
+  <div class="sub">How total profit is split across states — dollar amounts and each state’s share.</div>
+  <div class="two">
+    {chart_block('Profit by State', profit_chart)}
+    {chart_block('Share of Total Profit', donut_chart)}
+  </div>
+  <div class="footer">Beyond Transportation · Page 2 of 2</div>
+</section></body></html>'''
 
 
 def _dark_report_html(spec):
@@ -1883,12 +1969,14 @@ def state_reports_consolidated_page(origin):
                         center=_money(tot_profit))) if not rep.empty else ('', b''),
         ]
         report_spec = {
-            'title': 'State Reports \u2014 Consolidated',
+            'title': 'State Reports — Consolidated',
             'subtitle': 'Beyond Transportation',
             'kpis': kpis, 'note': 'This PDF includes the same overview KPIs, state comparison charts, profit-margin comparison, profit distribution, and detailed state table displayed on the page.', 'charts': cons_charts,
             'tables': [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])],
         }
-        _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons')
+        two_page_html = _consolidated_two_page_html(rep, kpis, cons_charts, fmt)
+        _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons',
+                          html_override=two_page_html)
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
 
