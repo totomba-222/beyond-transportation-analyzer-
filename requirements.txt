@@ -1,5 +1,6 @@
-streamlit>=1.36.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-reportlab>=4.0.0
-pypdf>=5.0.0
+pandas
+streamlit
+openpyxl
+matplotlib
+weasyprint
+xhtml2pdf
