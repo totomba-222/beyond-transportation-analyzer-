@@ -1129,6 +1129,22 @@ _TONE_COLORS = {'g': '#22c55e', 'r': '#ef4444', 'o': '#f59e0b', 'p': '#a855f7', 
 # Brighter text colors so KPI values never look plain white.
 _VAL_COLORS = {'g': '#4ade80', 'r': '#f87171', 'o': '#fbbf24', 'p': '#c084fc', '': '#60a5fa'}
 
+# matplotlib powers the donut / ratio charts. It is an optional dependency: if it
+# is missing from the deployed environment (e.g. a failed install on Streamlit
+# Cloud) the charts are skipped gracefully instead of crashing the whole app.
+try:
+    import matplotlib as _mpl
+    _mpl.use('Agg')
+    HAS_MPL = True
+except Exception:
+    HAS_MPL = False
+
+
+def _show_png(container, png, **kwargs):
+    """Render PNG bytes with st.image, skipping silently when empty (no mpl)."""
+    if png:
+        container.image(png, **kwargs)
+
 
 def _mpl_png(fig):
     """Serialize a matplotlib figure to PNG bytes on the dark canvas."""
@@ -1142,6 +1158,8 @@ def _mpl_png(fig):
 
 def _donut_png(values, labels, colors, center=''):
     """Dark donut chart -> PNG bytes. Zero/negative slices are dropped."""
+    if not HAS_MPL:
+        return b''
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -1168,6 +1186,8 @@ def _donut_png(values, labels, colors, center=''):
 
 def _ratio_bars_png(pairs):
     """Horizontal percentage bars (label, pct 0-100, color) -> PNG bytes."""
+    if not HAS_MPL:
+        return b''
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -2351,15 +2371,15 @@ def state_only_page(origin, code):
         safe_pay = 0.0 if pd.isna(pay) else float(pay)
         st.subheader('\U0001F4C8 Visual Breakdown')
         v1, v2 = st.columns(2)
-        v1.image(_donut_png([safe_pay, max(safe_profit, 0.0)],
+        _show_png(v1, _donut_png([safe_pay, max(safe_profit, 0.0)],
                             ['Driver Cost', 'Profit'], ['#f59e0b', '#22c55e'],
                             center=_money(rev)),
                  caption='Revenue split: driver cost vs. profit', use_container_width=True)
-        v2.image(_donut_png([driver_trips, monitor_rides],
+        _show_png(v2, _donut_png([driver_trips, monitor_rides],
                             ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
                             center=f'{driver_trips + monitor_rides:,}'),
                  caption='Trip mix: driver trips (counted) vs. monitor rides (excluded)', use_container_width=True)
-        st.image(_ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
+        _show_png(st, _ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
                                   ('Driver-Cost Ratio', (safe_pay / rev * 100) if rev else 0, '#f59e0b'),
                                   ('Non-Compliant %', nc_pct, '#ef4444')]),
                  caption='Key financial ratios', use_container_width=False)
