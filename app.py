@@ -730,6 +730,11 @@ def read_first(files):
     keep = d['Driver_Name'].map(lambda v: clean(v) not in bad) & (
         (d['Revenue'] != 0) | (d['Trip_Name'].map(lambda v: clean(v) not in {'', 'nan'})))
     d = d[keep].copy()
+    # Monitors / escorts (marked "(MO)" / "(Monitor)") ride ALONG with a driver;
+    # they are NOT trips, so drop them from the First flow entirely so they never
+    # count toward trips, revenue, driver cost or profit anywhere downstream.
+    _dn = d['Driver_Name'].astype(str)
+    d = d[~_dn.str.contains(r'\(mo\)|\(monitor\)|\bmonitor\b|\bmo\b', case=False, regex=True, na=False)].copy()
     d['State'] = [state_from_first_row(row['District'], row['Driver_Name'],
                                         row['Trip_Name'], row['Company'])
                   for _, row in d.iterrows()]
@@ -1476,8 +1481,8 @@ def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
     safe_profit = 0.0 if (profit is None or pd.isna(profit)) else float(profit)
     safe_pay = 0.0 if (pay is None or pd.isna(pay)) else float(pay)
     kpis = [
-        ('Driver Trips', f'{driver_trips:,}', ''),
-        ('Monitor / Escort Rides', f'{monitor_rides:,}', 'p'),
+        ('Driver Trips (counted)', f'{driver_trips:,}', ''),
+        ('Monitor Rides (excluded)', f'{monitor_rides:,}', 'p'),
         ('Total Revenue', _money(rev), 'g'),
         ('Driver Cost', _money(pay), 'o'),
         ('Profit', _money(profit), 'g' if safe_profit >= 0 else 'r'),
@@ -1497,19 +1502,19 @@ def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
          _donut_png([safe_pay, max(safe_profit, 0.0)],
                     ['Driver Cost', 'Profit'], ['#f59e0b', '#22c55e'],
                     center=_money(rev))),
-        ('Trip mix: driver trips vs. monitor rides',
+        ('Trip mix: driver trips (counted) vs. monitor rides (excluded)',
          _donut_png([driver_trips, monitor_rides],
                     ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
-                    center=f'{runs:,}')),
+                    center=f'{driver_trips + monitor_rides:,}')),
         ('Key financial ratios',
          _ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
                           ('Driver-Cost Ratio', cost_ratio, '#f59e0b'),
                           ('Non-Compliant %', non_compliant_pct, '#ef4444')])),
     ]
-    note = (f'<b>Trip reconciliation:</b> {driver_trips:,} driver trips + {monitor_rides:,} '
-            f'monitor / escort rides = {runs:,} billable rows. Anything marked "(MO)" / "(Monitor)" '
-            f'is an escort riding ALONG with students and the driver \u2014 it is NOT a standalone trip, '
-            f'so it is reported separately and kept out of the trip table. '
+    note = (f'<b>Monitor exclusion:</b> {driver_trips:,} driver trips are counted; '
+            f'{monitor_rides:,} rows marked "(MO)" / "(Monitor)" are escorts riding ALONG with '
+            f'students and the driver \u2014 they are NOT trips, so they are kept OUT of the trip '
+            f'count, revenue, driver cost and profit, and listed separately. '
             f'&nbsp;<b>Recoverable loss</b> (driver paid below policy): {_money(loss)}.')
     money = lambda v: _money(v)
     fmt = {'Gross Pay': money, 'Current Driver Pay': money,
@@ -2262,7 +2267,9 @@ def state_only_page(origin, code):
     # Monitors / escorts ride ALONG with a driver (marked "(MO)" or "(Monitor)");
     # they are not standalone driver trips, so they are counted separately.
     dnames = rows['Driver_Name'].astype(str)
-    rows['Is_Monitor'] = dnames.str.contains(r'\(mo\)|\(monitor\)|monitor', case=False, regex=True, na=False)
+    # Driver names are normalised (parentheses become spaces), so "(MO)" ends up as a
+    # bare "mo" token — match that plus the explicit "(mo)"/"(monitor)"/"monitor" forms.
+    rows['Is_Monitor'] = dnames.str.contains(r'\(mo\)|\(monitor\)|\bmonitor\b|\bmo\b', case=False, regex=True, na=False)
     monitor_rides = int(rows['Is_Monitor'].sum())
     driver_trips = int((~rows['Is_Monitor']).sum())
     # State-only files often omit vehicle/route; do not invent a vehicle-specific Alaska policy.
@@ -2274,12 +2281,18 @@ def state_only_page(origin, code):
         rows['Policy_Driver_Pay'] = [policy_pay(code, m, 'Unknown', 'Unknown')[0] for m in miles]
         rows['Loss_Amount'] = (rows['Policy_Driver_Pay'] - actual_pay).clip(lower=0).fillna(0)
         rows['Is_Non_Compliant'] = rows['Loss_Amount'] > 0.05
-    rev = float(rows['Gross_Pay'].sum())
-    pay = float(actual_pay.sum()) if actual_pay.notna().any() else float('nan')
-    runs = int(len(rows))
+    # Monitors / escorts are NOT trips: exclude them from revenue, driver cost,
+    # trip count, profit and loss. They are reported separately for transparency.
+    trip_rows = rows[~rows['Is_Monitor']]
+    trip_net = pd.to_numeric(trip_rows['Net_Pay'], errors='coerce')
+    rev = float(pd.to_numeric(trip_rows['Gross_Pay'], errors='coerce').sum())
+    pay = float(trip_net.sum()) if trip_net.notna().any() else float('nan')
+    runs = int(len(trip_rows))
     profit = rev - pay if not pd.isna(pay) else float('nan')
     margin = profit / rev if rev and not pd.isna(profit) else 0.0
-    loss = float(rows['Loss_Amount'].sum())
+    loss = float(pd.to_numeric(trip_rows['Loss_Amount'], errors='coerce').sum())
+    monitor_billed = float(pd.to_numeric(rows.loc[rows['Is_Monitor'], 'Gross_Pay'],
+                                         errors='coerce').sum())
     st.title(f'\U0001F4CA {name} - Analysis Dashboard')
     tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
     with tab1:
@@ -2290,9 +2303,9 @@ def state_only_page(origin, code):
         st.table(pol)
         st.subheader('Financial Summary')
         k1, k2, k3 = st.columns(3)
-        state_kpi(k1, 'Driver Trips', f'{driver_trips:,}', '')
-        state_kpi(k2, 'Monitor / Escort Rides', f'{monitor_rides:,}', 'p')
-        state_kpi(k3, 'Total Billable Rows', f'{runs:,}', '')
+        state_kpi(k1, 'Driver Trips (counted)', f'{driver_trips:,}', '')
+        state_kpi(k2, 'Monitor Rides (excluded)', f'{monitor_rides:,}', 'p')
+        state_kpi(k3, 'Trips in Totals', f'{runs:,}', '')
         k4, k5, k6 = st.columns(3)
         state_kpi(k4, 'Total Revenue', _money(rev), 'g')
         state_kpi(k5, 'Driver Cost', _money(pay), 'o')
@@ -2301,25 +2314,26 @@ def state_only_page(origin, code):
         m1, _m2, _m3 = st.columns(3)
         state_kpi(m1, 'Current Margin', f'{margin:.2%}', 'g' if margin >= 0 else 'r')
         summary = pd.DataFrame({
-            'Metric': ['Driver Trips', 'Monitor / Escort Rides', 'Total Billable Rows',
+            'Metric': ['Driver Trips (counted)', 'Monitor / Escort Rides (excluded)',
+                       'Monitor Billing (excluded)',
                        'Total Revenue (Gross Pay)', 'Total Driver Cost (Net Pay)',
                        'Total Margin (Profit)', 'Current Margin %'],
-            'Value': [f'{driver_trips:,}', f'{monitor_rides:,}', f'{runs:,}',
+            'Value': [f'{driver_trips:,}', f'{monitor_rides:,}', _money(monitor_billed),
                       _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
         }).set_index('Metric')
         with st.expander('Financial summary (table)', expanded=False):
             st.table(summary)
         if monitor_rides:
             st.caption(
-                f'Trip count reconciliation: **{driver_trips:,} driver trips** + '
-                f'**{monitor_rides:,} monitor / escort rides** = {runs:,} billable rows. '
-                'Monitors ride along with a driver (marked "(MO)" / "(Monitor)") and are not standalone '
-                'driver trips, so they are reported on their own line. Revenue and driver cost above '
-                'still include every billable row.')
+                f'Monitor exclusion: **{monitor_rides:,} rows marked "(MO)" / "(Monitor)"** '
+                f'({_money(monitor_billed)} billed) are **not trips**, so they are removed from '
+                f'the trip count, revenue, driver cost and profit above. Only the '
+                f'**{driver_trips:,} actual driver trips** are counted. Monitors are listed '
+                'separately below for reference.')
         if code == 'AK':
             st.info('Alaska state rows do not include vehicle type or trip route. Alaska policy compliance is calculated only after First trip detail is uploaded and matched.')
         st.subheader('Compliance Impact Summary')
-        non_compliant = rows[rows['Is_Non_Compliant']]
+        non_compliant = trip_rows[trip_rows['Is_Non_Compliant']]
         ratio = len(non_compliant) / runs if runs else 0
         c1, c2 = st.columns(2)
         c1.metric('Total Loss from Non-Compliance', _money(loss))
@@ -2343,8 +2357,8 @@ def state_only_page(origin, code):
                  caption='Revenue split: driver cost vs. profit', use_container_width=True)
         v2.image(_donut_png([driver_trips, monitor_rides],
                             ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
-                            center=f'{runs:,}'),
-                 caption='Trip mix: driver trips vs. monitor rides', use_container_width=True)
+                            center=f'{driver_trips + monitor_rides:,}'),
+                 caption='Trip mix: driver trips (counted) vs. monitor rides (excluded)', use_container_width=True)
         st.image(_ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
                                   ('Driver-Cost Ratio', (safe_pay / rev * 100) if rev else 0, '#f59e0b'),
                                   ('Non-Compliant %', nc_pct, '#ef4444')]),
