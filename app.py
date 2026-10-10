@@ -1214,6 +1214,74 @@ def _ratio_bars_png(pairs):
     return _mpl_png(fig)
 
 
+def _grouped_bars_png(frame, categories, series, title, percent=False):
+    """Render the same comparison charts shown on the dashboard as PNG bytes."""
+    if not HAS_MPL or frame.empty:
+        return b''
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    data = frame.copy()
+    fig, ax = plt.subplots(figsize=(8.8, max(3.4, 0.48 * len(data) + 1.2)))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    x = list(range(len(data)))
+    width = 0.78 / max(1, len(series))
+    colors = ['#f59e0b', '#a855f7', '#22c55e', '#3b82f6']
+    for i, column in enumerate(series):
+        vals = pd.to_numeric(data[column], errors='coerce').fillna(0).tolist()
+        bars = ax.bar([v + (i - (len(series) - 1) / 2) * width for v in x],
+                      vals, width=width, label=column, color=colors[i % len(colors)])
+        for bar, value in zip(bars, vals):
+            label = f'{value:.1f}%' if percent else f'${value:,.0f}'
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + (max(abs(max(vals)), 1) * 0.018), label,
+                    ha='center', va='bottom', fontsize=7, color='#e2e8f0')
+    ax.set_title(title, color='#f1f5f9', fontsize=12, pad=12, loc='left')
+    ax.set_xticks(x)
+    ax.set_xticklabels(data[categories].astype(str), color='#cbd5e1', rotation=25, ha='right')
+    ax.tick_params(axis='y', colors='#94a3b8', labelsize=8)
+    if percent:
+        ax.set_ylabel('Percent', color='#94a3b8')
+    else:
+        ax.set_ylabel('USD', color='#94a3b8')
+    ax.grid(axis='y', color='#334155', alpha=0.45)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, labelcolor='#e2e8f0', fontsize=8)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    return _mpl_png(fig)
+
+
+def _horizontal_bars_png(frame, category, value, title, percent=False):
+    """Render a sorted horizontal comparison chart for the PDF."""
+    if not HAS_MPL or frame.empty:
+        return b''
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    data = frame[[category, value]].dropna().sort_values(value).copy()
+    vals = pd.to_numeric(data[value], errors='coerce').fillna(0).tolist()
+    fig, ax = plt.subplots(figsize=(8.8, max(3.2, 0.45 * len(data) + 1.0)))
+    fig.patch.set_facecolor('#0e1117')
+    ax.set_facecolor('#0e1117')
+    colors = ['#22c55e' if v >= 0 else '#ef4444' for v in vals]
+    bars = ax.barh(data[category].astype(str), vals, color=colors)
+    for bar, number in zip(bars, vals):
+        label = f'{number:.1f}%' if percent else f'${number:,.0f}'
+        ax.text(number + (0.3 if number >= 0 else -0.3), bar.get_y() + bar.get_height() / 2,
+                label, va='center', ha='left' if number >= 0 else 'right',
+                color='#e2e8f0', fontsize=8)
+    ax.set_title(title, color='#f1f5f9', fontsize=12, pad=12, loc='left')
+    ax.tick_params(axis='x', colors='#94a3b8', labelsize=8)
+    ax.tick_params(axis='y', colors='#cbd5e1', labelsize=8)
+    ax.grid(axis='x', color='#334155', alpha=0.45)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    return _mpl_png(fig)
+
+
 def _png_data_uri(png):
     import base64
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
@@ -1798,6 +1866,15 @@ def state_reports_consolidated_page(origin):
         fmt = {'Runs': _int, 'State Revenue': money, 'Driver Pay': money,
                'Profit': money, 'Margin %': _pct}
         cons_charts = [
+            ('State Revenue vs Driver Pay',
+             _grouped_bars_png(rep, 'State', ['State Revenue', 'Driver Pay'],
+                               'State Revenue vs Driver Pay')),
+            ('Margin % by State',
+             _horizontal_bars_png(rep, 'State', 'Margin %',
+                                  'Profit Margin Comparison by State', percent=True)),
+            ('Profit by State',
+             _horizontal_bars_png(rep, 'State', 'Profit',
+                                  'Profit Distribution by State')),
             ('Profit share by state',
              _donut_png(list(pd.to_numeric(rep['Profit'], errors='coerce').clip(lower=0).fillna(0)),
                         list(rep['State'].astype(str)),
@@ -1808,7 +1885,7 @@ def state_reports_consolidated_page(origin):
         report_spec = {
             'title': 'State Reports \u2014 Consolidated',
             'subtitle': 'Beyond Transportation',
-            'kpis': kpis, 'note': '', 'charts': cons_charts,
+            'kpis': kpis, 'note': 'This PDF includes the same overview KPIs, state comparison charts, profit-margin comparison, profit distribution, and detailed state table displayed on the page.', 'charts': cons_charts,
             'tables': [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])],
         }
         _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons')
