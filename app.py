@@ -1009,18 +1009,19 @@ def _int(v):
 
 
 def _color_pos_neg(val):
-    """Green for positive money/margin, red for negative, used in styled tables."""
+    """Attractive, dark-theme-friendly colouring for Profit / Margin cells.
+    Positive = emerald, negative = rose, zero/blank = slate blue — never plain white."""
     try:
         v = float(val)
     except (TypeError, ValueError):
         return ''
     if pd.isna(v):
-        return ''
+        return 'background-color:#1e293b; color:#cbd5e1; font-weight:600;'
     if v > 0.005:
-        return 'background-color:#dcfce7; color:#065f46; font-weight:700;'
+        return 'background-color:#064e3b; color:#6ee7b7; font-weight:700;'
     if v < -0.005:
-        return 'background-color:#fee2e2; color:#991b1b; font-weight:700;'
-    return ''
+        return 'background-color:#7f1d1d; color:#fca5a5; font-weight:700;'
+    return 'background-color:#1e3a5f; color:#93c5fd; font-weight:700;'
 
 def weekly_report(d):
     """Image-style weekly report: metrics as rows, weeks + total/vertical/variance cols."""
@@ -1214,74 +1215,6 @@ def _ratio_bars_png(pairs):
     return _mpl_png(fig)
 
 
-def _grouped_bars_png(frame, categories, series, title, percent=False):
-    """Render the same comparison charts shown on the dashboard as PNG bytes."""
-    if not HAS_MPL or frame.empty:
-        return b''
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    data = frame.copy()
-    fig, ax = plt.subplots(figsize=(8.8, max(3.4, 0.48 * len(data) + 1.2)))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
-    x = list(range(len(data)))
-    width = 0.78 / max(1, len(series))
-    colors = ['#f59e0b', '#a855f7', '#22c55e', '#3b82f6']
-    for i, column in enumerate(series):
-        vals = pd.to_numeric(data[column], errors='coerce').fillna(0).tolist()
-        bars = ax.bar([v + (i - (len(series) - 1) / 2) * width for v in x],
-                      vals, width=width, label=column, color=colors[i % len(colors)])
-        for bar, value in zip(bars, vals):
-            label = f'{value:.1f}%' if percent else f'${value:,.0f}'
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + (max(abs(max(vals)), 1) * 0.018), label,
-                    ha='center', va='bottom', fontsize=7, color='#e2e8f0')
-    ax.set_title(title, color='#f1f5f9', fontsize=12, pad=12, loc='left')
-    ax.set_xticks(x)
-    ax.set_xticklabels(data[categories].astype(str), color='#cbd5e1', rotation=25, ha='right')
-    ax.tick_params(axis='y', colors='#94a3b8', labelsize=8)
-    if percent:
-        ax.set_ylabel('Percent', color='#94a3b8')
-    else:
-        ax.set_ylabel('USD', color='#94a3b8')
-    ax.grid(axis='y', color='#334155', alpha=0.45)
-    ax.set_axisbelow(True)
-    ax.legend(frameon=False, labelcolor='#e2e8f0', fontsize=8)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    return _mpl_png(fig)
-
-
-def _horizontal_bars_png(frame, category, value, title, percent=False):
-    """Render a sorted horizontal comparison chart for the PDF."""
-    if not HAS_MPL or frame.empty:
-        return b''
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    data = frame[[category, value]].dropna().sort_values(value).copy()
-    vals = pd.to_numeric(data[value], errors='coerce').fillna(0).tolist()
-    fig, ax = plt.subplots(figsize=(8.8, max(3.2, 0.45 * len(data) + 1.0)))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
-    colors = ['#22c55e' if v >= 0 else '#ef4444' for v in vals]
-    bars = ax.barh(data[category].astype(str), vals, color=colors)
-    for bar, number in zip(bars, vals):
-        label = f'{number:.1f}%' if percent else f'${number:,.0f}'
-        ax.text(number + (0.3 if number >= 0 else -0.3), bar.get_y() + bar.get_height() / 2,
-                label, va='center', ha='left' if number >= 0 else 'right',
-                color='#e2e8f0', fontsize=8)
-    ax.set_title(title, color='#f1f5f9', fontsize=12, pad=12, loc='left')
-    ax.tick_params(axis='x', colors='#94a3b8', labelsize=8)
-    ax.tick_params(axis='y', colors='#cbd5e1', labelsize=8)
-    ax.grid(axis='x', color='#334155', alpha=0.45)
-    ax.set_axisbelow(True)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    return _mpl_png(fig)
-
-
 def _png_data_uri(png):
     import base64
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
@@ -1412,84 +1345,19 @@ def _html_to_pdf(screen_html, spec=None):
             import io
             from xhtml2pdf import pisa
             buf = io.BytesIO()
-            result = pisa.CreatePDF(src=screen_html, dest=buf,
+            result = pisa.CreatePDF(src=_pdf_friendly_html(spec), dest=buf,
                                     encoding='utf-8')
             if not result.err:
                 return buf.getvalue()
         except Exception:
             pass
-    # Last-resort fallback for hosted environments where neither WeasyPrint nor
-    # xhtml2pdf is installed. Matplotlib is already used by the dashboard charts
-    # and can create a real, downloadable PDF without system PDF libraries.
-    if spec is not None:
-        try:
-            import textwrap
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_pdf import PdfPages
-
-            output = io.BytesIO()
-            with PdfPages(output) as pdf_file:
-                def add_text_page(title, lines):
-                    fig = plt.figure(figsize=(11.69, 8.27), facecolor='#0e1117')
-                    ax = fig.add_axes([0.05, 0.05, 0.90, 0.90])
-                    ax.set_facecolor('#0e1117')
-                    ax.axis('off')
-                    ax.text(0.0, 0.97, title, color='#f8fafc', fontsize=20,
-                            fontweight='bold', va='top')
-                    y = 0.90
-                    for line in lines:
-                        ax.text(0.0, y, line, color='#e2e8f0', fontsize=10,
-                                va='top', family='DejaVu Sans Mono')
-                        y -= 0.035
-                        if y < 0.06:
-                            pdf_file.savefig(fig, facecolor=fig.get_facecolor(),
-                                             bbox_inches='tight')
-                            plt.close(fig)
-                            fig = plt.figure(figsize=(11.69, 8.27), facecolor='#0e1117')
-                            ax = fig.add_axes([0.05, 0.05, 0.90, 0.90])
-                            ax.set_facecolor('#0e1117')
-                            ax.axis('off')
-                            y = 0.97
-                    pdf_file.savefig(fig, facecolor=fig.get_facecolor(),
-                                     bbox_inches='tight')
-                    plt.close(fig)
-
-                kpi_lines = [f'{label}: {value}' for label, value, _tone in spec.get('kpis', [])]
-                ratio_lines = [f'{label}: {value}' for label, value, _tone in spec.get('ratios', [])]
-                add_text_page(spec.get('title', 'Financial Report'),
-                              kpi_lines + (['', 'Financial Ratios'] + ratio_lines if ratio_lines else []))
-
-                for section_title, frame, fmt, _posneg in spec.get('tables', []):
-                    if frame is None or frame.empty:
-                        continue
-                    frame = frame.copy()
-                    cols = list(frame.columns)
-                    lines = [section_title, ' | '.join(str(c) for c in cols)]
-                    for _, row in frame.iterrows():
-                        values = []
-                        for col in cols:
-                            value = row[col]
-                            formatter = fmt.get(col) if fmt else None
-                            try:
-                                value = formatter(value) if formatter else value
-                            except Exception:
-                                pass
-                            values.append(str(value))
-                        lines.append(' | '.join(values))
-                    add_text_page(section_title, [x for line in lines
-                                                  for x in textwrap.wrap(line, 150) or ['']])
-            return output.getvalue()
-        except Exception:
-            pass
     return None
 
 
-def _report_downloads(spec, base_name, key, html_override=None):
+def _report_downloads(spec, base_name, key):
     """spec = dict(title, subtitle, kpis, note, tables, ratios, charts).
     Offers a dark PDF (same look as the screen) plus an HTML fallback."""
-    screen_html = html_override or _dark_report_html(spec)
+    screen_html = _dark_report_html(spec)
     pdf = _html_to_pdf(screen_html, spec)
     if pdf:
         st.download_button(
@@ -1503,92 +1371,6 @@ def _report_downloads(spec, base_name, key, html_override=None):
     st.download_button(
         '\U0001F5A8\uFE0F Download printable report (HTML)',
         screen_html, file_name=f'{base_name}.html', mime='text/html', key=f'html_{key}')
-
-
-def _consolidated_two_page_html(rep, kpis, charts, fmt):
-    """Exact two-page layout for the State Reports consolidated screen."""
-    from html import escape
-
-    def table_html(frame):
-        headers = ''.join(f'<th>{escape(str(c))}</th>' for c in frame.columns)
-        rows = []
-        for _, row in frame.iterrows():
-            cells = []
-            for col in frame.columns:
-                value = row[col]
-                formatter = fmt.get(col)
-                try:
-                    text = formatter(value) if formatter else value
-                except Exception:
-                    text = value
-                cls = 'positive' if col in ('Profit', 'Margin %') else ''
-                cells.append(f'<td class="{cls}">{escape(str(text))}</td>')
-            rows.append('<tr>' + ''.join(cells) + '</tr>')
-        return f'<table><thead><tr>{headers}</tr></thead><tbody>{"".join(rows)}</tbody></table>'
-
-    def chart_block(title, png, extra=''):
-        if not png:
-            return ''
-        return (f'<div class="chart-block"><h3>{escape(title)}</h3>{extra}'
-                f'<img src="{_png_data_uri(png)}"></div>')
-
-    kpi_html = ''.join(
-        f'<div class="kpi"><span>{escape(str(label))}</span><b>{escape(str(value))}</b></div>'
-        for label, value, _tone in kpis)
-    revenue_chart = next((png for title, png in charts if title == 'State Revenue vs Driver Pay'), b'')
-    margin_chart = next((png for title, png in charts if title == 'Margin % by State'), b'')
-    profit_chart = next((png for title, png in charts if title == 'Profit by State'), b'')
-    donut_chart = next((png for title, png in charts if title == 'Profit share by state'), b'')
-    return f'''<!doctype html><html><head><meta charset="utf-8"><style>
-@page {{ size: A4 landscape; margin: 0.8cm; background: #0e1117; }}
-* {{ box-sizing: border-box; }}
-html, body {{ margin:0; padding:0; background:#0e1117; color:#e2e8f0; font-family:Arial, sans-serif; }}
-.page {{ width:100%; min-height:18.7cm; page-break-after:always; position:relative; }}
-.page:last-child {{ page-break-after:auto; }}
-h1 {{ color:#f8fafc; font-size:22px; margin:0 0 3px; }}
-h2 {{ color:#f8fafc; font-size:18px; margin:7px 0 7px; }}
-h3 {{ color:#f1f5f9; font-size:13px; margin:7px 0 4px; }}
-.sub {{ color:#94a3b8; font-size:9px; margin-bottom:9px; }}
-.kpis {{ display:flex; gap:7px; margin:8px 0 10px; }}
-.kpi {{ flex:1; background:#1e293b; border:1px solid #334155; border-left:4px solid #3b82f6; padding:8px 9px; min-height:45px; }}
-.kpi span {{ display:block; color:#94a3b8; text-transform:uppercase; font-size:7px; letter-spacing:.04em; }}
-.kpi b {{ display:block; color:#4ade80; font-size:15px; margin-top:4px; }}
-table {{ border-collapse:collapse; width:100%; font-size:8px; background:#1e293b; }}
-th {{ background:#1d4ed8; color:#fff; padding:5px 4px; border:1px solid #334155; text-align:center; }}
-td {{ padding:5px 4px; border:1px solid #334155; color:#e2e8f0; }}
-tr:nth-child(even) td {{ background:#172033; }}
-td.positive {{ background:#dcfce7; color:#065f46; font-weight:bold; }}
-.charts-row {{ display:flex; gap:10px; align-items:flex-start; }}
-.chart-block {{ flex:1; min-width:0; }}
-.chart-block img {{ display:block; width:100%; max-height:6.4cm; object-fit:contain; background:#0e1117; }}
-.page2 .chart-block img {{ max-height:6.9cm; }}
-.two {{ display:flex; gap:12px; align-items:flex-start; }}
-.two .chart-block {{ flex:1; }}
-.footer {{ position:absolute; bottom:0; width:100%; text-align:center; color:#64748b; font-size:7px; }}
-</style></head><body>
-<section class="page page1">
-  <h1>State Reports — Consolidated</h1><div class="sub">Beyond Transportation · complete dashboard report</div>
-  <div class="kpis">{kpi_html}</div>
-  <h2>Profit &amp; Margin by State</h2>{table_html(rep)}
-  <div class="charts-row">
-    {chart_block('State Revenue vs Driver Pay', revenue_chart)}
-    {chart_block('Margin % by State', margin_chart)}
-  </div>
-  <div class="footer">Beyond Transportation · Page 1 of 2</div>
-</section>
-<section class="page page2">
-  <h1>State Reports — Consolidated</h1><div class="sub">Beyond Transportation · visual analysis</div>
-  <h2>Profit Margin Comparison by State</h2>
-  <div class="sub">States ranked by profit margin — green bars are profitable, red bars are below break-even.</div>
-  {chart_block('Profit Margin Comparison by State', margin_chart)}
-  <h2>Profit Distribution by State</h2>
-  <div class="sub">How total profit is split across states — dollar amounts and each state’s share.</div>
-  <div class="two">
-    {chart_block('Profit by State', profit_chart)}
-    {chart_block('Share of Total Profit', donut_chart)}
-  </div>
-  <div class="footer">Beyond Transportation · Page 2 of 2</div>
-</section></body></html>'''
 
 
 def _dark_report_html(spec):
@@ -1643,9 +1425,9 @@ def _dark_report_html(spec):
                     try:
                         fv = float(v)
                         if fv > 0.005:
-                            style = 'background:#dcfce7;color:#065f46;font-weight:700'
+                            style = 'background:#064e3b;color:#6ee7b7;font-weight:700'
                         elif fv < -0.005:
-                            style = 'background:#fee2e2;color:#991b1b;font-weight:700'
+                            style = 'background:#7f1d1d;color:#fca5a5;font-weight:700'
                     except (TypeError, ValueError):
                         pass
                 tds += f'<td class="{cls}" style="{style}">{escape(txt)}</td>'
@@ -1952,15 +1734,6 @@ def state_reports_consolidated_page(origin):
         fmt = {'Runs': _int, 'State Revenue': money, 'Driver Pay': money,
                'Profit': money, 'Margin %': _pct}
         cons_charts = [
-            ('State Revenue vs Driver Pay',
-             _grouped_bars_png(rep, 'State', ['State Revenue', 'Driver Pay'],
-                               'State Revenue vs Driver Pay')),
-            ('Margin % by State',
-             _horizontal_bars_png(rep, 'State', 'Margin %',
-                                  'Profit Margin Comparison by State', percent=True)),
-            ('Profit by State',
-             _horizontal_bars_png(rep, 'State', 'Profit',
-                                  'Profit Distribution by State')),
             ('Profit share by state',
              _donut_png(list(pd.to_numeric(rep['Profit'], errors='coerce').clip(lower=0).fillna(0)),
                         list(rep['State'].astype(str)),
@@ -1969,14 +1742,12 @@ def state_reports_consolidated_page(origin):
                         center=_money(tot_profit))) if not rep.empty else ('', b''),
         ]
         report_spec = {
-            'title': 'State Reports — Consolidated',
+            'title': 'State Reports \u2014 Consolidated',
             'subtitle': 'Beyond Transportation',
-            'kpis': kpis, 'note': 'This PDF includes the same overview KPIs, state comparison charts, profit-margin comparison, profit distribution, and detailed state table displayed on the page.', 'charts': cons_charts,
+            'kpis': kpis, 'note': '', 'charts': cons_charts,
             'tables': [('Profit & Margin by State', rep, fmt, ['Profit', 'Margin %'])],
         }
-        two_page_html = _consolidated_two_page_html(rep, kpis, cons_charts, fmt)
-        _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons',
-                          html_override=two_page_html)
+        _report_downloads(report_spec, 'state_reports_consolidated', 'state_cons')
     df_download(rep.set_index('State') if not rep.empty else rep, 'state_reports_consolidated.xlsx', 'dl_state_cons', sheets={'State Summary': rep.set_index('State') if not rep.empty else rep, **sheets})
 
 
@@ -2171,6 +1942,40 @@ def _consolidated_summary(total, perf):
     st.success('\n\n'.join('- ' + b for b in bullets))
 
 
+def _price_difference_by_state(perf, origin):
+    """Prominent per-state table: what First actually PAID vs the AGREED state
+    contract price (State Revenue), and the difference owed to Beyond."""
+    if not origin or perf.empty or 'Matched Runs' not in perf:
+        return
+    diff_cols = perf[perf['Matched Runs'] > 0][
+        ['State', 'Matched Runs', 'First Net Pay', 'Matched State Revenue',
+         'Price Difference', 'Amount Due']].copy()
+    if diff_cols.empty:
+        return
+    diff_cols = diff_cols.rename(columns={
+        'First Net Pay': 'First Paid',
+        'Matched State Revenue': 'Agreed Price (State Revenue)',
+        'Price Difference': 'Difference (Agreed minus Paid)',
+        'Amount Due': 'Amount Due From First'})
+    tot_paid = float(pd.to_numeric(diff_cols['First Paid'], errors='coerce').sum())
+    tot_agreed = float(pd.to_numeric(diff_cols['Agreed Price (State Revenue)'], errors='coerce').sum())
+    tot_diff = tot_agreed - tot_paid
+    st.subheader('\U0001F4B5 Price Difference by State \u2014 First Paid vs Agreed Price')
+    st.caption('For every state with a matched state report: what First actually PAID vs the '
+               'AGREED contract price (State Revenue). Difference = Agreed minus Paid; a positive '
+               'number is money still owed to Beyond by First.')
+    pcol1, pcol2, pcol3 = st.columns(3)
+    state_kpi(pcol1, 'Total First Paid', _money(tot_paid), 'o')
+    state_kpi(pcol2, 'Total Agreed Price', _money(tot_agreed), 'p')
+    state_kpi(pcol3, 'Total Difference', _money(tot_diff), 'g' if tot_diff >= 0 else 'r')
+    st.dataframe(diff_cols.style.format({
+        'First Paid': '${:,.2f}', 'Agreed Price (State Revenue)': '${:,.2f}',
+        'Difference (Agreed minus Paid)': '${:,.2f}', 'Amount Due From First': '${:,.2f}'},
+        na_rep='\u2014').map(
+        _color_pos_neg, subset=['Difference (Agreed minus Paid)', 'Amount Due From First']),
+        use_container_width=True, hide_index=True)
+
+
 def consolidated_page(df, origin):
     st.title('\U0001F4CA Consolidated Financial Report \u2014 All States')
     st.caption('First Net Pay is the revenue source of truth. Driver Payment comes from your pricing policy, or the uploaded state Pay for states with no policy.')
@@ -2201,6 +2006,8 @@ def consolidated_page(df, origin):
 
     st.subheader('Headline KPIs')
     kpi_row(total)
+
+    _price_difference_by_state(perf, origin)
 
     with st.expander('Full performance table by state', expanded=False):
         st.dataframe(perf.style.format({
@@ -2270,33 +2077,6 @@ def consolidated_page(df, origin):
     if not unmatched_trips.empty:
         st.subheader('First trips not matched to a state row')
         st.dataframe(unmatched_trips,use_container_width=True,hide_index=True)
-
-    # PDF export for the same consolidated report shown on this page.
-    cons_kpis = [
-        ('Runs', _int(total['runs']), ''),
-        ('First Net Pay', _money(total['revenue']), 'p'),
-        ('Driver Payment', _money(total['payment']), 'o'),
-        ('Profit', _money(total['profit']), 'g' if total['profit'] >= 0 else 'r'),
-        ('Margin', _pct(total['margin']), 'g' if total['margin'] >= 0 else 'r'),
-        ('Amount Due', _money(total['amount_due']), 'r' if total['amount_due'] > 0 else 'g'),
-    ]
-    cons_fmt = {
-        'First Runs': _int, 'First Net Pay': _money,
-        'Matched Runs': _int, 'Matched State Revenue': _money,
-        'State Report Runs': _int, 'State Report Revenue': _money,
-        'Price Difference': _money, 'Amount Due': _money,
-        'Driver Payment': _money, 'Profit': _money,
-        'Margin %': _pct, 'Non-compliant': _int, 'Loss': _money,
-        'Profit if compliant': _money, 'Margin if compliant %': _pct,
-    }
-    _report_downloads({
-        'title': 'Consolidated Financial Report — All States',
-        'subtitle': 'Beyond Transportation',
-        'kpis': cons_kpis,
-        'note': 'First Net Pay is compared with matched state contract revenue. '
-                'Driver Payment and Profit use the applicable pricing policy.',
-        'tables': [('Performance by State', perf, cons_fmt, ['Profit', 'Margin %', 'Amount Due'])],
-    }, 'consolidated_report', 'pdf_cons')
     df_download(perf.set_index('State'), 'consolidated_report.xlsx', 'dl_cons',
                 sheets={'State Summary': perf.set_index('State'),
                         'Price Differences': different_trips,
@@ -2407,25 +2187,6 @@ def _state_analysis_page(df, code, origin):
         if abs(ov['Difference']) > 0.05:
             direction = 'higher than' if ov['Difference'] > 0 else 'lower than'
             st.warning(f"The state contract revenue is ${abs(ov['Difference']):,.2f} total {direction} First Revenue for {name}. This does not change Driver Payment or Profit.")
-    weekly_kpis = [
-        ('Runs', _int(total['runs']), ''),
-        ('First Net Pay', _money(total['revenue']), 'p'),
-        ('State Revenue', _money(total['state_revenue']), 'o'),
-        ('Driver Payment', _money(total['payment']), 'o'),
-        ('Profit', _money(total['profit']), 'g' if total['profit'] >= 0 else 'r'),
-        ('Margin', _pct(total['margin']), 'g' if total['margin'] >= 0 else 'r'),
-    ]
-    weekly_fmt = {
-        c: _money for c in ['Revenue', 'State_Price', 'State_Pay', 'Price_Difference',
-                            'Driver_Pay', 'Policy_Pay', 'Loss'] if c in rep.columns
-    }
-    _report_downloads({
-        'title': f'{name} — Weekly Financial Report',
-        'subtitle': 'Beyond Transportation',
-        'kpis': weekly_kpis,
-        'note': 'Weekly analysis generated from the uploaded First Alt report and matched state report data.',
-        'tables': [('Weekly Report', rep, weekly_fmt, ['Price_Difference', 'Loss'])],
-    }, f'{code}_weekly_report', f'pdf_weekly_{code}')
     df_download(rep, f'{code}_weekly_report.xlsx', f'dl_{code}')
 
 
