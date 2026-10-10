@@ -1,0 +1,6 @@
+pandas
+streamlit
+openpyxl
+matplotlib
+weasyprint
+xhtml2pdf
