@@ -1241,7 +1241,7 @@ def _grouped_bars_png(labels, series, colors, title=''):
     n = len(series)
     x = range(len(labels))
     width = 0.8 / max(1, n)
-    fig, ax = plt.subplots(figsize=(6.2, 3.1))
+    fig, ax = plt.subplots(figsize=(5.8, 3.9))
     fig.patch.set_facecolor('#0e1117')
     ax.set_facecolor('#0e1117')
     for i, (name, vals) in enumerate(series):
@@ -1403,10 +1403,238 @@ td {{ font-family: Helvetica, Arial, sans-serif; }}
 </body></html>"""
 
 
+_PDF_BG = '#0e1117'
+_PDF_CARD = '#1e293b'
+_PDF_BORDER = '#334155'
+
+
+def _pdf_place_img(fig, png, left, bottom, width, height, cap=''):
+    """Place a chart PNG inside a figure region (figure fractions), preserving
+    aspect ratio and centering it. Optional caption below."""
+    import io
+    import matplotlib.image as mpimg
+    img = mpimg.imread(io.BytesIO(png))
+    ih, iw = img.shape[0], img.shape[1]
+    pw, ph = fig.get_size_inches()
+    rw_in, rh_in = width * pw, height * ph
+    ia = ih / iw if iw else 1.0
+    ra = rh_in / rw_in if rw_in else 1.0
+    if ia > ra:
+        nh_in = rh_in
+        nw_in = rh_in / ia
+    else:
+        nw_in = rw_in
+        nh_in = rw_in * ia
+    nw, nh = nw_in / pw, nh_in / ph
+    cap_pad = 0.018 if cap else 0.0
+    l = left + (width - nw) / 2
+    b = bottom + cap_pad + (height - cap_pad - nh) / 2
+    ax = fig.add_axes([l, b, nw, nh])
+    ax.imshow(img, interpolation='bilinear')
+    ax.axis('off')
+    if cap:
+        fig.text(left + width / 2, bottom + 0.004, cap, ha='center', va='bottom',
+                 color='#cbd5e1', fontsize=10, fontweight='bold')
+    return ax
+
+
+def _pdf_draw_header(fig, title, subtitle, gen, cover=False):
+    from datetime import datetime as _dt
+    report_date = _dt.now().strftime('%B %d, %Y')
+    if cover:
+        fig.text(0.5, 0.70, (subtitle or 'Beyond Transportation').upper(), ha='center',
+                 color='#60a5fa', fontsize=13, fontweight='bold')
+        fig.text(0.5, 0.58, title, ha='center', color='#f1f5f9', fontsize=26, fontweight='bold')
+        fig.text(0.5, 0.52, 'FINANCIAL REPORT', ha='center', color='#94a3b8', fontsize=12)
+        fig.text(0.5, 0.44, report_date, ha='center', color='#e2e8f0', fontsize=14,
+                 fontweight='bold')
+        fig.text(0.5, 0.08, "Hatem's B.T. Analyzer \u00b7 Confidential", ha='center',
+                 color='#64748b', fontsize=9)
+        ax = fig.add_axes([0.28, 0.49, 0.44, 0.004]); ax.axis('off')
+        ax.axhline(0.5, color='#3b82f6', linewidth=2)
+        return
+    fig.text(0.06, 0.955, title, ha='left', color='#f1f5f9', fontsize=18, fontweight='bold')
+    fig.text(0.06, 0.932, f'{subtitle} \u00b7 generated {gen}', ha='left', color='#94a3b8',
+             fontsize=9)
+    ax = fig.add_axes([0.06, 0.925, 0.88, 0.002]); ax.axis('off')
+    ax.axhline(0.5, color='#334155', linewidth=1)
+
+
+def _pdf_draw_kpis(fig, kpis, left, bottom, width, height):
+    from matplotlib.patches import FancyBboxPatch
+    ax = fig.add_axes([left, bottom, width, height]); ax.axis('off')
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    n = max(1, len(kpis))
+    gap = 0.012
+    cw = (1 - gap * (n - 1)) / n
+    for i, (lab, val, tone) in enumerate(kpis):
+        x = i * (cw + gap)
+        accent = _TONE_COLORS.get(tone, '#3b82f6')
+        valcol = _VAL_COLORS.get(tone, '#f1f5f9')
+        ax.add_patch(FancyBboxPatch((x, 0.0), cw, 1.0,
+                     boxstyle='round,pad=0.004,rounding_size=0.06',
+                     linewidth=0, facecolor=_PDF_CARD, mutation_aspect=0.5,
+                     clip_on=False))
+        ax.add_patch(plt_rect(x, 0.0, 0.012, 1.0, accent))
+        ax.text(x + 0.03, 0.74, str(lab).upper(), ha='left', va='center',
+                color='#94a3b8', fontsize=7.5)
+        ax.text(x + 0.03, 0.34, str(val), ha='left', va='center',
+                color=valcol, fontsize=13, fontweight='bold')
+
+
+def plt_rect(x, y, w, h, color):
+    from matplotlib.patches import Rectangle
+    return Rectangle((x, y), w, h, facecolor=color, edgecolor='none', clip_on=False)
+
+
+def _pdf_draw_table(fig, sec_title, df, fmt, posneg, left, bottom, width, height):
+    import matplotlib.pyplot as plt
+    ax = fig.add_axes([left, bottom, width, height]); ax.axis('off')
+    if sec_title:
+        fig.text(left, bottom + height + 0.012, sec_title, ha='left',
+                 color='#f1f5f9', fontsize=12, fontweight='bold')
+    cols = list(df.columns)
+    src_cols = {i for i, c in enumerate(cols) if 'Source' in str(c) or 'File' in str(c)}
+    body, colors = [], []
+    for _, r in df.iterrows():
+        cells, ccols = [], []
+        for ci, c in enumerate(cols):
+            v = r[c]
+            f = fmt.get(c) if fmt else None
+            try:
+                txt = f(v) if f else ('' if pd.isna(v) else str(v))
+            except Exception:
+                txt = '' if pd.isna(v) else str(v)
+            if ci in src_cols and len(txt) > 30:
+                txt = txt[:29].rstrip() + '\u2026'
+            cells.append(txt)
+            tc = '#e2e8f0'
+            if c in (posneg or []):
+                nv = pd.to_numeric(pd.Series([v]), errors='coerce').iloc[0]
+                if pd.notna(nv):
+                    tc = '#4ade80' if nv >= 0 else '#f87171'
+            ccols.append(tc)
+        body.append(cells); colors.append(ccols)
+    tbl = ax.table(cellText=body, colLabels=cols, loc='upper center', cellLoc='center')
+    tbl.auto_set_font_size(False); tbl.set_fontsize(8)
+    ncol = len(cols)
+    nrows = max(1, len(body))
+    # stretch rows so the table fills the available vertical space (no big gap)
+    header_h = 0.085
+    row_h = max(0.05, min(0.14, (0.96 - header_h) / nrows))
+    # relative widths: wide for a Source File column, normal otherwise
+    base = []
+    for c in cols:
+        base.append(2.4 if 'Source' in str(c) or 'File' in str(c) else 1.0)
+    tot = sum(base)
+    for (ri, ci), cell in tbl.get_celld().items():
+        cell.set_edgecolor('#334155')
+        cell.set_linewidth(0.6)
+        cell.set_width(base[ci] / tot)
+        if ri == 0:
+            cell.set_facecolor('#1e40af')
+            cell.get_text().set_color('#ffffff')
+            cell.get_text().set_fontweight('bold')
+            cell.set_height(header_h)
+        else:
+            cell.set_facecolor('#0f172a' if ri % 2 else '#1e293b')
+            cell.get_text().set_color(colors[ri - 1][ci])
+            cell.set_height(row_h)
+            if ci in src_cols:
+                cell.get_text().set_fontsize(6.5)
+                cell.get_text().set_ha('left')
+                cell.PAD = 0.02
+            elif ci == 0:
+                cell.get_text().set_fontweight('bold')
+                cell.get_text().set_ha('left')
+                cell.PAD = 0.03
+
+
+def _pdf_footer(fig, page, total, report_date):
+    fig.text(0.5, 0.03, f'Beyond Transportation \u00b7 {report_date} \u00b7 Page {page} of {total}',
+             ha='center', color='#64748b', fontsize=8)
+
+
+def _mpl_pdf(spec):
+    """Render the report natively with matplotlib (PdfPages) so the PDF matches
+    the app's dark dashboard exactly: KPI cards, bar/donut charts and a styled
+    table. Primary engine \u2014 returns None when matplotlib is unavailable."""
+    if not HAS_MPL:
+        return None
+    import io
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    report_date = datetime.now().strftime('%B %d, %Y')
+    gen = datetime.now().strftime('%Y-%m-%d %H:%M')
+    title = spec.get('title', '')
+    subtitle = spec.get('subtitle', 'Beyond Transportation')
+    kpis = spec.get('kpis', [])
+    charts = [(c, p) for c, p in spec.get('charts', []) if p]
+    tables = [(t, df, f, pn) for (t, df, f, pn) in spec.get('tables', [])
+              if df is not None and not df.empty]
+    FS = (8.27, 11.69)
+
+    # charts packed into a single 2-column grid page (compact, app-like)
+    has_charts = len(charts) > 0
+    total = 1 + (1 if has_charts else 0) + len(tables)
+    if total < 2:
+        total = 2
+    buf = io.BytesIO()
+    try:
+        with PdfPages(buf) as pdf:
+            page = 1
+            # cover
+            fig = plt.figure(figsize=FS); fig.patch.set_facecolor(_PDF_BG)
+            _pdf_draw_header(fig, title, subtitle, gen, cover=True)
+            _pdf_footer(fig, page, total, report_date)
+            pdf.savefig(fig, facecolor=_PDF_BG); plt.close(fig); page += 1
+
+            # single content page: header + KPIs + all charts in a 2-col grid
+            if has_charts:
+                fig = plt.figure(figsize=FS); fig.patch.set_facecolor(_PDF_BG)
+                _pdf_draw_header(fig, title, subtitle, gen)
+                top = 0.905
+                if kpis:
+                    _pdf_draw_kpis(fig, kpis, 0.06, 0.845, 0.88, 0.055)
+                    top = 0.815
+                area_bottom = 0.055
+                area_h = top - area_bottom
+                n = len(charts)
+                ncol = 1 if n == 1 else 2
+                nrow = (n + ncol - 1) // ncol
+                gx, gy = 0.025, 0.02
+                cell_w = (0.88 - gx * (ncol - 1)) / ncol
+                cell_h = (area_h - gy * (nrow - 1)) / nrow
+                for idx, (cap, png) in enumerate(charts):
+                    r, c = idx // ncol, idx % ncol
+                    left = 0.06 + c * (cell_w + gx)
+                    bottom = area_bottom + (nrow - 1 - r) * (cell_h + gy)
+                    _pdf_place_img(fig, png, left, bottom, cell_w, cell_h, cap=cap)
+                _pdf_footer(fig, page, total, report_date)
+                pdf.savefig(fig, facecolor=_PDF_BG); plt.close(fig); page += 1
+
+            # table pages
+            for (sec_title, df, fmt, posneg) in tables:
+                fig = plt.figure(figsize=FS); fig.patch.set_facecolor(_PDF_BG)
+                _pdf_draw_header(fig, title, subtitle, gen)
+                _pdf_draw_table(fig, sec_title, df, fmt, posneg, 0.06, 0.10, 0.88, 0.78)
+                _pdf_footer(fig, page, total, report_date)
+                pdf.savefig(fig, facecolor=_PDF_BG); plt.close(fig); page += 1
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def _html_to_pdf(screen_html, spec=None):
-    """Render report to PDF bytes. Prefers WeasyPrint (pixel-faithful to the screen);
-    falls back to xhtml2pdf (pure-pip, no system libraries) when WeasyPrint is
-    unavailable. Returns None only if both engines fail."""
+    """Render report to PDF bytes. Prefers a native matplotlib dashboard PDF
+    (matches the app's look), then WeasyPrint, then xhtml2pdf. Returns None only
+    if every engine fails."""
+    if spec is not None:
+        pdf = _mpl_pdf(spec)
+        if pdf:
+            return pdf
     try:
         from weasyprint import HTML
         return HTML(string=screen_html).write_pdf()
