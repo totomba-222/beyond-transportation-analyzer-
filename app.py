@@ -1977,16 +1977,18 @@ def state_reports_consolidated_page(origin):
     total_monitor_rides = 0
     for code, info in sorted(origin.items(), key=lambda kv: STATES.get(kv[0], kv[0])):
         rows = info.get('rows', pd.DataFrame()).copy()
-        # Monitors / escorts are NOT trips: drop them from runs, revenue and pay.
+        # Monitors / escorts are NOT trips: drop them from the RUN COUNT only.
+        # Their revenue & payment ARE real money, so they still count toward
+        # State Revenue, Driver Pay and Profit.
         mon = _monitor_mask(rows)
         total_monitor_rides += int(mon.sum())
-        rows = rows[~mon]
+        trips = rows[~mon]
         rev = float(pd.to_numeric(rows.get('State_Price', pd.Series(dtype=float)), errors='coerce').sum())
         pay_series = pd.to_numeric(rows.get('State_Pay', pd.Series(dtype=float)), errors='coerce')
         pay = float(pay_series.sum()) if pay_series.notna().any() else float('nan')
         profit = rev - pay if not pd.isna(pay) else float('nan')
         margin = (profit / rev * 100) if rev and not pd.isna(profit) else float('nan')
-        summary.append({'State': STATES.get(code, code), 'Runs': len(rows),
+        summary.append({'State': STATES.get(code, code), 'Runs': len(trips),
                         'State Revenue': rev, 'Driver Pay': pay, 'Profit': profit,
                         'Margin %': margin,
                         'Source File': rows.get('Source_File', pd.Series([''])).iloc[0] if not rows.empty else ''})
@@ -2008,7 +2010,8 @@ def state_reports_consolidated_page(origin):
         state_kpi(e, 'Margin', _pct(tot_margin), 'g')
         if total_monitor_rides:
             st.caption(f'\u2139\ufe0f {total_monitor_rides:,} monitor / escort rows marked "(MO)" / "(Monitor)" '
-                       'were excluded \u2014 they ride along and are not billable trips.')
+                       'are excluded from the trip count \u2014 they ride along and are not trips. '
+                       'Their revenue and payment are still included in the totals.')
         st.subheader('Profit & Margin by State')
         sty = (rep.style
                .format({'State Revenue': '${:,.2f}', 'Driver Pay': '${:,.2f}',
@@ -2658,18 +2661,21 @@ def state_only_page(origin, code):
         rows['Policy_Driver_Pay'] = [policy_pay(code, m, 'Unknown', 'Unknown')[0] for m in miles]
         rows['Loss_Amount'] = (rows['Policy_Driver_Pay'] - actual_pay).clip(lower=0).fillna(0)
         rows['Is_Non_Compliant'] = rows['Loss_Amount'] > 0.05
-    # Monitors / escorts are NOT trips: exclude them from revenue, driver cost,
-    # trip count, profit and loss. They are reported separately for transparency.
+    # Monitors / escorts are NOT trips: they are excluded from the trip COUNT and
+    # from compliance/loss. But their revenue and payment are real money, so they
+    # stay in Total Revenue and Driver Cost.
     trip_rows = rows[~rows['Is_Monitor']]
-    trip_net = pd.to_numeric(trip_rows['Net_Pay'], errors='coerce')
-    rev = float(pd.to_numeric(trip_rows['Gross_Pay'], errors='coerce').sum())
-    pay = float(trip_net.sum()) if trip_net.notna().any() else float('nan')
+    all_net = pd.to_numeric(rows['Net_Pay'], errors='coerce')
+    rev = float(pd.to_numeric(rows['Gross_Pay'], errors='coerce').sum())
+    pay = float(all_net.sum()) if all_net.notna().any() else float('nan')
     runs = int(len(trip_rows))
     profit = rev - pay if not pd.isna(pay) else float('nan')
     margin = profit / rev if rev and not pd.isna(profit) else 0.0
     loss = float(pd.to_numeric(trip_rows['Loss_Amount'], errors='coerce').sum())
     monitor_billed = float(pd.to_numeric(rows.loc[rows['Is_Monitor'], 'Gross_Pay'],
                                          errors='coerce').sum())
+    monitor_paid = float(pd.to_numeric(rows.loc[rows['Is_Monitor'], 'Net_Pay'],
+                                       errors='coerce').sum())
     st.title(f'\U0001F4CA {name} - Analysis Dashboard')
     tab1, tab2 = st.tabs(['Weekly Analysis', 'Historical Performance'])
     with tab1:
@@ -2680,9 +2686,9 @@ def state_only_page(origin, code):
         st.table(pol)
         st.subheader('Financial Summary')
         k1, k2, k3 = st.columns(3)
-        state_kpi(k1, 'Driver Trips (counted)', f'{driver_trips:,}', '')
-        state_kpi(k2, 'Monitor Rides (excluded)', f'{monitor_rides:,}', 'p')
-        state_kpi(k3, 'Trips in Totals', f'{runs:,}', '')
+        state_kpi(k1, 'Driver Trips (counted as runs)', f'{driver_trips:,}', '')
+        state_kpi(k2, 'Monitor Rides (not trips)', f'{monitor_rides:,}', 'p')
+        state_kpi(k3, 'Runs in Totals', f'{runs:,}', '')
         k4, k5, k6 = st.columns(3)
         state_kpi(k4, 'Total Revenue', _money(rev), 'g')
         state_kpi(k5, 'Driver Cost', _money(pay), 'o')
@@ -2691,22 +2697,24 @@ def state_only_page(origin, code):
         m1, _m2, _m3 = st.columns(3)
         state_kpi(m1, 'Current Margin', f'{margin:.2%}', 'g' if margin >= 0 else 'r')
         summary = pd.DataFrame({
-            'Metric': ['Driver Trips (counted)', 'Monitor / Escort Rides (excluded)',
-                       'Monitor Billing (excluded)',
+            'Metric': ['Driver Trips (counted as runs)', 'Monitor / Escort Rides (not trips)',
+                       'Monitor Revenue (included)', 'Monitor Payment (included)',
                        'Total Revenue (Gross Pay)', 'Total Driver Cost (Net Pay)',
                        'Total Margin (Profit)', 'Current Margin %'],
             'Value': [f'{driver_trips:,}', f'{monitor_rides:,}', _money(monitor_billed),
-                      _money(rev), _money(pay), _money(profit), f'{margin:.2%}']
+                      _money(monitor_paid), _money(rev), _money(pay), _money(profit),
+                      f'{margin:.2%}']
         }).set_index('Metric')
         with st.expander('Financial summary (table)', expanded=False):
             st.table(summary)
         if monitor_rides:
             st.caption(
-                f'Monitor exclusion: **{monitor_rides:,} rows marked "(MO)" / "(Monitor)"** '
-                f'({_money(monitor_billed)} billed) are **not trips**, so they are removed from '
-                f'the trip count, revenue, driver cost and profit above. Only the '
-                f'**{driver_trips:,} actual driver trips** are counted. Monitors are listed '
-                'separately below for reference.')
+                f'Monitor handling: **{monitor_rides:,} rows marked "(MO)" / "(Monitor)"** '
+                f'are **not trips**, so they are removed from the **trip count** and from '
+                f'compliance only. Their money still counts: **{_money(monitor_billed)} revenue** '
+                f'and **{_money(monitor_paid)} payment** are included in the totals above. '
+                f'Only the **{driver_trips:,} actual driver trips** are counted as runs. '
+                'Monitors are listed separately below for reference.')
         if code == 'AK':
             st.info('Alaska state rows do not include vehicle type or trip route. Alaska policy compliance is calculated only after First trip detail is uploaded and matched.')
         st.subheader('Compliance Impact Summary')
