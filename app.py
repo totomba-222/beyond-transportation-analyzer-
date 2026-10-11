@@ -2733,63 +2733,96 @@ def state_only_page(origin, code, df_first=None, period=None):
             d = df_first[df_first['State'] == code].copy()
             matched = (d[d['State_Price'].notna()].copy()
                        if 'State_Price' in d.columns else d.iloc[0:0])
+
+            # ===== Section 1: First Alt Price Difference (concise) =====
             st.markdown('---')
             st.header(f'{name} \u2014 First Alt Price Difference')
-            st.caption('Where First Alt paid Beyond differently from the state contract. '
-                       'Difference per run = State contract revenue \u2212 First Net Pay (what Beyond was paid). '
-                       'A positive \u201cAmount Due From First\u201d is money owed to Beyond.')
+            st.caption('State contract price vs. what First Alt actually paid Beyond, grouped by '
+                       'price point (not trip by trip). Difference / Trip = State Price \u2212 First '
+                       'Net Pay. A positive total is money owed to Beyond.')
             if matched.empty:
                 st.info('No First Alt trips were matched to a state contract price for this state yet.')
             else:
                 first_total = float(pd.to_numeric(matched['Revenue'], errors='coerce').sum())
                 state_total = float(pd.to_numeric(matched['State_Price'], errors='coerce').sum())
                 difference = state_total - first_total
-                diff_runs = int((pd.to_numeric(matched['State_Price'], errors='coerce').round(2)
-                                 != pd.to_numeric(matched['Revenue'], errors='coerce').round(2)).sum())
-                x1, x2, x3, x4 = st.columns(4)
-                x1.metric('Matched Trips', f'{len(matched):,}')
-                x2.metric('Trips With a Difference', f'{diff_runs:,}')
-                x3.metric('First Net Pay (paid)', _money(first_total))
-                x4.metric('Total Difference', _money(difference))
                 diff_report = price_difference_report(matched)
                 if not diff_report.empty:
-                    st.dataframe(diff_report.style.format({
-                        'First_Price': '${:,.2f}', 'State_Price_Rate': '${:,.2f}',
-                        'Difference_Per_Run': '${:,.2f}', 'First_Revenue': '${:,.2f}',
-                        'State_Revenue': '${:,.2f}', 'Total_Difference': '${:,.2f}',
-                        'Amount_Due_From_First': '${:,.2f}'}),
+                    diff_rows = diff_report[diff_report['Difference_Per_Run'].round(2) != 0]
+                    diff_trips = int(pd.to_numeric(diff_rows['Runs'], errors='coerce').sum()) if not diff_rows.empty else 0
+                else:
+                    diff_trips = 0
+                x1, x2, x3, x4 = st.columns(4)
+                x1.metric('Matched Trips', f'{len(matched):,}')
+                x2.metric('Trips With a Difference', f'{diff_trips:,}')
+                x3.metric('First Net Pay (paid)', _money(first_total))
+                x4.metric('Total Difference', _money(difference))
+                if not diff_report.empty:
+                    clean = pd.DataFrame({
+                        'First Price': pd.to_numeric(diff_report['First_Price'], errors='coerce'),
+                        'State Price': pd.to_numeric(diff_report['State_Price_Rate'], errors='coerce'),
+                        'Difference / Trip': pd.to_numeric(diff_report['Difference_Per_Run'], errors='coerce'),
+                        'Trips': pd.to_numeric(diff_report['Runs'], errors='coerce'),
+                        'Total Difference': pd.to_numeric(diff_report['Total_Difference'], errors='coerce'),
+                    }).sort_values('Total Difference', key=lambda s: s.abs(),
+                                   ascending=False).reset_index(drop=True)
+                    st.caption('One row per price point \u2014 e.g. Alaska First $42.50 vs state $45.00.')
+                    st.dataframe(clean.style.format({
+                        'First Price': '${:,.2f}', 'State Price': '${:,.2f}',
+                        'Difference / Trip': '${:,.2f}', 'Trips': '{:,.0f}',
+                        'Total Difference': '${:,.2f}'}).map(
+                            _color_pos_neg, subset=['Difference / Trip', 'Total Difference']),
                         use_container_width=True, hide_index=True)
                     pdf_tables.append((
-                        'First Alt Price Difference (State Revenue \u2212 First Net Pay)',
-                        diff_report,
-                        {'First_Price': money, 'State_Price_Rate': money,
-                         'Difference_Per_Run': money, 'First_Revenue': money,
-                         'State_Revenue': money, 'Total_Difference': money,
-                         'Amount_Due_From_First': money},
-                        ['Difference_Per_Run', 'Total_Difference', 'Amount_Due_From_First']))
-            # ---- Non-compliant trips vs the pricing policy ----
+                        'First Alt Price Difference (State Price \u2212 First Net Pay)', clean,
+                        {'First Price': money, 'State Price': money,
+                         'Difference / Trip': money, 'Total Difference': money},
+                        ['Difference / Trip', 'Total Difference']))
+
+            # ===== Section 2: Non-compliant trips + executive summary =====
             st.markdown('---')
             st.subheader('Trips Not Compliant With the Pricing Policy')
-            bad_cols = ['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles', 'Revenue',
-                        'Policy_Pay', 'Loss']
-            if 'Non_Compliant' in d.columns and bool(d['Non_Compliant'].fillna(False).any()):
-                bad = d[d['Non_Compliant'].fillna(False)][[c for c in bad_cols if c in d.columns]].copy()
-                if 'Loss' in bad.columns:
-                    bad = bad.sort_values('Loss', ascending=False)
-                total_loss = float(pd.to_numeric(bad.get('Loss', pd.Series(dtype=float)),
-                                                 errors='coerce').sum())
-                st.caption(f'{len(bad):,} trip(s) paid the driver below the pricing-policy pay \u2014 '
-                           f'total recoverable loss {_money(total_loss)}.')
-                disp = bad.rename(columns={'Trip_Date': 'Date', 'Driver_Name': 'Driver',
-                                           'Trip_Name': 'Trip', 'Revenue': 'First Net Pay',
-                                           'Policy_Pay': 'Policy Driver Pay'})
-                st.dataframe(disp.style.format({'First Net Pay': '${:,.2f}',
-                                                'Policy Driver Pay': '${:,.2f}',
-                                                'Loss': '${:,.2f}'}),
+            has_nc = 'Non_Compliant' in d.columns and bool(d['Non_Compliant'].fillna(False).any())
+            if has_nc:
+                bad = d[d['Non_Compliant'].fillna(False)].copy()
+                bad['Driver Pay'] = pd.to_numeric(
+                    bad.get('Driver_Pay', bad.get('State_Pay')), errors='coerce').round(2)
+                bad['Policy Driver Pay'] = pd.to_numeric(bad['Policy_Pay'], errors='coerce').round(2)
+                bad['Short'] = pd.to_numeric(bad['Loss'], errors='coerce').round(2)
+                total_loss = float(bad['Short'].sum())
+                # Executive summary \u2014 the main reasons, grouped by the pay gap.
+                reasons = (bad.groupby(['Driver Pay', 'Policy Driver Pay'], dropna=False)
+                              .agg(Trips=('Short', 'size'),
+                                   **{'Total Short': ('Short', 'sum')})
+                              .reset_index())
+                reasons['Short / Trip'] = (reasons['Policy Driver Pay'] - reasons['Driver Pay']).round(2)
+                reasons['Reason'] = reasons.apply(
+                    lambda r: f"Driver paid {_money(r['Driver Pay'])} vs policy "
+                              f"{_money(r['Policy Driver Pay'])}", axis=1)
+                reasons = reasons.sort_values('Total Short', ascending=False).reset_index(drop=True)
+                top = reasons.iloc[0]
+                st.info(f'\U0001F4CB **Executive summary:** {len(bad):,} trip(s) are non-compliant, '
+                        f'costing {_money(total_loss)} in recoverable loss. Biggest reason: '
+                        f'**{top["Reason"]}** \u2014 {int(top["Trips"]):,} trip(s), '
+                        f'{_money(top["Total Short"])}.')
+                summ = reasons[['Reason', 'Trips', 'Short / Trip', 'Total Short']]
+                st.caption('Main reasons for non-compliance \u2014 grouped by the driver-pay gap, '
+                           'biggest loss first.')
+                st.dataframe(summ.style.format({'Trips': '{:,.0f}', 'Short / Trip': '${:,.2f}',
+                                                'Total Short': '${:,.2f}'}),
                              use_container_width=True, hide_index=True)
-                pdf_tables.append(('Trips Not Compliant With Pricing Policy', disp,
-                                   {'First Net Pay': money, 'Policy Driver Pay': money,
-                                    'Loss': money}, ['Loss']))
+                pdf_tables.append(('Non-Compliance \u2014 Main Reasons (summary)', summ,
+                                   {'Short / Trip': money, 'Total Short': money}, []))
+                with st.expander(f'Show all {len(bad):,} non-compliant trips', expanded=False):
+                    disp = bad[[c for c in ['Trip_Date', 'Driver_Name', 'Trip_Name', 'Miles',
+                                            'Driver Pay', 'Policy Driver Pay', 'Short']
+                                if c in bad.columns]].rename(columns={
+                                    'Trip_Date': 'Date', 'Driver_Name': 'Driver',
+                                    'Trip_Name': 'Trip'}).sort_values('Short', ascending=False)
+                    st.dataframe(disp.style.format({'Driver Pay': '${:,.2f}',
+                                                    'Policy Driver Pay': '${:,.2f}',
+                                                    'Short': '${:,.2f}'}),
+                                 use_container_width=True, hide_index=True)
             else:
                 st.success('All matched trips comply with the pricing policy \u2014 '
                            'no loss-making trips found.')
