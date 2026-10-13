@@ -1143,8 +1143,11 @@ def state_kpi(col, label, value, tone=''):
 
 
 _TONE_COLORS = {'g': '#22c55e', 'r': '#ef4444', 'o': '#f59e0b', 'p': '#a855f7', '': '#3b82f6'}
-# Brighter text colors so KPI values never look plain white.
+# Brighter text colors so KPI values never look plain white (dark theme).
 _VAL_COLORS = {'g': '#4ade80', 'r': '#f87171', 'o': '#fbbf24', 'p': '#c084fc', '': '#60a5fa'}
+# Deep, saturated versions for the LIGHT (printable) report, so values stay
+# crisp and never look faded on white paper.
+_VAL_COLORS_LIGHT = {'g': '#15803d', 'r': '#b91c1c', 'o': '#b45309', 'p': '#7e22ce', '': '#1d4ed8'}
 
 # matplotlib powers the donut / ratio charts. It is an optional dependency: if it
 # is missing from the deployed environment (e.g. a failed install on Streamlit
@@ -1163,18 +1166,27 @@ def _show_png(container, png, **kwargs):
         container.image(png, **kwargs)
 
 
-def _mpl_png(fig):
-    """Serialize a matplotlib figure to PNG bytes on the dark canvas."""
+def _mpl_png(fig, light=False):
+    """Serialize a matplotlib figure to PNG bytes. Dark canvas by default; a white
+    canvas for the printable (light) report so nothing looks faded on paper."""
     import io
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', facecolor='#0e1117', dpi=130, bbox_inches='tight')
+    fig.savefig(buf, format='png', facecolor=('#ffffff' if light else '#0e1117'),
+                dpi=150, bbox_inches='tight')
     import matplotlib.pyplot as plt
     plt.close(fig)
     return buf.getvalue()
 
 
-def _donut_png(values, labels, colors, center=''):
-    """Dark donut chart -> PNG bytes. Zero/negative slices are dropped."""
+def _chart_theme(light):
+    """Return (page_bg, axes_bg, main_text, muted_text, grid, panel) for a chart."""
+    if light:
+        return '#ffffff', '#ffffff', '#0f172a', '#475569', '#e2e8f0', '#eef2f7'
+    return '#0e1117', '#0e1117', '#f1f5f9', '#94a3b8', '#334155', '#1e293b'
+
+
+def _donut_png(values, labels, colors, center='', light=False):
+    """Donut chart -> PNG bytes. Zero/negative slices are dropped."""
     if not HAS_MPL:
         return b''
     import matplotlib
@@ -1187,21 +1199,22 @@ def _donut_png(values, labels, colors, center=''):
     labs = [d[1] for d in data]
     cols = [d[2] for d in data]
     fig, ax = plt.subplots(figsize=(3.1, 3.1))
-    fig.patch.set_facecolor('#0e1117')
+    page_bg, _, main_tx, _, _, _ = _chart_theme(light)
+    fig.patch.set_facecolor(page_bg)
     wedges, _ = ax.pie(vals, colors=cols, startangle=90,
-                       wedgeprops=dict(width=0.42, edgecolor='#0e1117', linewidth=2))
+                       wedgeprops=dict(width=0.42, edgecolor=page_bg, linewidth=2))
     total = sum(vals)
     ax.legend(wedges, [f'{l}  ({v/total:.0%})' for l, v in zip(labs, vals)],
               loc='center', bbox_to_anchor=(0.5, -0.08), ncol=1, frameon=False,
-              fontsize=8, labelcolor='#e2e8f0')
+              fontsize=8, labelcolor=main_tx)
     if center:
-        ax.text(0, 0, center, ha='center', va='center', color='#f1f5f9',
+        ax.text(0, 0, center, ha='center', va='center', color=main_tx,
                 fontsize=11, fontweight='bold')
     ax.set_aspect('equal')
-    return _mpl_png(fig)
+    return _mpl_png(fig, light)
 
 
-def _ratio_bars_png(pairs):
+def _ratio_bars_png(pairs, light=False):
     """Horizontal percentage bars (label, pct 0-100, color) -> PNG bytes."""
     if not HAS_MPL:
         return b''
@@ -1211,11 +1224,12 @@ def _ratio_bars_png(pairs):
     labels = [p[0] for p in pairs]
     vals = [max(0.0, min(100.0, float(p[1]))) for p in pairs]
     cols = [p[2] for p in pairs]
+    page_bg, axes_bg, main_tx, muted_tx, grid, panel = _chart_theme(light)
     fig, ax = plt.subplots(figsize=(5.4, 0.62 * len(pairs) + 0.6))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
+    fig.patch.set_facecolor(page_bg)
+    ax.set_facecolor(axes_bg)
     y = range(len(pairs))
-    ax.barh(list(y), [100] * len(pairs), color='#1e293b', edgecolor='#334155', height=0.6)
+    ax.barh(list(y), [100] * len(pairs), color=panel, edgecolor=grid, height=0.6)
     ax.barh(list(y), vals, color=cols, height=0.6)
     ax.set_yticks(list(y))
     ax.set_yticklabels(labels, color='#e2e8f0', fontsize=9)
@@ -1231,7 +1245,7 @@ def _ratio_bars_png(pairs):
     return _mpl_png(fig)
 
 
-def _grouped_bars_png(labels, series, colors, title=''):
+def _grouped_bars_png(labels, series, colors, title='', light=False):
     """Grouped vertical bars (e.g. State Revenue vs Driver Pay) -> PNG bytes.
     `series` = list of (name, [values]); `colors` matches series order."""
     if not HAS_MPL or not labels:
@@ -1242,26 +1256,27 @@ def _grouped_bars_png(labels, series, colors, title=''):
     n = len(series)
     x = range(len(labels))
     width = 0.8 / max(1, n)
+    page_bg, axes_bg, main_tx, muted_tx, grid, panel = _chart_theme(light)
     fig, ax = plt.subplots(figsize=(5.8, 3.9))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
+    fig.patch.set_facecolor(page_bg)
+    ax.set_facecolor(axes_bg)
     for i, (name, vals) in enumerate(series):
         off = [xi + i * width - 0.4 + width / 2 for xi in x]
         ax.bar(off, vals, width=width, label=name, color=colors[i % len(colors)])
     ax.set_xticks(list(x))
-    ax.set_xticklabels(labels, color='#e2e8f0', fontsize=8, rotation=30, ha='right')
-    ax.tick_params(axis='y', colors='#94a3b8', labelsize=7)
-    ax.grid(axis='y', color='#334155', linewidth=0.6, alpha=0.6)
+    ax.set_xticklabels(labels, color=main_tx, fontsize=8, rotation=30, ha='right')
+    ax.tick_params(axis='y', colors=muted_tx, labelsize=7)
+    ax.grid(axis='y', color=grid, linewidth=0.6, alpha=0.6)
     ax.set_axisbelow(True)
     for s in ax.spines.values():
         s.set_visible(False)
-    ax.legend(frameon=False, fontsize=8, labelcolor='#e2e8f0', ncol=n, loc='upper right')
+    ax.legend(frameon=False, fontsize=8, labelcolor=main_tx, ncol=n, loc='upper right')
     if title:
-        ax.set_title(title, color='#f1f5f9', fontsize=10, fontweight='bold')
-    return _mpl_png(fig)
+        ax.set_title(title, color=main_tx, fontsize=10, fontweight='bold')
+    return _mpl_png(fig, light)
 
 
-def _state_bars_png(labels, values, title=''):
+def _state_bars_png(labels, values, title='', light=False):
     """Horizontal bars per state, green positive / red negative -> PNG bytes."""
     if not HAS_MPL or not labels:
         return b''
@@ -1271,21 +1286,23 @@ def _state_bars_png(labels, values, title=''):
     order = sorted(range(len(values)), key=lambda i: (values[i] if values[i] == values[i] else -1e9))
     labs = [labels[i] for i in order]
     vals = [0.0 if values[i] != values[i] else float(values[i]) for i in order]
-    cols = ['#22c55e' if v >= 0 else '#ef4444' for v in vals]
+    cols = ['#16a34a' if v >= 0 else '#dc2626' for v in vals] if light \
+        else ['#22c55e' if v >= 0 else '#ef4444' for v in vals]
+    page_bg, axes_bg, main_tx, muted_tx, grid, panel = _chart_theme(light)
     fig, ax = plt.subplots(figsize=(6.2, 0.45 * len(labs) + 0.8))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
+    fig.patch.set_facecolor(page_bg)
+    ax.set_facecolor(axes_bg)
     ax.barh(range(len(labs)), vals, color=cols, height=0.6)
     ax.set_yticks(range(len(labs)))
-    ax.set_yticklabels(labs, color='#e2e8f0', fontsize=8)
-    ax.tick_params(axis='x', colors='#94a3b8', labelsize=7)
-    ax.grid(axis='x', color='#334155', linewidth=0.6, alpha=0.6)
+    ax.set_yticklabels(labs, color=main_tx, fontsize=8)
+    ax.tick_params(axis='x', colors=muted_tx, labelsize=7)
+    ax.grid(axis='x', color=grid, linewidth=0.6, alpha=0.6)
     ax.set_axisbelow(True)
     for s in ax.spines.values():
         s.set_visible(False)
     if title:
-        ax.set_title(title, color='#f1f5f9', fontsize=10, fontweight='bold')
-    return _mpl_png(fig)
+        ax.set_title(title, color=main_tx, fontsize=10, fontweight='bold')
+    return _mpl_png(fig, light)
 
 
 def _png_data_uri(png):
@@ -1316,10 +1333,10 @@ def _pdf_friendly_html(spec):
             return ''
         w = max(16, int(100 / max(1, len(items))))
         cells = ''.join(
-            f'<td width="{w}%" valign="top" style="background:#1e293b;border:1px solid #334155;'
+            f'<td width="{w}%" valign="top" style="background:#f8fafc;border:1px solid #e2e8f0;'
             f'border-left:5px solid {_TONE_COLORS.get(tone, tone)};padding:8px">'
-            f'<span style="font-size:6pt;color:#94a3b8">{escape(str(lab)).upper()}</span><br/>'
-            f'<span style="font-size:12pt;color:{_VAL_COLORS.get(tone, "#f1f5f9")}"><b>{escape(str(val))}</b></span></td>'
+            f'<span style="font-size:6pt;color:#64748b">{escape(str(lab)).upper()}</span><br/>'
+            f'<span style="font-size:12pt;color:{_VAL_COLORS_LIGHT.get(tone, "#0f172a")}"><b>{escape(str(val))}</b></span></td>'
             for lab, val, tone in items)
         return (f'<table border="0" cellspacing="3" cellpadding="0" width="100%">'
                 f'<tr>{cells}</tr></table><br/>')
@@ -1327,12 +1344,12 @@ def _pdf_friendly_html(spec):
     kpi_block = kpi_table(kpis)
     note_block = ''
     if note_html:
-        note_block = (f'<table width="100%"><tr><td style="background:#172033;border:1px solid #334155;'
+        note_block = (f'<table width="100%"><tr><td style="background:#eff6ff;border:1px solid #bfdbfe;'
                       f'border-left:5px solid #3b82f6;padding:9px">'
-                      f'<span style="font-size:7pt;color:#cbd5e1">{note_html}</span></td></tr></table><br/>')
+                      f'<span style="font-size:7pt;color:#1e3a5f">{note_html}</span></td></tr></table><br/>')
     ratio_block = ''
     if ratios:
-        ratio_block = ('<p><span style="font-size:11pt;color:#f1f5f9"><b>Financial Ratios</b></span></p>'
+        ratio_block = ('<p><span style="font-size:11pt;color:#0f172a"><b>Financial Ratios</b></span></p>'
                        + kpi_table(ratios))
     chart_block = ''
     for cap, png in charts:
@@ -1341,77 +1358,77 @@ def _pdf_friendly_html(spec):
         chart_block += (
             f'<table width="100%"><tr><td align="center" style="padding:4px">'
             f'<img src="{_png_data_uri(png)}" style="width:440px"/><br/>'
-            f'<span style="font-size:7pt;color:#94a3b8">{escape(cap)}</span></td></tr></table><br/>')
+            f'<span style="font-size:7pt;color:#64748b">{escape(cap)}</span></td></tr></table><br/>')
     sections = ''
     for sec_title, df, fmt, posneg in tables:
         if df is None or df.empty:
             continue
         cols = list(df.columns)
         thead = ''.join(
-            f'<td style="background:#1d4ed8;border:1px solid #334155;padding:6px">'
+            f'<td style="background:#1d4ed8;border:1px solid #cbd5e1;padding:6px">'
             f'<span style="font-size:8pt;color:#ffffff"><b>{escape(str(c))}</b></span></td>' for c in cols)
         body = ''
         for i, (_, r) in enumerate(df.iterrows()):
-            rowbg = '#172033' if i % 2 else '#1e293b'
+            rowbg = '#f1f5f9' if i % 2 else '#ffffff'
             tds = ''
             for c in cols:
                 v = r[c]
                 f = fmt.get(c)
                 txt = f(v) if f else ('\u2014' if (v is None or (not isinstance(v, str) and pd.isna(v))) else str(v))
                 align = 'right' if f else 'left'
-                bg, fg, bold = rowbg, '#e2e8f0', ''
+                bg, fg, bold = rowbg, '#0f172a', ''
                 if c in posneg:
                     try:
                         fv = float(v)
                         if fv > 0.005:
-                            bg, fg, bold = '#064e3b', '#6ee7b7', 'b'
+                            bg, fg, bold = '#dcfce7', '#15803d', 'b'
                         elif fv < -0.005:
-                            bg, fg, bold = '#7f1d1d', '#fca5a5', 'b'
+                            bg, fg, bold = '#fee2e2', '#b91c1c', 'b'
                     except (TypeError, ValueError):
                         pass
                 inner = escape(txt)
                 if bold:
                     inner = f'<b>{inner}</b>'
-                tds += (f'<td align="{align}" valign="top" style="background:{bg};border:1px solid #334155;'
+                tds += (f'<td align="{align}" valign="top" style="background:{bg};border:1px solid #cbd5e1;'
                         f'padding:5px"><span style="font-size:7pt;color:{fg}">{inner}</span></td>')
             body += f'<tr>{tds}</tr>'
         sections += (
-            f'<p><span style="font-size:11pt;color:#f1f5f9"><b>{escape(sec_title)}</b></span></p>'
+            f'<p><span style="font-size:11pt;color:#0f172a"><b>{escape(sec_title)}</b></span></p>'
             f'<table border="0" cellspacing="0" cellpadding="0" width="100%">'
             f'<tr>{thead}</tr>{body}</table><br/>')
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
 @page {{
-  size: a4 landscape; margin: 1.2cm; background-color: #0e1117;
+  size: a4 landscape; margin: 1.2cm; background-color: #ffffff;
   @frame content_frame {{ left:1.2cm; width:27.3cm; top:1.2cm; height:17.3cm; }}
   @frame footer_frame {{ -pdf-frame-content: footerContent; left:1.2cm; width:27.3cm; top:18.7cm; height:0.9cm; }}
 }}
-body {{ background-color:#0e1117; font-family: Helvetica, Arial, sans-serif; }}
+body {{ background-color:#ffffff; font-family: Helvetica, Arial, sans-serif; }}
 td {{ font-family: Helvetica, Arial, sans-serif; }}
 </style></head>
 <body>
 <table width="100%"><tr><td align="center" valign="middle" height="430">
-<span style="font-size:12pt;color:#60a5fa;letter-spacing:3px"><b>BEYOND TRANSPORTATION</b></span><br/><br/>
-<span style="font-size:30pt;color:#f8fafc"><b>{escape(title)}</b></span><br/><br/>
-<span style="font-size:11pt;color:#94a3b8">{escape(subtitle)}</span><br/><br/><br/>
-<span style="font-size:9pt;color:#cbd5e1"><b>&nbsp;&nbsp;FINANCIAL REPORT&nbsp;&nbsp;</b></span><br/><br/>
-<span style="font-size:14pt;color:#e2e8f0"><b>{escape(cover_date)}</b></span><br/>
-<span style="font-size:9pt;color:#94a3b8">{escape(cover_range)}</span><br/><br/><br/>
-<span style="font-size:8pt;color:#64748b">Hatem&#39;s B.T. Analyzer &#183; Confidential</span>
+<span style="font-size:12pt;color:#2563eb;letter-spacing:3px"><b>BEYOND TRANSPORTATION</b></span><br/><br/>
+<span style="font-size:30pt;color:#0f172a"><b>{escape(title)}</b></span><br/><br/>
+<span style="font-size:11pt;color:#64748b">{escape(subtitle)}</span><br/><br/><br/>
+<span style="font-size:9pt;color:#1d4ed8"><b>&nbsp;&nbsp;FINANCIAL REPORT&nbsp;&nbsp;</b></span><br/><br/>
+<span style="font-size:14pt;color:#334155"><b>{escape(cover_date)}</b></span><br/>
+<span style="font-size:9pt;color:#64748b">{escape(cover_range)}</span><br/><br/><br/>
+<span style="font-size:8pt;color:#94a3b8">Hatem&#39;s B.T. Analyzer &#183; Confidential</span>
 </td></tr></table>
 <pdf:nextpage />
-<p><span style="font-size:17pt;color:#f1f5f9"><b>{escape(title)}</b></span></p>
-<p><span style="font-size:8pt;color:#94a3b8">{escape(subtitle)} &#183; generated {gen}</span></p>
+<p><span style="font-size:17pt;color:#0f172a"><b>{escape(title)}</b></span></p>
+<p><span style="font-size:8pt;color:#64748b">{escape(subtitle)} &#183; generated {gen}</span></p>
 {kpi_block}{note_block}{ratio_block}{chart_block}{sections}
 <div id="footerContent" style="text-align:center">
-<span style="font-size:7pt;color:#64748b">Beyond Transportation &#183; {rep_label} &#183; Page <pdf:pagenumber /> of <pdf:pagecount /></span>
+<span style="font-size:7pt;color:#94a3b8">Beyond Transportation &#183; {rep_label} &#183; Page <pdf:pagenumber /> of <pdf:pagecount /></span>
 </div>
 </body></html>"""
 
 
-_PDF_BG = '#0e1117'
-_PDF_CARD = '#1e293b'
-_PDF_BORDER = '#334155'
+_PDF_BG = '#ffffff'
+_PDF_CARD = '#f1f5f9'
+_PDF_BORDER = '#cbd5e1'
 
 
 def _pdf_place_img(fig, png, left, bottom, width, height, cap=''):
@@ -1440,7 +1457,7 @@ def _pdf_place_img(fig, png, left, bottom, width, height, cap=''):
     ax.axis('off')
     if cap:
         fig.text(left + width / 2, bottom + 0.004, cap, ha='center', va='bottom',
-                 color='#cbd5e1', fontsize=10, fontweight='bold')
+                 color='#475569', fontsize=10, fontweight='bold')
     return ax
 
 
@@ -1450,29 +1467,29 @@ def _pdf_draw_header(fig, title, subtitle, gen, cover=False, period=None):
     period = period or {}
     if cover:
         fig.text(0.5, 0.70, (subtitle or 'Beyond Transportation').upper(), ha='center',
-                 color='#60a5fa', fontsize=13, fontweight='bold')
-        fig.text(0.5, 0.58, title, ha='center', color='#f1f5f9', fontsize=26, fontweight='bold')
-        fig.text(0.5, 0.52, 'FINANCIAL REPORT', ha='center', color='#94a3b8', fontsize=12)
+                 color='#2563eb', fontsize=13, fontweight='bold')
+        fig.text(0.5, 0.58, title, ha='center', color='#0f172a', fontsize=26, fontweight='bold')
+        fig.text(0.5, 0.52, 'FINANCIAL REPORT', ha='center', color='#64748b', fontsize=12)
         week = period.get('week')
         rng = period.get('range')
         if week:
-            fig.text(0.5, 0.44, week, ha='center', color='#e2e8f0', fontsize=18,
+            fig.text(0.5, 0.44, week, ha='center', color='#0f172a', fontsize=18,
                      fontweight='bold')
             if rng:
-                fig.text(0.5, 0.40, rng, ha='center', color='#94a3b8', fontsize=12)
+                fig.text(0.5, 0.40, rng, ha='center', color='#64748b', fontsize=12)
         else:
-            fig.text(0.5, 0.44, report_date, ha='center', color='#e2e8f0', fontsize=14,
+            fig.text(0.5, 0.44, report_date, ha='center', color='#0f172a', fontsize=14,
                      fontweight='bold')
         fig.text(0.5, 0.08, "Hatem's B.T. Analyzer \u00b7 Confidential", ha='center',
-                 color='#64748b', fontsize=9)
+                 color='#94a3b8', fontsize=9)
         ax = fig.add_axes([0.28, 0.49, 0.44, 0.004]); ax.axis('off')
-        ax.axhline(0.5, color='#3b82f6', linewidth=2)
+        ax.axhline(0.5, color='#2563eb', linewidth=2)
         return
-    fig.text(0.06, 0.955, title, ha='left', color='#f1f5f9', fontsize=18, fontweight='bold')
-    fig.text(0.06, 0.932, f'{subtitle} \u00b7 generated {gen}', ha='left', color='#94a3b8',
+    fig.text(0.06, 0.955, title, ha='left', color='#0f172a', fontsize=18, fontweight='bold')
+    fig.text(0.06, 0.932, f'{subtitle} \u00b7 generated {gen}', ha='left', color='#64748b',
              fontsize=9)
     ax = fig.add_axes([0.06, 0.925, 0.88, 0.002]); ax.axis('off')
-    ax.axhline(0.5, color='#334155', linewidth=1)
+    ax.axhline(0.5, color='#cbd5e1', linewidth=1)
 
 
 def _pdf_draw_kpis(fig, kpis, left, bottom, width, height):
@@ -1485,14 +1502,14 @@ def _pdf_draw_kpis(fig, kpis, left, bottom, width, height):
     for i, (lab, val, tone) in enumerate(kpis):
         x = i * (cw + gap)
         accent = _TONE_COLORS.get(tone, '#3b82f6')
-        valcol = _VAL_COLORS.get(tone, '#f1f5f9')
+        valcol = _VAL_COLORS_LIGHT.get(tone, '#0f172a')
         ax.add_patch(FancyBboxPatch((x, 0.0), cw, 1.0,
                      boxstyle='round,pad=0.004,rounding_size=0.06',
-                     linewidth=0, facecolor=_PDF_CARD, mutation_aspect=0.5,
-                     clip_on=False))
+                     linewidth=0.8, edgecolor=_PDF_BORDER, facecolor=_PDF_CARD,
+                     mutation_aspect=0.5, clip_on=False))
         ax.add_patch(plt_rect(x, 0.0, 0.012, 1.0, accent))
         ax.text(x + 0.03, 0.74, str(lab).upper(), ha='left', va='center',
-                color='#94a3b8', fontsize=7.5)
+                color='#64748b', fontsize=7.5)
         ax.text(x + 0.03, 0.34, str(val), ha='left', va='center',
                 color=valcol, fontsize=13, fontweight='bold')
 
@@ -1507,7 +1524,7 @@ def _pdf_draw_table(fig, sec_title, df, fmt, posneg, left, bottom, width, height
     ax = fig.add_axes([left, bottom, width, height]); ax.axis('off')
     if sec_title:
         fig.text(left, bottom + height + 0.012, sec_title, ha='left',
-                 color='#f1f5f9', fontsize=12, fontweight='bold')
+                 color='#0f172a', fontsize=12, fontweight='bold')
     cols = list(df.columns)
     src_cols = {i for i, c in enumerate(cols) if 'Source' in str(c) or 'File' in str(c)}
     body, colors = [], []
@@ -1523,11 +1540,11 @@ def _pdf_draw_table(fig, sec_title, df, fmt, posneg, left, bottom, width, height
             if ci in src_cols and len(txt) > 30:
                 txt = txt[:29].rstrip() + '\u2026'
             cells.append(txt)
-            tc = '#e2e8f0'
+            tc = '#0f172a'
             if c in (posneg or []):
                 nv = pd.to_numeric(pd.Series([v]), errors='coerce').iloc[0]
                 if pd.notna(nv):
-                    tc = '#4ade80' if nv >= 0 else '#f87171'
+                    tc = '#15803d' if nv >= 0 else '#b91c1c'
             ccols.append(tc)
         body.append(cells); colors.append(ccols)
     tbl = ax.table(cellText=body, colLabels=cols, loc='upper center', cellLoc='center')
@@ -1543,16 +1560,16 @@ def _pdf_draw_table(fig, sec_title, df, fmt, posneg, left, bottom, width, height
         base.append(2.4 if 'Source' in str(c) or 'File' in str(c) else 1.0)
     tot = sum(base)
     for (ri, ci), cell in tbl.get_celld().items():
-        cell.set_edgecolor('#334155')
+        cell.set_edgecolor('#cbd5e1')
         cell.set_linewidth(0.6)
         cell.set_width(base[ci] / tot)
         if ri == 0:
-            cell.set_facecolor('#1e40af')
+            cell.set_facecolor('#1d4ed8')
             cell.get_text().set_color('#ffffff')
             cell.get_text().set_fontweight('bold')
             cell.set_height(header_h)
         else:
-            cell.set_facecolor('#0f172a' if ri % 2 else '#1e293b')
+            cell.set_facecolor('#f1f5f9' if ri % 2 else '#ffffff')
             cell.get_text().set_color(colors[ri - 1][ci])
             cell.set_height(row_h)
             if ci in src_cols:
@@ -1567,7 +1584,7 @@ def _pdf_draw_table(fig, sec_title, df, fmt, posneg, left, bottom, width, height
 
 def _pdf_footer(fig, page, total, report_date):
     fig.text(0.5, 0.03, f'Beyond Transportation \u00b7 {report_date} \u00b7 Page {page} of {total}',
-             ha='center', color='#64748b', fontsize=8)
+             ha='center', color='#94a3b8', fontsize=8)
 
 
 def _mpl_pdf(spec):
@@ -1715,7 +1732,7 @@ def _dark_report_html(spec):
         return ''.join(
             f'<div class="{cls}" style="border-left:6px solid {_TONE_COLORS.get(tone, tone)}">'
             f'<div class="lab">{escape(str(lab))}</div>'
-            f'<div class="val" style="color:{_VAL_COLORS.get(tone, "#f1f5f9")}">{escape(str(val))}</div></div>'
+            f'<div class="val" style="color:{_VAL_COLORS_LIGHT.get(tone, "#0f172a")}">{escape(str(val))}</div></div>'
             for lab, val, tone in items)
 
     cards = card_html(kpis)
@@ -1749,9 +1766,9 @@ def _dark_report_html(spec):
                     try:
                         fv = float(v)
                         if fv > 0.005:
-                            style = 'background:#064e3b;color:#6ee7b7;font-weight:700'
+                            style = 'background:#dcfce7;color:#15803d;font-weight:700'
                         elif fv < -0.005:
-                            style = 'background:#7f1d1d;color:#fca5a5;font-weight:700'
+                            style = 'background:#fee2e2;color:#b91c1c;font-weight:700'
                     except (TypeError, ValueError):
                         pass
                 tds += f'<td class="{cls}" style="{style}">{escape(txt)}</td>'
@@ -1763,41 +1780,41 @@ def _dark_report_html(spec):
 <title>{escape(title)}</title>
 <style>
 *{{box-sizing:border-box}}
-@page{{size:A4;margin:1.4cm 1.4cm 1.7cm;background:#0e1117;
-  @bottom-left{{content:"Beyond Transportation";color:#64748b;font-size:9px}}
-  @bottom-center{{content:"{rep_label}";color:#64748b;font-size:9px}}
-  @bottom-right{{content:"Page " counter(page) " of " counter(pages);color:#64748b;font-size:9px}}}}
+@page{{size:A4;margin:1.4cm 1.4cm 1.7cm;background:#ffffff;
+  @bottom-left{{content:"Beyond Transportation";color:#94a3b8;font-size:9px}}
+  @bottom-center{{content:"{rep_label}";color:#94a3b8;font-size:9px}}
+  @bottom-right{{content:"Page " counter(page) " of " counter(pages);color:#94a3b8;font-size:9px}}}}
 @page cover{{@bottom-left{{content:none}}@bottom-center{{content:none}}@bottom-right{{content:none}}}}
 .cover{{page:cover;page-break-after:always;text-align:center;padding-top:24%}}
-.cv-brand{{color:#60a5fa;font-size:14px;letter-spacing:.35em;font-weight:700}}
+.cv-brand{{color:#2563eb;font-size:14px;letter-spacing:.35em;font-weight:700}}
 .cv-rule{{width:120px;height:4px;background:#2563eb;margin:18px auto 30px;border-radius:3px}}
-.cv-title{{font-size:40px;color:#f8fafc;font-weight:800;margin:0 0 12px;line-height:1.15}}
-.cv-sub{{color:#94a3b8;font-size:15px;margin-bottom:46px}}
-.cv-chip{{display:inline-block;background:#1e293b;border:1px solid #334155;color:#cbd5e1;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:7px 18px;border-radius:20px;margin-bottom:18px}}
-.cv-date{{color:#e2e8f0;font-size:17px;font-weight:600}}
-.cv-foot{{margin-top:64px;color:#64748b;font-size:11px;letter-spacing:.1em}}
-body{{font-family:Segoe UI,Arial,sans-serif;color:#e2e8f0;margin:0;padding:28px;
-  background:#0e1117;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
-h1{{font-size:24px;margin:0 0 2px;color:#f1f5f9;font-weight:800}}
-h3{{font-size:16px;color:#f1f5f9;margin:22px 0 8px;font-weight:700}}
-.sub{{color:#94a3b8;font-size:12px;margin-bottom:18px}}
+.cv-title{{font-size:40px;color:#0f172a;font-weight:800;margin:0 0 12px;line-height:1.15}}
+.cv-sub{{color:#64748b;font-size:15px;margin-bottom:46px}}
+.cv-chip{{display:inline-block;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:12px;letter-spacing:.08em;text-transform:uppercase;padding:7px 18px;border-radius:20px;margin-bottom:18px}}
+.cv-date{{color:#334155;font-size:17px;font-weight:600}}
+.cv-foot{{margin-top:64px;color:#94a3b8;font-size:11px;letter-spacing:.1em}}
+body{{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;padding:28px;
+  background:#ffffff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+h1{{font-size:24px;margin:0 0 2px;color:#0f172a;font-weight:800}}
+h3{{font-size:16px;color:#0f172a;margin:22px 0 8px;font-weight:700}}
+.sub{{color:#64748b;font-size:12px;margin-bottom:18px}}
 .cards{{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px}}
-.card{{flex:1 1 160px;background:#1e293b;border:1px solid #334155;border-radius:10px;
-  padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,.35)}}
-.card .lab{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#94a3b8}}
+.card{{flex:1 1 160px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
+  padding:14px 16px;box-shadow:0 2px 6px rgba(15,23,42,.08)}}
+.card .lab{{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#64748b}}
 .card .val{{font-size:20px;font-weight:800;margin-top:4px}}
 .charts{{display:flex;flex-wrap:wrap;gap:18px;margin-bottom:16px;align-items:flex-start}}
-.chart{{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px;text-align:center}}
+.chart{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;text-align:center}}
 .chart img{{max-width:360px;width:100%}}
-.chart .cap{{color:#94a3b8;font-size:11px;margin-top:6px}}
-.note{{background:#172033;border:1px solid #334155;border-left:5px solid #3b82f6;border-radius:10px;
-  padding:12px 14px;font-size:13px;color:#cbd5e1;margin-bottom:8px}}
-table{{border-collapse:collapse;width:100%;font-size:12px;background:#1e293b;margin-bottom:6px}}
-thead th{{background:#1d4ed8;color:#fff;text-align:center;padding:9px 10px;border:1px solid #334155;font-weight:700}}
-tbody td{{padding:7px 10px;border:1px solid #334155;color:#e2e8f0}}
-tbody tr:nth-child(even) td{{background:#172033}}
+.chart .cap{{color:#64748b;font-size:11px;margin-top:6px}}
+.note{{background:#eff6ff;border:1px solid #bfdbfe;border-left:5px solid #3b82f6;border-radius:10px;
+  padding:12px 14px;font-size:13px;color:#1e3a5f;margin-bottom:8px}}
+table{{border-collapse:collapse;width:100%;font-size:12px;background:#ffffff;margin-bottom:6px}}
+thead th{{background:#1d4ed8;color:#fff;text-align:center;padding:9px 10px;border:1px solid #cbd5e1;font-weight:700}}
+tbody td{{padding:7px 10px;border:1px solid #cbd5e1;color:#0f172a}}
+tbody tr:nth-child(even) td{{background:#f1f5f9}}
 td.n{{text-align:right}}
-@media print{{body{{padding:0;background:#0e1117}} .card,.chart{{break-inside:avoid}} thead{{display:table-header-group}}}}
+@media print{{body{{padding:0;background:#ffffff}} .card,.chart{{break-inside:avoid}} thead{{display:table-header-group}}}}
 </style></head><body>
 <section class="cover">
   <div class="cv-brand">BEYOND TRANSPORTATION</div>
@@ -1872,15 +1889,15 @@ def build_printable_report(name, driver_trips, monitor_rides, runs, rev, pay,
         ('Revenue split: driver cost vs. profit',
          _donut_png([safe_pay, max(safe_profit, 0.0)],
                     ['Driver Cost', 'Profit'], ['#f59e0b', '#22c55e'],
-                    center=_money(rev))),
+                    center=_money(rev), light=True)),
         ('Trip mix: driver trips (counted) vs. monitor rides (excluded)',
          _donut_png([driver_trips, monitor_rides],
                     ['Driver Trips', 'Monitor Rides'], ['#3b82f6', '#a855f7'],
-                    center=f'{driver_trips + monitor_rides:,}')),
+                    center=f'{driver_trips + monitor_rides:,}', light=True)),
         ('Key financial ratios',
          _ratio_bars_png([('Profit Margin', margin * 100, '#22c55e'),
                           ('Driver-Cost Ratio', cost_ratio, '#f59e0b'),
-                          ('Non-Compliant %', non_compliant_pct, '#ef4444')])),
+                          ('Non-Compliant %', non_compliant_pct, '#ef4444')], light=True)),
     ]
     note = (f'<b>Monitor exclusion:</b> {driver_trips:,} driver trips are counted; '
             f'{monitor_rides:,} rows marked "(MO)" / "(Monitor)" are escorts riding ALONG with '
@@ -2101,19 +2118,19 @@ def state_reports_consolidated_page(origin):
                         list(rep['State'].astype(str)),
                         ['#22c55e', '#3b82f6', '#a855f7', '#f59e0b', '#ef4444',
                          '#14b8a6', '#eab308', '#ec4899'] * 4,
-                        center=_money(tot_profit))) if not rep.empty else ('', b''),
+                        center=_money(tot_profit), light=True)) if not rep.empty else ('', b''),
             ('State Revenue vs Driver Pay',
              _grouped_bars_png(
                  list(rep['State'].astype(str)),
                  [('State Revenue', list(pd.to_numeric(rep['State Revenue'], errors='coerce').fillna(0))),
                   ('Driver Pay', list(pd.to_numeric(rep['Driver Pay'], errors='coerce').fillna(0)))],
-                 ['#3b82f6', '#f59e0b'])),
+                 ['#3b82f6', '#f59e0b'], light=True)),
             ('Profit by state (USD)',
              _state_bars_png(list(rep['State'].astype(str)),
-                             list(pd.to_numeric(rep['Profit'], errors='coerce')))),
+                             list(pd.to_numeric(rep['Profit'], errors='coerce')), light=True)),
             ('Profit margin % by state',
              _state_bars_png(list(rep['State'].astype(str)),
-                             list(pd.to_numeric(rep['Margin %'], errors='coerce')))),
+                             list(pd.to_numeric(rep['Margin %'], errors='coerce')), light=True)),
         ]
         report_spec = {
             'title': 'State Reports \u2014 Consolidated',
