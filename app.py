@@ -627,7 +627,8 @@ def _read_combined_states_workbook(file_obj):
             revenue_col = next((col_no + j for j, v in enumerate(ahead)
                                 if v in ('REVENUE', 'REVENUE ', 'REV')), None)
             payment_col = next((col_no + j for j, v in enumerate(ahead)
-                                if v in ('PAY', 'PAYMENT', 'PAYMENT ')), None)
+                                if v in ('PAY', 'PAYMENT', 'PAYMENT ', 'DRIVER PAY',
+                                         'DRIVERPAY', 'DRIVER PAYMENT', 'DRIVER_PAY')), None)
             if revenue_col is None:
                 continue
             title = raw.iat[row_no - 1, col_no] if row_no else getattr(file_obj, 'name', '')
