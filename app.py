@@ -137,30 +137,68 @@ def parse_breakup(df):
     return pd.DataFrame(rows)
 
 
-def parse_details(df, region):
-    """A per-state Details sheet: per-trip rows carrying First NET PAY and the
-    state policy price (header AMOUNT or PAY). Returns per-trip price diffs."""
+# Exact header tokens we recognise (normalised to UPPER, single-spaced).
+_REVENUE_HEADERS = ('NET PAY', 'REVENUE', 'FIRST NET PAY', 'FIRST PAY', 'FIRST')
+_POLICY_HEADERS = ('PAYMENT', 'PAY', 'AMOUNT', 'POLICY', 'POLICY PAY', 'POLICY PRICE')
+
+
+def region_from_filename(name):
+    """Resolve a region from the uploaded file name (used when the sheet name is
+    generic, e.g. 'Details' / 'TRIPS' / 'SP ITEMIZED REPORT')."""
+    s = re.sub(r'[._\-]+', ' ', str(name or '')).upper()
+    if 'ALASKA' in s or 'CROSS' in s or 'ANCHORAGE' in s:
+        return 'AK'
+    if 'NEW MEXICO' in s or 'ALBUQ' in s or 'ABQ' in s or ' NM ' in (' ' + s + ' '):
+        return 'NM'
+    if 'ILLINOIS' in s or 'ELGIN' in s or 'CHICAGO' in s or ' IL ' in (' ' + s + ' '):
+        return 'IL'
+    if 'OREGON' in s or 'PORTLAND' in s or ' OR ' in (' ' + s + ' '):
+        return 'OR'
+    if any(k in s for k in ['NORTH CA', 'N CA', 'NCA', 'NORTHERN CA', 'NORTH CALIF']):
+        return 'N.CA'
+    if any(k in s for k in ['SOUTH CA', 'S CA', 'SCA', 'SOUTHERN CA', 'SOUTH CALIF',
+                            'RIVERSIDE', 'ARIZONA', 'SAN DIEGO', 'LOS ANGELES']):
+        return 'S.CA'
+    if any(k in s for k in ['BENICIA', 'RICHMOND', 'SAN LEANDRO', 'BERKELEY',
+                            'EL DORADO', 'SACRAMENTO']):
+        return 'N.CA'
+    return None
+
+
+def _norm_headers(row):
+    return [re.sub(r'\s+', ' ', str(x).strip()).upper() for x in row]
+
+
+def parse_trip_sheet(df, region):
+    """Generic per-trip sheet parser. Works for:
+      - New per-state files: DRIVER NAME | revenue | payment/PAY
+      - Old 'Details' sheets: DRIVER NAME | ... | NET PAY | AMOUNT/PAY
+      - First 'SP ITEMIZED REPORT': DRIVER NAME | ... | NET PAY (revenue only)
+    revenue column -> First Net Pay; policy column (if present) -> state price.
+    Returns one row per trip with first_pay, policy_price (may be 0 when absent)."""
     hdr = None
     headers = None
-    for i in range(min(10, len(df))):
-        vals = [str(x).strip().upper() for x in df.iloc[i].tolist()]
-        if 'DRIVER NAME' in vals and 'NET PAY' in vals:
+    for i in range(min(15, len(df))):
+        vals = _norm_headers(df.iloc[i].tolist())
+        if 'DRIVER NAME' in vals and any(h in vals for h in _REVENUE_HEADERS):
             hdr = i
             headers = vals
             break
     if hdr is None:
         return pd.DataFrame()
     dn = headers.index('DRIVER NAME')
-    npay = headers.index('NET PAY')
-    price = None
-    for cand in ('AMOUNT', 'PAY'):
-        if cand in headers:
-            price = headers.index(cand)
-            break
-    if price is None:
+    rev_c = next((headers.index(h) for h in _REVENUE_HEADERS if h in headers), None)
+    if rev_c is None:
         return pd.DataFrame()
+    # Policy column: first exact match that is NOT the revenue column itself.
+    pol_c = None
+    for h in _POLICY_HEADERS:
+        if h in headers and headers.index(h) != rev_c:
+            pol_c = headers.index(h)
+            break
+    has_policy = pol_c is not None
     trip_c = next((j for j, h in enumerate(headers) if h == 'TRIP NAME'), None)
-    miles_c = next((j for j, h in enumerate(headers) if h in ('MILES', 'MI')), None)
+    miles_c = next((j for j, h in enumerate(headers) if h in ('TOTAL MILES', 'MILES', 'MI')), None)
     date_c = next((j for j, h in enumerate(headers) if h == 'DATE'), None)
     data = df.iloc[hdr + 1:]
     out = []
@@ -168,12 +206,12 @@ def parse_details(df, region):
         drv = r.iloc[dn] if dn < len(r) else None
         if _is_total_row(drv):
             continue
-        fp = _num(r.iloc[npay]) if npay < len(r) else None
-        pp = _num(r.iloc[price]) if price < len(r) else None
+        fp = _num(r.iloc[rev_c]) if rev_c < len(r) else None
+        pp = _num(r.iloc[pol_c]) if (has_policy and pol_c < len(r)) else None
         if fp is None and pp is None:
             continue
         fp = fp or 0.0
-        pp = pp or 0.0
+        pp = pp if pp is not None else 0.0
         out.append({
             'region': region,
             'driver': _clean_name(drv),
@@ -183,8 +221,12 @@ def parse_details(df, region):
             'first_pay': fp,
             'policy_price': pp,
             'diff': fp - pp,
+            'has_policy': has_policy,
         })
-    return pd.DataFrame(out)
+    res = pd.DataFrame(out)
+    if len(res):
+        res['has_policy'] = has_policy
+    return res
 
 
 # ----------------------------------------------------------------------------
@@ -192,7 +234,11 @@ def parse_details(df, region):
 # ----------------------------------------------------------------------------
 
 def load_workbooks(files):
-    """files: list of (name, bytes-or-fileobj). Returns (breakup_df, trips_df)."""
+    """files: list of (name, bytes-or-fileobj). Returns (breakup_df, trips_df).
+    Handles the old weekly workbook (Breakup + Details sheets) AND the new
+    single-sheet per-state / First files where the region comes from the file
+    name. Revenue = First Net Pay; policy price from a payment/PAY/AMOUNT column
+    when present."""
     bk_frames = []
     tr_frames = []
     for name, data in files:
@@ -201,31 +247,66 @@ def load_workbooks(files):
         except Exception as e:
             st.warning(f'Could not read {name}: {e}')
             continue
+        fname_region = region_from_filename(name)
         for sh in xl.sheet_names:
             low = sh.strip().lower()
+            try:
+                raw = xl.parse(sh, header=None)
+            except Exception:
+                continue
             if low == 'breakup':
                 try:
-                    bk = parse_breakup(xl.parse(sh, header=None))
+                    bk = parse_breakup(raw)
                     if len(bk):
                         bk['source'] = name
                         bk_frames.append(bk)
                 except Exception:
                     pass
-            elif 'details' in low:
-                reg = region_from_label(sh)
-                if not reg:
-                    continue
-                try:
-                    tr = parse_details(xl.parse(sh, header=None), reg)
-                    if len(tr):
-                        tr['source'] = name
-                        tr_frames.append(tr)
-                except Exception:
-                    pass
+                continue
+            # Any other sheet: try to read it as a per-trip sheet.
+            reg = region_from_label(sh) or fname_region
+            if not reg:
+                continue
+            try:
+                tr = parse_trip_sheet(raw, reg)
+                if len(tr):
+                    tr['source'] = name
+                    tr_frames.append(tr)
+            except Exception:
+                pass
+
+    tr = pd.concat(tr_frames, ignore_index=True) if tr_frames else pd.DataFrame(
+        columns=['region', 'driver', 'trip', 'date', 'miles', 'first_pay',
+                 'policy_price', 'diff', 'has_policy', 'source'])
+
+    # Per region, prefer a policy-bearing source (clean revenue+price) over a
+    # revenue-only First report, so revenue is never double-counted/inflated.
+    if len(tr):
+        keep = []
+        for reg, g in tr.groupby('region'):
+            if g['has_policy'].any():
+                keep.append(g[g['has_policy']])
+            else:
+                keep.append(g)
+        tr = pd.concat(keep, ignore_index=True)
+
     bk = pd.concat(bk_frames, ignore_index=True) if bk_frames else pd.DataFrame(
         columns=['region', 'city', 'driver', 'trips', 'first_pay', 'policy_pay', 'source'])
-    tr = pd.concat(tr_frames, ignore_index=True) if tr_frames else pd.DataFrame(
-        columns=['region', 'driver', 'trip', 'date', 'miles', 'first_pay', 'policy_price', 'diff', 'source'])
+
+    # Build summary rows from trip sheets for regions NOT covered by a Breakup.
+    covered = set(bk['region'].unique()) if len(bk) else set()
+    if len(tr):
+        extra = tr[~tr['region'].isin(covered)]
+        if len(extra):
+            syn = extra.groupby(['region', 'driver']).agg(
+                trips=('first_pay', 'size'),
+                first_pay=('first_pay', 'sum'),
+                policy_pay=('policy_price', 'sum'),
+            ).reset_index()
+            syn['city'] = syn['region']
+            syn['source'] = 'trips'
+            bk = pd.concat([bk, syn], ignore_index=True)
+
     return bk, tr
 
 
@@ -678,7 +759,9 @@ st.sidebar.caption('Beyond Transportation \u2014 weekly financial analyzer')
 
 uploads = st.sidebar.file_uploader(
     'Upload CURRENT week report file(s)', type=['xlsx'], accept_multiple_files=True,
-    help='Upload the "WEEKLY ALL STATES" workbook and the Alaska weekly workbook for the current week.')
+    help='Accepts either the weekly "ALL STATES" workbook (with a Breakup sheet) or '
+         'per-state files named by state (S.CA, NORTH CA, IL, Oregon, Alaska, New Mexico) '
+         'with DRIVER NAME + revenue (+ payment/PAY) columns.')
 
 prev_uploads = st.sidebar.file_uploader(
     'Upload PREVIOUS week file(s) — optional', type=['xlsx'], accept_multiple_files=True,
@@ -696,25 +779,37 @@ if prev_uploads:
 
 if not files:
     st.title("Hatem's B.T. Analyzer")
-    st.info('Upload the weekly report workbook(s) from the left sidebar to begin. '
-            'The app reads the **Breakup** summary and each per-state **Details** sheet, '
-            'then computes the price difference (First Net Pay \u2212 state policy price) for every state.')
+    st.info('Upload the weekly report file(s) from the left sidebar to begin. '
+            'The app accepts the weekly **Breakup** workbook **or** per-state files '
+            '(named after the state, e.g. **S.CA**, **NORTH CA**, **IL**, **Oregon**, '
+            '**Alaska**, **New Mexico**) that contain a **DRIVER NAME** column, a **revenue** '
+            'column (First Net Pay) and ideally a **payment/PAY** price column. '
+            'It then computes the price difference (First Net Pay \u2212 state policy price) per state.')
     st.stop()
 
 bk, trips = _load(files)
 
-if bk.empty and trips.empty:
-    st.error('No usable Breakup or Details sheets found in the uploaded file(s).')
-    st.stop()
+# Tell the user which uploaded files were (not) recognised.
+recognised = set()
+if len(bk):
+    recognised |= set(bk['source'].dropna().unique())
+if len(trips):
+    recognised |= set(trips['source'].dropna().unique())
+ignored = [n for (n, _) in files if n not in recognised]
+if ignored:
+    st.warning(
+        'These file(s) could not be matched to a state and were skipped: '
+        + ', '.join(ignored)
+        + '. A per-state file needs a "DRIVER NAME" column plus a revenue column '
+        '(revenue / NET PAY) and, ideally, a price column (payment / PAY / AMOUNT). '
+        'Name the file after its state (e.g. S.CA, NORTH CA, IL, Oregon, Alaska, New Mexico) '
+        'so it can be classified.')
 
-# Fallback: if Breakup missing for a region but Details present, synthesize a summary.
-if bk.empty and not trips.empty:
-    syn = trips.groupby(['region', 'driver']).agg(
-        trips=('first_pay', 'size'), first_pay=('first_pay', 'sum'),
-        policy_pay=('policy_price', 'sum')).reset_index()
-    syn['city'] = syn['region']
-    syn['source'] = 'details'
-    bk = syn
+if bk.empty and trips.empty:
+    st.error('No usable data found in the uploaded file(s). Expected either the weekly '
+             '"Breakup" workbook, or per-state files with a "DRIVER NAME" column and a '
+             'revenue column (revenue / NET PAY).')
+    st.stop()
 
 rsum = region_summary(bk)
 week_label = 'Week ending 9 Oct 2026'
