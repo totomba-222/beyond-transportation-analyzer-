@@ -1,1065 +1,451 @@
-from __future__ import annotations
-import io
-import re
-import html
-from datetime import datetime
-
+# Hatem's B.T. Analyzer - Beyond Transportation weekly financial analyzer
+# =============================================================================
+# DATA SOURCE (as it really is in Hatem's weekly workbooks):
+#   Each weekly workbook contains:
+#     * a "Breakup" sheet  -> the master per-region, per-driver breakdown
+#         (region headers in col A, then driver rows: Sr# | name | trips |
+#          revenue | payment, then a region subtotal). THIS is the only place
+#          that splits Arizona out of Riverside and splits North CA into its
+#          areas (Benicia / Richmond / San Leandro / Berkeley / El Dorado /
+#          Sacramento), so the app reads region grouping straight from it.
+#     * an "SP ITEMIZED REPORT" sheet -> the First report, trip level
+#         (DRIVER NAME ... NET PAY = what First actually paid, per trip).
+#   The app reads BOTH: the state Breakup sheet AND the First itemized sheet,
+#   on every uploaded workbook (including the Alaska workbook).
+#
+# DEFINITIONS:
+#   Revenue (First Paid) = NET PAY  (what First pays Beyond for the trip)
+#   Driver Pay           = payment  (what Beyond pays the driver)
+#   Profit  = Revenue - Driver Pay
+#   Margin  = Profit / Revenue
+#   Trip reconciliation  = First-report trips vs Breakup trips, per region
+#                          (a 0 difference proves the two cover the same trips)
+# =============================================================================
+import io, re, unicodedata
 import pandas as pd
 import streamlit as st
 
-# ----------------------------------------------------------------------------
-# Hatem's B.T. Analyzer  -  Beyond Transportation weekly financial analyzer
-# Revenue truth = First \"Net Pay\". Policy price = state contract price per trip.
-# Price difference per trip = First Net Pay - Policy price  (Beyond's margin).
-# Region grouping (Oct 2026):
-#   Riverside + Arizona ................................ South California (S.CA)
-#   Benicia + Richmond + San Leandro + Berkeley +
-#   El Dorado + Sacramento ............................. North California (N.CA)
-# ----------------------------------------------------------------------------
+st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon="BT", layout="wide")
 
-REGION_NAME = {
-    'N.CA': 'North California',
-    'S.CA': 'South California',
-    'NM': 'New Mexico',
-    'OR': 'Oregon',
-    'IL': 'Illinois',
-    'AK': 'Alaska',
-    'Unknown': 'Unassigned',
-}
-REGION_ORDER = ['S.CA', 'N.CA', 'NM', 'OR', 'AK', 'IL', 'Unknown']
-
-# Which real cities / labels roll up into each region (shown in the UI).
-REGION_CITIES = {
-    'N.CA': ['Benicia', 'Richmond', 'San Leandro', 'Berkeley', 'El Dorado', 'Sacramento'],
-    'S.CA': ['Riverside', 'Arizona'],
-    'NM': ['Albuquerque'],
-    'OR': ['Oregon'],
-    'IL': ['Illinois'],
-    'AK': ['Alaska'],
-}
-
-# ----------------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------------
-
-def _is_num(x):
-    try:
-        float(str(x).replace(',', '').replace('$', ''))
-        return True
-    except Exception:
-        return False
-
-
-def _num(x):
-    try:
-        if x is None or (isinstance(x, float) and pd.isna(x)):
-            return None
-        v = float(str(x).replace(',', '').replace('$', '').strip())
-        return v
-    except Exception:
-        return None
-
-
-def region_from_label(txt):
-    """Resolve a city-section label or state-sheet name to a region code."""
-    s = str(txt or '').upper()
-    if 'CROSS' in s or 'ALASKA' in s or 'ANCHORAGE' in s:
-        return 'AK'
-    if 'NEW MEXICO' in s or 'ALBUQ' in s or 'ABQ' in s or s.strip() == 'NM' or 'NM ' in s:
-        return 'NM'
-    if 'ILLINOIS' in s or 'ELGIN' in s or 'CHICAGO' in s or s.strip() == 'IL' or 'IL ' in s:
-        return 'IL'
-    if 'OREGON' in s or 'PORTLAND' in s or s.strip() == 'OR' or 'OR ' in s:
-        return 'OR'
-    if any(k in s for k in ['RIVERSIDE', 'ARIZONA', 'RS&AZ', 'RS AND AZ', 'S.CA',
-                            'SOUTH CA', 'SAN DIEGO', 'LOS ANGELES']):
-        return 'S.CA'
-    if any(k in s for k in ['BENICIA', 'RICHMOND', 'SAN LEANDRO', 'BERKELEY',
-                            'EL DORADO', 'SACRAMENTO', 'NORTH CA', 'N.CA', 'NORTH']):
-        return 'N.CA'
-    return None
-
-
-def city_from_label(txt):
-    """Clean a city-section label into a display city name (drop trailing state code)."""
-    s = re.sub(r'\s+', ' ', str(txt or '').strip())
-    s = re.sub(r'[,\s]+(CA|AZ|OR|NM|IL|AK)$', '', s, flags=re.I)
-    s = s.strip()
-    if s.upper() in ('NEW MEXICO', 'NM', 'ALBUQUERQUE', 'ABQ'):
-        return 'Albuquerque'
-    return s or '\u2014'
-
-
-def _clean_name(x):
-    return re.sub(r'\s+', ' ', str(x or '').strip())
-
-
-def _is_total_row(name):
-    s = str(name or '').strip().upper()
-    return (not s) or ('TOTAL' in s) or s in ('NAN', 'GRAND')
-
-
-# ----------------------------------------------------------------------------
-# Parsers
-# ----------------------------------------------------------------------------
-
-def parse_breakup(df):
-    """Breakup sheet: per-driver weekly summary grouped by city sections.
-    Columns: Sr#, name, trips, Revenue(=First Net Pay total), payment(=policy total).
-    Returns one row per driver with region, trips, first_pay, policy_pay."""
-    rows = []
-    current = None
-    current_city = '\u2014'
-    n = len(df)
-    ncol = df.shape[1]
-    for i in range(n):
-        c0 = df.iat[i, 0] if ncol > 0 else None
-        c1 = df.iat[i, 1] if ncol > 1 else None
-        s0 = '' if pd.isna(c0) else str(c0).strip()
-        s1 = '' if pd.isna(c1) else str(c1).strip()
-        # Section header: text in col0, nothing in col1, not a Sr# / header word.
-        if s0 and not _is_num(s0) and not s1 and s0.lower() not in ('sr #', 'sr#', 'particulars'):
-            current = region_from_label(s0)
-            current_city = city_from_label(s0)
-            continue
-        # Driver row: numeric Sr# in col0 and a name in col1.
-        if _is_num(s0) and s1 and not _is_total_row(s1):
-            rev = _num(df.iat[i, 3]) if ncol > 3 else None
-            if current and rev is not None:
-                rows.append({
-                    'region': current,
-                    'city': current_city,
-                    'driver': _clean_name(s1),
-                    'trips': _num(df.iat[i, 2]) or 0,
-                    'first_pay': rev or 0.0,
-                    'policy_pay': (_num(df.iat[i, 4]) or 0.0) if ncol > 4 else 0.0,
-                })
-    return pd.DataFrame(rows)
-
-
-# Exact header tokens we recognise (normalised to UPPER, single-spaced).
-_REVENUE_HEADERS = ('NET PAY', 'REVENUE', 'FIRST NET PAY', 'FIRST PAY', 'FIRST')
-_POLICY_HEADERS = ('PAYMENT', 'PAY', 'AMOUNT', 'POLICY', 'POLICY PAY', 'POLICY PRICE')
-
-
-def region_from_filename(name):
-    """Resolve a region from the uploaded file name (used when the sheet name is
-    generic, e.g. 'Details' / 'TRIPS' / 'SP ITEMIZED REPORT')."""
-    s = re.sub(r'[._\-]+', ' ', str(name or '')).upper()
-    if 'ALASKA' in s or 'CROSS' in s or 'ANCHORAGE' in s:
-        return 'AK'
-    if 'NEW MEXICO' in s or 'ALBUQ' in s or 'ABQ' in s or ' NM ' in (' ' + s + ' '):
-        return 'NM'
-    if 'ILLINOIS' in s or 'ELGIN' in s or 'CHICAGO' in s or ' IL ' in (' ' + s + ' '):
-        return 'IL'
-    if 'OREGON' in s or 'PORTLAND' in s or ' OR ' in (' ' + s + ' '):
-        return 'OR'
-    if any(k in s for k in ['NORTH CA', 'N CA', 'NCA', 'NORTHERN CA', 'NORTH CALIF']):
-        return 'N.CA'
-    if any(k in s for k in ['SOUTH CA', 'S CA', 'SCA', 'SOUTHERN CA', 'SOUTH CALIF',
-                            'RIVERSIDE', 'ARIZONA', 'SAN DIEGO', 'LOS ANGELES']):
-        return 'S.CA'
-    if any(k in s for k in ['BENICIA', 'RICHMOND', 'SAN LEANDRO', 'BERKELEY',
-                            'EL DORADO', 'SACRAMENTO']):
-        return 'N.CA'
-    return None
-
-
-def _norm_headers(row):
-    return [re.sub(r'\s+', ' ', str(x).strip()).upper() for x in row]
-
-
-def parse_trip_sheet(df, region):
-    """Generic per-trip sheet parser. Works for:
-      - New per-state files: DRIVER NAME | revenue | payment/PAY
-      - Old 'Details' sheets: DRIVER NAME | ... | NET PAY | AMOUNT/PAY
-      - First 'SP ITEMIZED REPORT': DRIVER NAME | ... | NET PAY (revenue only)
-    revenue column -> First Net Pay; policy column (if present) -> state price.
-    Returns one row per trip with first_pay, policy_price (may be 0 when absent)."""
-    hdr = None
-    headers = None
-    for i in range(min(15, len(df))):
-        vals = _norm_headers(df.iloc[i].tolist())
-        if 'DRIVER NAME' in vals and any(h in vals for h in _REVENUE_HEADERS):
-            hdr = i
-            headers = vals
-            break
-    if hdr is None:
-        return pd.DataFrame()
-    dn = headers.index('DRIVER NAME')
-    rev_c = next((headers.index(h) for h in _REVENUE_HEADERS if h in headers), None)
-    if rev_c is None:
-        return pd.DataFrame()
-    # Policy column: first exact match that is NOT the revenue column itself.
-    pol_c = None
-    for h in _POLICY_HEADERS:
-        if h in headers and headers.index(h) != rev_c:
-            pol_c = headers.index(h)
-            break
-    has_policy = pol_c is not None
-    trip_c = next((j for j, h in enumerate(headers) if h == 'TRIP NAME'), None)
-    miles_c = next((j for j, h in enumerate(headers) if h in ('TOTAL MILES', 'MILES', 'MI')), None)
-    date_c = next((j for j, h in enumerate(headers) if h == 'DATE'), None)
-    data = df.iloc[hdr + 1:]
-    out = []
-    for _, r in data.iterrows():
-        drv = r.iloc[dn] if dn < len(r) else None
-        if _is_total_row(drv):
-            continue
-        fp = _num(r.iloc[rev_c]) if rev_c < len(r) else None
-        pp = _num(r.iloc[pol_c]) if (has_policy and pol_c < len(r)) else None
-        if fp is None and pp is None:
-            continue
-        fp = fp or 0.0
-        pp = pp if pp is not None else 0.0
-        out.append({
-            'region': region,
-            'driver': _clean_name(drv),
-            'trip': _clean_name(r.iloc[trip_c]) if (trip_c is not None and trip_c < len(r)) else '',
-            'date': str(r.iloc[date_c])[:10] if (date_c is not None and date_c < len(r) and pd.notna(r.iloc[date_c])) else '',
-            'miles': _num(r.iloc[miles_c]) if (miles_c is not None and miles_c < len(r)) else None,
-            'first_pay': fp,
-            'policy_price': pp,
-            'diff': fp - pp,
-            'has_policy': has_policy,
-        })
-    res = pd.DataFrame(out)
-    if len(res):
-        res['has_policy'] = has_policy
-    return res
-
-
-# ----------------------------------------------------------------------------
-# Workbook loading
-# ----------------------------------------------------------------------------
-
-def load_workbooks(files):
-    """files: list of (name, bytes-or-fileobj). Returns (breakup_df, trips_df).
-    Handles the old weekly workbook (Breakup + Details sheets) AND the new
-    single-sheet per-state / First files where the region comes from the file
-    name. Revenue = First Net Pay; policy price from a payment/PAY/AMOUNT column
-    when present."""
-    bk_frames = []
-    tr_frames = []
-    for name, data in files:
-        try:
-            xl = pd.ExcelFile(io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data)
-        except Exception as e:
-            st.warning(f'Could not read {name}: {e}')
-            continue
-        fname_region = region_from_filename(name)
-        for sh in xl.sheet_names:
-            low = sh.strip().lower()
-            try:
-                raw = xl.parse(sh, header=None)
-            except Exception:
-                continue
-            if low == 'breakup':
-                try:
-                    bk = parse_breakup(raw)
-                    if len(bk):
-                        bk['source'] = name
-                        bk_frames.append(bk)
-                except Exception:
-                    pass
-                continue
-            # Any other sheet: try to read it as a per-trip sheet.
-            reg = region_from_label(sh) or fname_region
-            if not reg:
-                continue
-            try:
-                tr = parse_trip_sheet(raw, reg)
-                if len(tr):
-                    tr['source'] = name
-                    tr_frames.append(tr)
-            except Exception:
-                pass
-
-    tr = pd.concat(tr_frames, ignore_index=True) if tr_frames else pd.DataFrame(
-        columns=['region', 'driver', 'trip', 'date', 'miles', 'first_pay',
-                 'policy_price', 'diff', 'has_policy', 'source'])
-
-    # Per region, prefer a policy-bearing source (clean revenue+price) over a
-    # revenue-only First report, so revenue is never double-counted/inflated.
-    if len(tr):
-        keep = []
-        for reg, g in tr.groupby('region'):
-            if g['has_policy'].any():
-                keep.append(g[g['has_policy']])
-            else:
-                keep.append(g)
-        tr = pd.concat(keep, ignore_index=True)
-
-    bk = pd.concat(bk_frames, ignore_index=True) if bk_frames else pd.DataFrame(
-        columns=['region', 'city', 'driver', 'trips', 'first_pay', 'policy_pay', 'source'])
-
-    # Build summary rows from trip sheets for regions NOT covered by a Breakup.
-    covered = set(bk['region'].unique()) if len(bk) else set()
-    if len(tr):
-        extra = tr[~tr['region'].isin(covered)]
-        if len(extra):
-            syn = extra.groupby(['region', 'driver']).agg(
-                trips=('first_pay', 'size'),
-                first_pay=('first_pay', 'sum'),
-                policy_pay=('policy_price', 'sum'),
-            ).reset_index()
-            syn['city'] = syn['region']
-            syn['source'] = 'trips'
-            bk = pd.concat([bk, syn], ignore_index=True)
-
-    return bk, tr
-
-
-def region_summary(bk):
-    """Per-region headline financials from the Breakup summary (authoritative)."""
-    if bk.empty:
-        return pd.DataFrame(columns=['region', 'drivers', 'trips', 'first_pay', 'policy_pay', 'diff', 'margin'])
-    g = bk.groupby('region').agg(
-        drivers=('driver', 'nunique'),
-        trips=('trips', 'sum'),
-        first_pay=('first_pay', 'sum'),
-        policy_pay=('policy_pay', 'sum'),
-    ).reset_index()
-    g['diff'] = g['first_pay'] - g['policy_pay']
-    g['margin'] = g.apply(lambda r: (r['diff'] / r['first_pay'] * 100) if r['first_pay'] else 0.0, axis=1)
-    g['order'] = g['region'].apply(lambda r: REGION_ORDER.index(r) if r in REGION_ORDER else 99)
-    g = g.sort_values('order').drop(columns='order').reset_index(drop=True)
-    return g
-
-
-def driver_summary(bk, region):
-    d = bk[bk['region'] == region].copy()
-    if d.empty:
-        return d
-    d = d.groupby('driver').agg(
-        trips=('trips', 'sum'),
-        first_pay=('first_pay', 'sum'),
-        policy_pay=('policy_pay', 'sum'),
-    ).reset_index()
-    d['diff'] = d['first_pay'] - d['policy_pay']
-    d['margin'] = d.apply(lambda r: (r['diff'] / r['first_pay'] * 100) if r['first_pay'] else 0.0, axis=1)
-    return d.sort_values('diff', ascending=False).reset_index(drop=True)
-
-
-def city_summary(bk, region):
-    """Per-city headline financials within a region (for N.CA / S.CA sub-tables)."""
-    d = bk[bk['region'] == region].copy()
-    if d.empty or 'city' not in d.columns:
-        return pd.DataFrame()
-    g = d.groupby('city').agg(
-        drivers=('driver', 'nunique'),
-        trips=('trips', 'sum'),
-        first_pay=('first_pay', 'sum'),
-        policy_pay=('policy_pay', 'sum'),
-    ).reset_index()
-    g['diff'] = g['first_pay'] - g['policy_pay']
-    g['margin'] = g.apply(lambda r: (r['diff'] / r['first_pay'] * 100) if r['first_pay'] else 0.0, axis=1)
-    return g.sort_values('diff', ascending=False).reset_index(drop=True)
-
-
-def driver_summary_city(bk, region, city):
-    d = bk[(bk['region'] == region) & (bk['city'] == city)].copy()
-    if d.empty:
-        return d
-    d = d.groupby('driver').agg(
-        trips=('trips', 'sum'),
-        first_pay=('first_pay', 'sum'),
-        policy_pay=('policy_pay', 'sum'),
-    ).reset_index()
-    d['diff'] = d['first_pay'] - d['policy_pay']
-    d['margin'] = d.apply(lambda r: (r['diff'] / r['first_pay'] * 100) if r['first_pay'] else 0.0, axis=1)
-    return d.sort_values('diff', ascending=False).reset_index(drop=True)
-
-
-def build_comparison(rsum, rsum_prev):
-    """Week-over-week comparison per region. Returns a merged frame with deltas."""
-    cur = rsum[['region', 'trips', 'first_pay', 'policy_pay', 'diff', 'margin']].copy()
-    prev = rsum_prev[['region', 'first_pay', 'diff', 'margin']].copy().rename(
-        columns={'first_pay': 'first_pay_prev', 'diff': 'diff_prev', 'margin': 'margin_prev'})
-    m = cur.merge(prev, on='region', how='outer')
-    for c in ['trips', 'first_pay', 'policy_pay', 'diff', 'margin',
-              'first_pay_prev', 'diff_prev', 'margin_prev']:
-        if c in m:
-            m[c] = m[c].fillna(0.0)
-    m['rev_delta'] = m['first_pay'] - m['first_pay_prev']
-    m['diff_delta'] = m['diff'] - m['diff_prev']
-    m['diff_pct'] = m.apply(
-        lambda r: (r['diff_delta'] / abs(r['diff_prev']) * 100) if r['diff_prev'] else 0.0, axis=1)
-    m['margin_delta'] = m['margin'] - m['margin_prev']
-    m['order'] = m['region'].apply(lambda r: REGION_ORDER.index(r) if r in REGION_ORDER else 99)
-    m = m.sort_values('order').drop(columns='order').reset_index(drop=True)
-    return m
-
-
-# ----------------------------------------------------------------------------
-# Formatting + downloadable (light / print-safe) HTML report
-# ----------------------------------------------------------------------------
-
-def money(v):
-    try:
-        return '${:,.2f}'.format(float(v))
-    except Exception:
-        return '$0.00'
-
-
-def pct(v):
-    try:
-        return '{:.1f}%'.format(float(v))
-    except Exception:
-        return '0.0%'
-
-
-def _esc(x):
-    return html.escape(str(x))
-
-
-def _bar_row(label, value, vmax, color, right):
-    w = 0 if not vmax else max(2, min(100, value / vmax * 100))
-    return (
-        '<div class="barrow"><div class="barlbl">{lbl}</div>'
-        '<div class="bartrack"><div class="barfill" style="width:{w:.1f}%;background:{c};"></div></div>'
-        '<div class="barval">{rv}</div></div>'
-    ).format(lbl=_esc(label), w=w, c=color, rv=_esc(right))
-
-
-def build_html_report(rsum, trips, bk, week_label):
-    tot_rev = rsum['first_pay'].sum() if len(rsum) else 0
-    tot_pol = rsum['policy_pay'].sum() if len(rsum) else 0
-    tot_diff = tot_rev - tot_pol
-    tot_trips = int(rsum['trips'].sum()) if len(rsum) else 0
-    tot_drv = int(bk['driver'].nunique()) if len(bk) else 0
-    margin = (tot_diff / tot_rev * 100) if tot_rev else 0
-    noncomp = int((trips['diff'] < 0).sum()) if len(trips) else 0
-
-    css = """
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#ffffff;color:#1f2733;margin:0;padding:32px;}
-    h1{font-size:26px;margin:0 0 4px;color:#0f2a43;}
-    h2{font-size:19px;margin:34px 0 12px;color:#0f2a43;border-bottom:2px solid #e3e8ef;padding-bottom:6px;}
-    .sub{color:#6b7684;font-size:13px;margin-bottom:22px;}
-    .kpis{display:flex;flex-wrap:wrap;gap:14px;margin:18px 0;}
-    .kpi{flex:1;min-width:150px;background:#f6f8fb;border:1px solid #e3e8ef;border-radius:12px;padding:16px 18px;}
-    .kpi .lab{font-size:12px;color:#6b7684;text-transform:uppercase;letter-spacing:.04em;}
-    .kpi .val{font-size:23px;font-weight:700;color:#0f2a43;margin-top:6px;}
-    .kpi.good .val{color:#157347;} .kpi.warn .val{color:#b42318;}
-    table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px;}
-    th,td{padding:9px 12px;text-align:right;border-bottom:1px solid #e9edf3;}
-    th:first-child,td:first-child{text-align:left;}
-    thead th{background:#0f2a43;color:#fff;font-weight:600;}
-    tbody tr:nth-child(even){background:#f8fafc;}
-    .pos{color:#157347;font-weight:600;} .neg{color:#b42318;font-weight:600;}
-    .barrow{display:flex;align-items:center;gap:12px;margin:6px 0;}
-    .barlbl{width:150px;font-size:13px;color:#33415c;}
-    .bartrack{flex:1;background:#eef2f7;border-radius:6px;height:16px;overflow:hidden;}
-    .barfill{height:100%;border-radius:6px;}
-    .barval{width:120px;text-align:right;font-size:13px;font-weight:600;color:#0f2a43;}
-    .note{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;padding:10px 14px;border-radius:8px;font-size:13px;margin:10px 0;}
-    .foot{margin-top:40px;color:#9aa4b2;font-size:11px;text-align:center;}
-    """
-
-    def kpi(lab, val, cls=''):
-        return '<div class="kpi {c}"><div class="lab">{l}</div><div class="val">{v}</div></div>'.format(
-            c=cls, l=_esc(lab), v=_esc(val))
-
-    parts = []
-    parts.append('<html><head><meta charset="utf-8"><style>%s</style></head><body>' % css)
-    parts.append("<h1>Hatem's B.T. Analyzer &mdash; Consolidated Report</h1>")
-    parts.append('<div class="sub">Beyond Transportation &nbsp;|&nbsp; %s &nbsp;|&nbsp; generated %s</div>'
-                 % (_esc(week_label), datetime.now().strftime('%Y-%m-%d %H:%M')))
-    parts.append('<div class="kpis">')
-    parts.append(kpi('First Net Pay (Revenue)', money(tot_rev)))
-    parts.append(kpi('Policy Pay (Drivers)', money(tot_pol)))
-    parts.append(kpi('Price Difference', money(tot_diff), 'good'))
-    parts.append(kpi('Overall Margin', pct(margin), 'good'))
-    parts.append(kpi('Trips', '{:,}'.format(tot_trips)))
-    parts.append(kpi('Drivers', '{:,}'.format(tot_drv)))
-    parts.append(kpi('Non-compliant Trips', str(noncomp), 'warn' if noncomp else ''))
-    parts.append('</div>')
-
-    # Region comparison table
-    parts.append('<h2>Price difference by state</h2>')
-    parts.append('<table><thead><tr><th>State / Region</th><th>Drivers</th><th>Trips</th>'
-                 '<th>First Net Pay</th><th>Policy Pay</th><th>Price Difference</th><th>Margin</th></tr></thead><tbody>')
-    for _, r in rsum.iterrows():
-        dcls = 'pos' if r['diff'] >= 0 else 'neg'
-        parts.append(
-            '<tr><td>{name}</td><td>{dr}</td><td>{tp}</td><td>{rev}</td><td>{pol}</td>'
-            '<td class="{dc}">{df}</td><td class="{dc}">{mg}</td></tr>'.format(
-                name=_esc(REGION_NAME.get(r['region'], r['region'])), dr=int(r['drivers']),
-                tp=int(r['trips']), rev=money(r['first_pay']), pol=money(r['policy_pay']),
-                dc=dcls, df=money(r['diff']), mg=pct(r['margin'])))
-    parts.append('</tbody></table>')
-
-    # Price-difference bar chart
-    if len(rsum):
-        rvmax = rsum['first_pay'].abs().max() or 1
-        parts.append('<h2>Revenue by state (First Net Pay &mdash; First report)</h2>')
-        for _, r in rsum.iterrows():
-            parts.append(_bar_row(REGION_NAME.get(r['region'], r['region']), abs(r['first_pay']), rvmax, '#2563eb', money(r['first_pay'])))
-        tvmax = rsum['trips'].abs().max() or 1
-        parts.append('<h2>Trips (runs) by state &mdash; First report</h2>')
-        for _, r in rsum.iterrows():
-            parts.append(_bar_row(REGION_NAME.get(r['region'], r['region']), abs(r['trips']), tvmax, '#0d9488', '{:,}'.format(int(r['trips']))))
-        vmax = rsum['diff'].abs().max() or 1
-        parts.append('<h2>Price difference ($) per state</h2>')
-        for _, r in rsum.iterrows():
-            col = '#157347' if r['diff'] >= 0 else '#b42318'
-            parts.append(_bar_row(REGION_NAME.get(r['region'], r['region']), abs(r['diff']), vmax, col, money(r['diff'])))
-        mmax = rsum['margin'].abs().max() or 1
-        parts.append('<h2>Margin (%) per state</h2>')
-        for _, r in rsum.iterrows():
-            col = '#2563eb' if r['margin'] >= 0 else '#b42318'
-            parts.append(_bar_row(REGION_NAME.get(r['region'], r['region']), abs(r['margin']), mmax, col, pct(r['margin'])))
-
-    # Per-state driver detail
-    for _, r in rsum.iterrows():
-        reg = r['region']
-        parts.append('<h2>%s &mdash; driver breakdown</h2>' % _esc(REGION_NAME.get(reg, reg)))
-        csum = city_summary(bk, reg)
-        if len(csum) > 1:
-            parts.append('<table><thead><tr><th>City</th><th>Drivers</th><th>Trips</th>'
-                         '<th>First Net Pay</th><th>Policy Pay</th><th>Price Difference</th><th>Margin</th>'
-                         '</tr></thead><tbody>')
-            for _, cr in csum.iterrows():
-                dcls = 'pos' if cr['diff'] >= 0 else 'neg'
-                parts.append('<tr><td>{c}</td><td>{dr}</td><td>{tp}</td><td>{rev}</td><td>{pol}</td>'
-                             '<td class="{dc}">{df}</td><td class="{dc}">{mg}</td></tr>'.format(
-                                 c=_esc(cr['city']), dr=int(cr['drivers']), tp=int(cr['trips']),
-                                 rev=money(cr['first_pay']), pol=money(cr['policy_pay']),
-                                 dc=dcls, df=money(cr['diff']), mg=pct(cr['margin'])))
-            parts.append('</tbody></table>')
-        ds = driver_summary(bk, reg)
-        parts.append('<table><thead><tr><th>Driver</th><th>Trips</th><th>First Net Pay</th>'
-                     '<th>Policy Pay</th><th>Price Difference</th><th>Margin</th></tr></thead><tbody>')
-        for _, d in ds.iterrows():
-            dcls = 'pos' if d['diff'] >= 0 else 'neg'
-            parts.append('<tr><td>{n}</td><td>{t}</td><td>{r}</td><td>{p}</td>'
-                         '<td class="{dc}">{df}</td><td class="{dc}">{m}</td></tr>'.format(
-                             n=_esc(d['driver']), t=int(d['trips']), r=money(d['first_pay']),
-                             p=money(d['policy_pay']), dc=dcls, df=money(d['diff']), m=pct(d['margin'])))
-        parts.append('</tbody></table>')
-        # Non-compliant trips for this region (only when any exist)
-        nc = trips[(trips['region'] == reg) & (trips['diff'] < 0)]
-        if len(nc):
-            parts.append('<div class="note">%d non-compliant trip(s): First Net Pay below the state policy price (loss).</div>' % len(nc))
-            parts.append('<table><thead><tr><th>Driver</th><th>Trip</th><th>First Net Pay</th>'
-                         '<th>Policy Price</th><th>Difference</th></tr></thead><tbody>')
-            for _, t in nc.iterrows():
-                parts.append('<tr><td>{n}</td><td>{tr}</td><td>{f}</td><td>{p}</td>'
-                             '<td class="neg">{d}</td></tr>'.format(
-                                 n=_esc(t['driver']), tr=_esc(t['trip'] or '-'),
-                                 f=money(t['first_pay']), p=money(t['policy_price']), d=money(t['diff'])))
-            parts.append('</tbody></table>')
-
-    parts.append('<div class="foot">Hatem\'s B.T. Analyzer &middot; Beyond Transportation &middot; '
-                 'Revenue = First Net Pay &middot; Price difference = First Net Pay minus state policy price</div>')
-    parts.append('</body></html>')
-    return ''.join(parts)
-
-
-# ----------------------------------------------------------------------------
-# Print-ready PDF summary (reportlab)
-# ----------------------------------------------------------------------------
-
-def build_pdf_report(rsum, trips, bk, week_label, cmp_df=None, prev_label=None):
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib import colors
-    from reportlab.lib.units import mm
-    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
-                                     Paragraph, Spacer)
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT
-
-    NAVY = colors.HexColor('#0f2a43')
-    GREEN = colors.HexColor('#157347')
-    RED = colors.HexColor('#b42318')
-    GREY = colors.HexColor('#6b7684')
-    LIGHT = colors.HexColor('#f8fafc')
-    LINE = colors.HexColor('#e3e8ef')
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
-                            leftMargin=16 * mm, rightMargin=16 * mm,
-                            topMargin=14 * mm, bottomMargin=14 * mm,
-                            title="Hatem's B.T. Analyzer - Consolidated Report")
-    ss = getSampleStyleSheet()
-    h1 = ParagraphStyle('h1', parent=ss['Title'], textColor=NAVY, fontSize=20,
-                        spaceAfter=2, alignment=TA_LEFT)
-    sub = ParagraphStyle('sub', parent=ss['Normal'], textColor=GREY, fontSize=9, spaceAfter=10)
-    h2 = ParagraphStyle('h2', parent=ss['Heading2'], textColor=NAVY, fontSize=12,
-                        spaceBefore=12, spaceAfter=4)
-    note = ParagraphStyle('note', parent=ss['Normal'], textColor=RED, fontSize=8.5, spaceBefore=2)
-
-    tot_rev = rsum['first_pay'].sum() if len(rsum) else 0
-    tot_pol = rsum['policy_pay'].sum() if len(rsum) else 0
-    tot_diff = tot_rev - tot_pol
-    tot_trips = int(rsum['trips'].sum()) if len(rsum) else 0
-    tot_drv = int(bk['driver'].nunique()) if len(bk) else 0
-    margin = (tot_diff / tot_rev * 100) if tot_rev else 0
-    noncomp = int((trips['diff'] < 0).sum()) if len(trips) else 0
-
-    def col(v):
-        return GREEN if float(v) >= 0 else RED
-
-    story = []
-    story.append(Paragraph("Hatem's B.T. Analyzer &ndash; Consolidated Report", h1))
-    story.append(Paragraph('Beyond Transportation&nbsp;&nbsp;|&nbsp;&nbsp;%s&nbsp;&nbsp;|&nbsp;&nbsp;generated %s'
-                           % (_esc(week_label), datetime.now().strftime('%Y-%m-%d %H:%M')), sub))
-
-    # KPI strip as a table
-    kpi_data = [[
-        'First Net Pay', 'Policy Pay', 'Price Difference', 'Overall Margin',
-        'Trips', 'Drivers', 'Non-compliant',
-    ], [
-        money(tot_rev), money(tot_pol), money(tot_diff), pct(margin),
-        '{:,}'.format(tot_trips), '{:,}'.format(tot_drv), str(noncomp),
-    ]]
-    kt = Table(kpi_data, colWidths=[38 * mm] * 7)
-    kt.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('BACKGROUND', (0, 1), (-1, 1), LIGHT),
-        ('TEXTCOLOR', (2, 1), (2, 1), col(tot_diff)),
-        ('TEXTCOLOR', (6, 1), (6, 1), RED if noncomp else GREEN),
-        ('FONTSIZE', (0, 0), (-1, 0), 7.5),
-        ('FONTSIZE', (0, 1), (-1, 1), 11),
-        ('FONTNAME', (0, 1), (-1, 1), 'Helvetica-Bold'),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -1), 0.5, LINE),
-    ]))
-    story.append(kt)
-
-    # Region table
-    story.append(Paragraph('Price difference by state', h2))
-    head = ['State / Region', 'Drivers', 'Trips', 'First Net Pay', 'Policy Pay',
-            'Price Difference', 'Margin']
-    data = [head]
-    diff_style = []
-    for i, (_, r) in enumerate(rsum.iterrows(), start=1):
-        data.append([
-            REGION_NAME.get(r['region'], r['region']), int(r['drivers']), int(r['trips']),
-            money(r['first_pay']), money(r['policy_pay']), money(r['diff']), pct(r['margin']),
-        ])
-        diff_style.append(('TEXTCOLOR', (5, i), (6, i), col(r['diff'])))
-    rt = Table(data, colWidths=[46 * mm, 20 * mm, 18 * mm, 36 * mm, 34 * mm, 38 * mm, 24 * mm])
-    rt.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, LIGHT]),
-        ('GRID', (0, 0), (-1, -1), 0.4, LINE),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-    ] + diff_style))
-    story.append(rt)
-
-    # Week-over-week comparison
-    if cmp_df is not None and len(cmp_df):
-        story.append(Paragraph('Week-over-week comparison (current vs previous)', h2))
-        chead = ['State / Region', 'Diff (current)', 'Diff (previous)', 'Change ($)',
-                 'Change (%)', 'Margin now', 'Margin before']
-        cdata = [chead]
-        cstyle = []
-        for i, (_, r) in enumerate(cmp_df.iterrows(), start=1):
-            cdata.append([
-                REGION_NAME.get(r['region'], r['region']),
-                money(r['diff']), money(r['diff_prev']), money(r['diff_delta']),
-                pct(r['diff_pct']), pct(r['margin']), pct(r['margin_prev']),
-            ])
-            cstyle.append(('TEXTCOLOR', (3, i), (4, i), col(r['diff_delta'])))
-        ct = Table(cdata, colWidths=[42 * mm, 34 * mm, 34 * mm, 32 * mm, 26 * mm, 26 * mm, 26 * mm])
-        ct.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), NAVY),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-            ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, LIGHT]),
-            ('GRID', (0, 0), (-1, -1), 0.4, LINE),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ] + cstyle))
-        story.append(ct)
-        if prev_label:
-            story.append(Paragraph('Previous: %s' % _esc(prev_label), sub))
-
-    # Non-compliant trips
-    if noncomp:
-        story.append(Paragraph('Non-compliant trips (First Net Pay below state policy price)', h2))
-        nc = trips[trips['diff'] < 0].copy()
-        nhead = ['State', 'Driver', 'Trip', 'First Net Pay', 'Policy Price', 'Difference']
-        ndata = [nhead]
-        for _, t in nc.iterrows():
-            ndata.append([
-                REGION_NAME.get(t['region'], t['region']), t['driver'], (t['trip'] or '-'),
-                money(t['first_pay']), money(t['policy_price']), money(t['diff']),
-            ])
-        nt = Table(ndata, colWidths=[30 * mm, 48 * mm, 50 * mm, 34 * mm, 32 * mm, 30 * mm])
-        nt.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), RED),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('TEXTCOLOR', (5, 1), (5, -1), RED),
-            ('ALIGN', (3, 0), (-1, -1), 'RIGHT'),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, LIGHT]),
-            ('GRID', (0, 0), (-1, -1), 0.4, LINE),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ]))
-        story.append(nt)
-    else:
-        story.append(Spacer(1, 6))
-        story.append(Paragraph('All trips are compliant: First Net Pay meets or exceeds the policy price.', note))
-
-    doc.build(story)
-    return buf.getvalue()
-
-
-# ----------------------------------------------------------------------------
-# Streamlit UI  (dark on screen; downloadable report is light / print-safe)
-# ----------------------------------------------------------------------------
-
-st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon='\U0001F69C', layout='wide')
-
-DARK_CSS = """
+# ----------------------------- styling (dark app) -----------------------------
+st.markdown("""
 <style>
-.stApp{background:#0e1726;color:#e6edf6;}
-section[data-testid="stSidebar"]{background:#0a1220;}
-h1,h2,h3,h4{color:#f2f6fc;}
-.kcard{background:#15213a;border:1px solid #23314f;border-radius:14px;padding:16px 18px;}
-.kcard .lab{font-size:12px;color:#8ea2c0;text-transform:uppercase;letter-spacing:.05em;}
-.kcard .val{font-size:26px;font-weight:700;margin-top:6px;color:#f2f6fc;}
-.kcard.good .val{color:#4ade80;} .kcard.warn .val{color:#f87171;}
-.pill{display:inline-block;background:#1d2b49;color:#9fb4d6;border-radius:20px;padding:3px 12px;font-size:12px;margin-right:6px;}
+.stApp { background:#0f1420; color:#e8edf6; }
+section[data-testid="stSidebar"] { background:#131a2a; }
+h1,h2,h3,h4 { color:#f2f6ff; }
+.kpi { background:linear-gradient(145deg,#1b2436,#141c2c); border:1px solid #27324a;
+       border-radius:14px; padding:14px 16px; }
+.kpi .lbl { font-size:12px; letter-spacing:.5px; color:#9fb0cc; text-transform:uppercase; }
+.kpi .val { font-size:26px; font-weight:700; color:#ffffff; margin-top:4px; }
+.kpi .sub { font-size:12px; color:#8aa0c2; margin-top:2px; }
+.good { color:#35d49a; } .bad { color:#ff6b6b; } .warn { color:#ffcf5c; }
+div[data-testid="stDataFrame"] { border-radius:12px; overflow:hidden; }
 </style>
-"""
-st.markdown(DARK_CSS, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
+# ----------------------------- region grouping -----------------------------
+# Normalised region name -> (canonical region label, operating group)
+SCA_REGIONS = {"riverside", "riverside ca", "arizona", "az"}
+NCA_REGIONS = {"benicia", "benicia ca", "richmond", "san leandro", "san leandro ca",
+               "berkeley", "el dorado", "sacramento", "sacramento ca"}
 
-def kcard(lab, val, cls=''):
-    st.markdown(
-        '<div class="kcard {c}"><div class="lab">{l}</div><div class="val">{v}</div></div>'.format(
-            c=cls, l=html.escape(str(lab)), v=html.escape(str(val))),
-        unsafe_allow_html=True)
+def group_of(region_norm):
+    r = region_norm
+    if r in SCA_REGIONS:
+        return "S.CA (Riverside + Arizona)"
+    if r in NCA_REGIONS:
+        return "N.CA (Northern California)"
+    if r in ("new mexico", "nm"):
+        return "New Mexico"
+    if r in ("il", "illinois"):
+        return "Illinois"
+    if r in ("oregon", "or"):
+        return "Oregon"
+    if r in ("alaska", "ak"):
+        return "Alaska"
+    return region_norm.title()
 
+GROUP_ORDER = ["S.CA (Riverside + Arizona)", "N.CA (Northern California)",
+               "New Mexico", "Illinois", "Oregon", "Alaska"]
+NCA_AREA_ORDER = ["Benicia CA", "Richmond", "San Leandro CA", "Berkeley", "El Dorado", "Sacramento"]
+
+MONITOR_RE = re.compile(r"\((?:M|MO|MON|MONITOR)\)", re.I)
+SKIP_HEADERS = {"sr #", "grand total", "total", ""}
+
+def norm(s):
+    s = unicodedata.normalize("NFKD", str(s)).replace("\u200b", "")
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+# ----------------------------- sheet finders -----------------------------
+def _find_sheet(xl, *needles):
+    for sh in xl.sheet_names:
+        low = sh.strip().lower()
+        if any(n in low for n in needles):
+            return sh
+    return None
+
+def _find_col(cols, *keys):
+    low = {re.sub(r"\s+", "", str(c)).lower(): c for c in cols}
+    for k in keys:
+        kk = re.sub(r"\s+", "", k).lower()
+        if kk in low:
+            return low[kk]
+    for k in keys:
+        kk = re.sub(r"\s+", "", k).lower()
+        for lc, orig in low.items():
+            if kk and kk in lc:
+                return orig
+    return None
+
+# ----------------------------- readers -----------------------------
+@st.cache_data(show_spinner=False)
+def read_breakup(file_bytes, fname):
+    """Read the master Breakup sheet -> per-region, per-driver rows.
+    Region grouping (Arizona split, North-CA areas) comes straight from the
+    region header rows inside this sheet."""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    sh = _find_sheet(xl, "breakup")
+    cols = ["region","region_norm","group","driver","monitor","trips","revenue","driverpay","source"]
+    if sh is None:
+        return pd.DataFrame(columns=cols)
+    df = xl.parse(sh, header=None)
+    rows, region = [], None
+    for _, r in df.iterrows():
+        c0, c1, c2, c3, c4 = r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)
+        if isinstance(c0, str) and c0.strip() and pd.isna(c1) and norm(c0) not in SKIP_HEADERS:
+            region = c0.strip()
+            continue
+        if pd.notna(c0) and pd.notna(c1) and str(c0).strip().replace(".", "").isdigit():
+            name = str(c1).strip()
+            if norm(name) in SKIP_HEADERS:
+                continue
+            rows.append(dict(region=region or "Unknown", driver=name,
+                monitor=bool(MONITOR_RE.search(name)),
+                trips=pd.to_numeric(c2, errors="coerce"),
+                revenue=pd.to_numeric(c3, errors="coerce"),
+                driverpay=pd.to_numeric(c4, errors="coerce")))
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=cols)
+    for c in ["trips", "revenue", "driverpay"]:
+        out[c] = out[c].fillna(0.0)
+    out["region_norm"] = out["region"].map(norm)
+    out["group"] = out["region_norm"].map(group_of)
+    out["source"] = fname
+    return out[cols]
 
 @st.cache_data(show_spinner=False)
-def _load(cached_files):
-    return load_workbooks(cached_files)
+def read_first(file_bytes, fname):
+    """Read the First report (SP ITEMIZED) -> trip-level rows.
+    driver, driver_key, net (First paid), trip, source."""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    sh = _find_sheet(xl, "itemized")
+    cols = ["driver","driver_key","net","trip","source"]
+    if sh is None:
+        return pd.DataFrame(columns=cols)
+    df = xl.parse(sh)
+    df.columns = [str(c).strip() for c in df.columns]
+    dn = _find_col(df.columns, "DRIVER NAME", "DRIVER")
+    npc = _find_col(df.columns, "NET PAY", "NETPAY")
+    tn = _find_col(df.columns, "TRIP NAME", "TRIP")
+    if not (dn and npc):
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame({
+        "driver": df[dn].astype(str).str.strip(),
+        "net": pd.to_numeric(df[npc], errors="coerce"),
+        "trip": df[tn].astype(str) if tn else "",
+    })
+    out = out[out["driver"].notna() & out["driver"].ne("") & out["driver"].ne("nan")]
+    out = out.dropna(subset=["net"])
+    out = out[out["driver"].map(norm) != "total"]
+    out["driver_key"] = out["driver"].map(norm)
+    out["source"] = fname
+    return out[cols]
 
+# ----------------------------- analytics -----------------------------
+def enrich(g):
+    g = g.copy()
+    g["Profit"] = g["revenue"] - g["driverpay"]
+    g["Margin %"] = g.apply(lambda r: round(r["Profit"]/r["revenue"]*100, 1) if r["revenue"] else 0.0, axis=1)
+    return g
 
-st.sidebar.markdown("## \U0001F69C Hatem's B.T. Analyzer")
-st.sidebar.caption('Beyond Transportation \u2014 weekly financial analyzer')
+def agg_by(df, key):
+    g = df.groupby(key, as_index=False).agg(
+        Drivers=("driver", "nunique"),
+        Trips=("trips", "sum"),
+        revenue=("revenue", "sum"),
+        driverpay=("driverpay", "sum"),
+    )
+    return enrich(g)
 
-uploads = st.sidebar.file_uploader(
-    'Upload CURRENT week report file(s)', type=['xlsx'], accept_multiple_files=True,
-    help='Accepts either the weekly "ALL STATES" workbook (with a Breakup sheet) or '
-         'per-state files named by state (S.CA, NORTH CA, IL, Oregon, Alaska, New Mexico) '
-         'with DRIVER NAME + revenue (+ payment/PAY) columns.')
+def first_by_region(first_df, bk):
+    """Map First report drivers to their Breakup region, then count trips and
+    sum First-paid per region."""
+    dmap = {}
+    for _, r in bk.iterrows():
+        dmap.setdefault(norm(r["driver"]), r["region"])
+    f = first_df.copy()
+    f["region"] = f["driver_key"].map(dmap)
+    matched = f[f["region"].notna()]
+    g = matched.groupby("region", as_index=False).agg(
+        first_trips=("net", "size"), first_paid=("net", "sum"))
+    unmatched = f[f["region"].isna()]
+    return g, unmatched
 
-prev_uploads = st.sidebar.file_uploader(
-    'Upload PREVIOUS week file(s) — optional', type=['xlsx'], accept_multiple_files=True,
-    help='Optional. Upload last week\'s workbook(s) to see a week-over-week comparison.')
+def money(x):
+    try:
+        return "${:,.0f}".format(x)
+    except Exception:
+        return "-"
 
-files = []
-if uploads:
-    for u in uploads:
-        files.append((u.name, u.getvalue()))
+RENAME = {"region": "Region", "group": "Operating Group", "driver": "Driver",
+          "revenue": "Revenue (First Paid)", "driverpay": "Driver Pay"}
+MONEY_COLS = ["Revenue (First Paid)", "Driver Pay", "Profit", "First Paid",
+              "Contract Revenue", "$ Diff"]
 
-prev_files = []
-if prev_uploads:
-    for u in prev_uploads:
-        prev_files.append((u.name, u.getvalue()))
+def fmt(df):
+    out = df.rename(columns=RENAME).copy()
+    for c in MONEY_COLS:
+        if c in out.columns:
+            out[c] = out[c].map(money)
+    if "Margin %" in out.columns:
+        out["Margin %"] = out["Margin %"].map(lambda v: "{:.1f}%".format(v))
+    return out
+
+def to_excel(frames):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        for name, df in frames.items():
+            df.to_excel(xw, sheet_name=str(name)[:31], index=False)
+    return buf.getvalue()
+
+def kpi(col, label, value, sub="", cls=""):
+    col.markdown(
+        '<div class="kpi"><div class="lbl">{}</div>'
+        '<div class="val {}">{}</div>'
+        '<div class="sub">{}</div></div>'.format(label, cls, value, sub),
+        unsafe_allow_html=True)
+
+# ----------------------------- UI: upload & parse -----------------------------
+st.title("Hatem's B.T. Analyzer")
+st.caption("Beyond Transportation - weekly profit by state, Arizona split, "
+           "North CA area analysis, and trip reconciliation vs the First report")
+
+with st.sidebar:
+    st.header("Weekly workbook(s)")
+    files = st.file_uploader(
+        "Upload the weekly workbook(s). Each is read in full: the state "
+        "'Breakup' sheet AND the 'SP ITEMIZED REPORT' (First) sheet.",
+        type=["xlsx", "xls"], accept_multiple_files=True)
 
 if not files:
-    st.title("Hatem's B.T. Analyzer")
-    st.info('Upload the weekly report file(s) from the left sidebar to begin. '
-            'The app accepts the weekly **Breakup** workbook **or** per-state files '
-            '(named after the state, e.g. **S.CA**, **NORTH CA**, **IL**, **Oregon**, '
-            '**Alaska**, **New Mexico**) that contain a **DRIVER NAME** column, a **revenue** '
-            'column (First Net Pay) and ideally a **payment/PAY** price column. '
-            'It then computes the price difference (First Net Pay \u2212 state policy price) per state.')
+    st.info("Upload at least one weekly workbook (e.g. '41. WEEKLY ALL STATES 9 "
+            "Oct.xlsx' and 'ALASKA WEEKLY 41.xlsx'). The app reads the Breakup "
+            "sheet for the per-region driver breakdown and the SP ITEMIZED "
+            "REPORT for the First-paid trip reconciliation.")
     st.stop()
 
-bk, trips = _load(files)
+bk = pd.concat([read_breakup(f.getvalue(), f.name) for f in files], ignore_index=True)
+fr = pd.concat([read_first(f.getvalue(), f.name) for f in files], ignore_index=True)
 
-# Tell the user which uploaded files were (not) recognised.
-recognised = set()
-if len(bk):
-    recognised |= set(bk['source'].dropna().unique())
-if len(trips):
-    recognised |= set(trips['source'].dropna().unique())
-ignored = [n for (n, _) in files if n not in recognised]
-if ignored:
-    st.warning(
-        'These file(s) could not be matched to a state and were skipped: '
-        + ', '.join(ignored)
-        + '. A per-state file needs a "DRIVER NAME" column plus a revenue column '
-        '(revenue / NET PAY) and, ideally, a price column (payment / PAY / AMOUNT). '
-        'Name the file after its state (e.g. S.CA, NORTH CA, IL, Oregon, Alaska, New Mexico) '
-        'so it can be classified.')
-
-if bk.empty and trips.empty:
-    st.error('No usable data found in the uploaded file(s). Expected either the weekly '
-             '"Breakup" workbook, or per-state files with a "DRIVER NAME" column and a '
-             'revenue column (revenue / NET PAY).')
+if bk.empty:
+    st.error("No 'Breakup' sheet found in the uploaded workbook(s). This app "
+             "reads the per-region breakdown from that sheet.")
     st.stop()
 
-rsum = region_summary(bk)
-week_label = 'Week ending 9 Oct 2026'
-prev_label = 'Previous week'
+fr_region, fr_unmatched = first_by_region(fr, bk)
+first_lookup = fr_region.set_index("region") if not fr_region.empty else pd.DataFrame()
 
-# Optional previous-week dataset for week-over-week comparison.
-bk_prev = trips_prev = None
-rsum_prev = None
-cmp_df = None
-if prev_files:
-    bk_prev, trips_prev = _load(prev_files)
-    if bk_prev.empty and not trips_prev.empty:
-        synp = trips_prev.groupby(['region', 'driver']).agg(
-            trips=('first_pay', 'size'), first_pay=('first_pay', 'sum'),
-            policy_pay=('policy_price', 'sum')).reset_index()
-        synp['city'] = synp['region']
-        synp['source'] = 'details'
-        bk_prev = synp
-    if not bk_prev.empty:
-        rsum_prev = region_summary(bk_prev)
-        cmp_df = build_comparison(rsum, rsum_prev)
+present_groups = [g for g in GROUP_ORDER if g in set(bk["group"])]
+present_groups += [g for g in bk["group"].unique() if g not in present_groups]
 
-regions_present = list(rsum['region']) if len(rsum) else []
-nav_options = ['\U0001F4CA Consolidated Report'] + [
-    REGION_NAME.get(r, r) for r in regions_present]
-choice = st.sidebar.radio('Report', nav_options)
+view = st.sidebar.radio("View", [
+    "Consolidated", "By operating group", "By region",
+    "Trip reconciliation", "Arizona", "North CA (analytical)", "Alaska"])
 
-st.sidebar.markdown('---')
-st.sidebar.caption('Revenue = First Net Pay (truth). Price difference = First Net Pay \u2212 state policy price.')
+def region_order(df):
+    pref = ["Riverside CA", "Arizona", "Benicia CA", "Richmond", "San Leandro CA",
+            "Berkeley", "El Dorado", "Sacramento", "New Mexico", "IL", "Oregon", "Alaska"]
+    df = df.copy()
+    df["_o"] = df["region"].map(lambda x: pref.index(x) if x in pref else 99)
+    return df.sort_values(["_o", "revenue"], ascending=[True, False]).drop(columns="_o")
 
+def metric_cols(g):
+    return g[[c for c in ["region", "group", "driver", "Drivers", "Trips",
+             "revenue", "driverpay", "Profit", "Margin %"] if c in g.columns]]
 
-def _style_money(df, money_cols, pct_cols):
-    d = df.copy()
-    for c in money_cols:
-        if c in d:
-            d[c] = d[c].apply(money)
-    for c in pct_cols:
-        if c in d:
-            d[c] = d[c].apply(pct)
-    return d
-
-
-if choice.startswith('\U0001F4CA'):
-    st.title("Consolidated Report")
-    st.caption(week_label)
-
-    tot_rev = rsum['first_pay'].sum()
-    tot_pol = rsum['policy_pay'].sum()
-    tot_diff = tot_rev - tot_pol
-    tot_trips = int(rsum['trips'].sum())
-    tot_drv = int(bk['driver'].nunique())
-    margin = (tot_diff / tot_rev * 100) if tot_rev else 0
-    noncomp = int((trips['diff'] < 0).sum()) if len(trips) else 0
-
+# ============================== CONSOLIDATED ==============================
+if view == "Consolidated":
+    st.subheader("Consolidated - all states")
+    tot_trips = int(bk["trips"].sum()); tot_rev = float(bk["revenue"].sum())
+    tot_pay = float(bk["driverpay"].sum()); tot_profit = tot_rev - tot_pay
+    tot_margin = (tot_profit / tot_rev * 100) if tot_rev else 0
     c = st.columns(4)
-    with c[0]:
-        kcard('First Net Pay (Revenue)', money(tot_rev))
-    with c[1]:
-        kcard('Policy Pay (Drivers)', money(tot_pol))
-    with c[2]:
-        kcard('Price Difference', money(tot_diff), 'good')
-    with c[3]:
-        kcard('Overall Margin', pct(margin), 'good')
-    c = st.columns(4)
-    with c[0]:
-        kcard('Trips', '{:,}'.format(tot_trips))
-    with c[1]:
-        kcard('Drivers', '{:,}'.format(tot_drv))
-    with c[2]:
-        kcard('States', str(len(rsum)))
-    with c[3]:
-        kcard('Non-compliant Trips', str(noncomp), 'warn' if noncomp else 'good')
+    kpi(c[0], "Total Trips", "{:,}".format(tot_trips))
+    kpi(c[1], "Revenue (First Paid)", money(tot_rev), "what First paid Beyond")
+    kpi(c[2], "Driver Pay", money(tot_pay))
+    kpi(c[3], "Profit", money(tot_profit), "{:.1f}% margin".format(tot_margin),
+        "good" if tot_profit >= 0 else "bad")
+    gg = agg_by(bk, "group")
+    gg["_o"] = gg["group"].map(lambda x: GROUP_ORDER.index(x) if x in GROUP_ORDER else 99)
+    gg = gg.sort_values("_o").drop(columns="_o")
+    st.markdown("#### Summary by operating group")
+    st.dataframe(fmt(metric_cols(gg)), use_container_width=True, hide_index=True)
+    st.markdown("#### Revenue vs driver pay by group")
+    st.bar_chart(gg.set_index("group")[["revenue", "driverpay"]])
+    st.markdown("#### Profit by group")
+    st.bar_chart(gg.set_index("group")[["Profit"]])
+    st.download_button("Download Excel (by group + by region)",
+        data=to_excel({"By group": fmt(metric_cols(gg)),
+                       "By region": fmt(metric_cols(region_order(agg_by(bk, "region"))))}),
+        file_name="BT_consolidated.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if not fr_unmatched.empty:
+        st.warning("{:,} First-report trips ({} paid) belong to drivers not found "
+            "in any Breakup region - usually a name-spelling difference. They are "
+            "excluded from the per-region reconciliation.".format(
+                len(fr_unmatched), money(fr_unmatched['net'].sum())))
 
-    st.markdown('### Price difference by state')
-    disp = rsum.copy()
-    disp['State'] = disp['region'].map(lambda r: REGION_NAME.get(r, r))
-    show = disp[['State', 'drivers', 'trips', 'first_pay', 'policy_pay', 'diff', 'margin']].rename(
-        columns={'drivers': 'Drivers', 'trips': 'Trips', 'first_pay': 'First Net Pay',
-                 'policy_pay': 'Policy Pay', 'diff': 'Price Difference', 'margin': 'Margin'})
-    st.dataframe(_style_money(show, ['First Net Pay', 'Policy Pay', 'Price Difference'], ['Margin']),
-                 use_container_width=True, hide_index=True)
+# ============================== BY GROUP ==============================
+elif view == "By operating group":
+    st.subheader("By operating group")
+    gg = agg_by(bk, "group")
+    gg["_o"] = gg["group"].map(lambda x: GROUP_ORDER.index(x) if x in GROUP_ORDER else 99)
+    gg = gg.sort_values("_o").drop(columns="_o")
+    st.dataframe(fmt(metric_cols(gg)), use_container_width=True, hide_index=True)
+    st.markdown("#### Margin % by group")
+    st.bar_chart(gg.set_index("group")[["Margin %"]])
 
-    cc = st.columns(2)
-    with cc[0]:
-        st.markdown('#### Revenue by state (First Net Pay \u2014 First report)')
-        st.bar_chart(disp.set_index('State')['first_pay'], color='#60a5fa', height=300)
-    with cc[1]:
-        st.markdown('#### Trips (runs) by state \u2014 First report')
-        st.bar_chart(disp.set_index('State')['trips'], color='#34d399', height=300)
+# ============================== BY REGION ==============================
+elif view == "By region":
+    st.subheader("By region")
+    rg = region_order(agg_by(bk, "region"))
+    st.dataframe(fmt(metric_cols(rg)), use_container_width=True, hide_index=True)
+    st.markdown("#### Revenue vs driver pay by region")
+    st.bar_chart(rg.set_index("region")[["revenue", "driverpay"]])
+    st.caption("Arizona is shown as its own region (split out of the combined "
+               "Riverside + Arizona file) because the Breakup sheet lists it separately.")
 
-    cc = st.columns(2)
-    with cc[0]:
-        st.markdown('#### Price difference ($)')
-        st.bar_chart(disp.set_index('State')['diff'], color='#4ade80', height=300)
-    with cc[1]:
-        st.markdown('#### Margin (%)')
-        st.bar_chart(disp.set_index('State')['margin'], color='#60a5fa', height=300)
-
-    st.markdown('#### First Net Pay vs Policy Pay')
-    st.bar_chart(disp.set_index('State')[['first_pay', 'policy_pay']].rename(
-        columns={'first_pay': 'First Net Pay', 'policy_pay': 'Policy Pay'}),
-        color=['#60a5fa', '#f59e0b'], height=320)
-
-    if noncomp:
-        st.markdown('### \u26a0\ufe0f Non-compliant trips (First Net Pay below policy price)')
-        nc = trips[trips['diff'] < 0].copy()
-        nc['State'] = nc['region'].map(lambda r: REGION_NAME.get(r, r))
-        ncs = nc[['State', 'driver', 'trip', 'first_pay', 'policy_price', 'diff']].rename(
-            columns={'driver': 'Driver', 'trip': 'Trip', 'first_pay': 'First Net Pay',
-                     'policy_price': 'Policy Price', 'diff': 'Difference'})
-        st.dataframe(_style_money(ncs, ['First Net Pay', 'Policy Price', 'Difference'], []),
-                     use_container_width=True, hide_index=True)
-
-    if cmp_df is not None and len(cmp_df):
-        st.markdown('### \U0001F504 Week-over-week comparison')
-        st.caption('Current ({}) vs previous ({})'.format(week_label, prev_label))
-        prev_rev = rsum_prev['first_pay'].sum() if rsum_prev is not None else 0
-        prev_pol = rsum_prev['policy_pay'].sum() if rsum_prev is not None else 0
-        prev_diff = prev_rev - prev_pol
-        prev_margin = (prev_diff / prev_rev * 100) if prev_rev else 0
-        cc = st.columns(4)
-        with cc[0]:
-            kcard('Revenue change', money(tot_rev - prev_rev),
-                  'good' if (tot_rev - prev_rev) >= 0 else 'warn')
-        with cc[1]:
-            kcard('Price Difference change', money(tot_diff - prev_diff),
-                  'good' if (tot_diff - prev_diff) >= 0 else 'warn')
-        with cc[2]:
-            kcard('Margin change', pct(margin - prev_margin),
-                  'good' if (margin - prev_margin) >= 0 else 'warn')
-        with cc[3]:
-            pctchg = ((tot_diff - prev_diff) / abs(prev_diff) * 100) if prev_diff else 0
-            kcard('Price Diff change (%)', pct(pctchg),
-                  'good' if pctchg >= 0 else 'warn')
-
-        cmp_disp = cmp_df.copy()
-        cmp_disp['State'] = cmp_disp['region'].map(lambda r: REGION_NAME.get(r, r))
-        cshow = cmp_disp[['State', 'diff', 'diff_prev', 'diff_delta', 'diff_pct',
-                          'margin', 'margin_prev']].rename(columns={
-            'diff': 'Diff (current)', 'diff_prev': 'Diff (previous)',
-            'diff_delta': 'Change ($)', 'diff_pct': 'Change (%)',
-            'margin': 'Margin now', 'margin_prev': 'Margin before'})
-        st.dataframe(_style_money(
-            cshow, ['Diff (current)', 'Diff (previous)', 'Change ($)'],
-            ['Change (%)', 'Margin now', 'Margin before']),
-            use_container_width=True, hide_index=True)
-        st.markdown('#### Price difference change ($) vs previous week')
-        st.bar_chart(cmp_disp.set_index('State')['diff_delta'], color='#a78bfa', height=300)
-
-    st.markdown('### \U0001F4E5 Download reports')
-    html_report = build_html_report(rsum, trips, bk, week_label)
-    dc = st.columns(2)
-    with dc[0]:
-        st.download_button('\u2b07\ufe0f Download full report (HTML, print-ready)',
-                           data=html_report.encode('utf-8'),
-                           file_name='BT_consolidated_report.html', mime='text/html')
-    with dc[1]:
-        try:
-            pdf_bytes = build_pdf_report(rsum, trips, bk, week_label, cmp_df, prev_label)
-            st.download_button('\U0001F4C4 Download summary (PDF, print-ready)',
-                               data=pdf_bytes,
-                               file_name='BT_consolidated_summary.pdf',
-                               mime='application/pdf')
-        except Exception as e:
-            st.caption('PDF export unavailable: %s' % e)
-
-
-else:
-    # Per-state page
-    code = next((r for r in regions_present if REGION_NAME.get(r, r) == choice), None)
-    if code is None:
-        st.error('State not found.')
-        st.stop()
-    row = rsum[rsum['region'] == code].iloc[0]
-    st.title(REGION_NAME.get(code, code))
-    cities = REGION_CITIES.get(code)
-    if cities:
-        st.markdown(' '.join('<span class="pill">%s</span>' % html.escape(c) for c in cities),
-                    unsafe_allow_html=True)
-    st.caption(week_label)
-
-    c = st.columns(4)
-    with c[0]:
-        kcard('First Net Pay', money(row['first_pay']))
-    with c[1]:
-        kcard('Policy Pay', money(row['policy_pay']))
-    with c[2]:
-        kcard('Price Difference', money(row['diff']), 'good' if row['diff'] >= 0 else 'warn')
-    with c[3]:
-        kcard('Margin', pct(row['margin']), 'good' if row['margin'] >= 0 else 'warn')
-    c = st.columns(4)
-    with c[0]:
-        kcard('Drivers', int(row['drivers']))
-    with c[1]:
-        kcard('Trips', int(row['trips']))
-    reg_trips = trips[trips['region'] == code]
-    nc = reg_trips[reg_trips['diff'] < 0]
-    with c[2]:
-        kcard('Non-compliant Trips', str(len(nc)), 'warn' if len(nc) else 'good')
-    with c[3]:
-        avg = (row['diff'] / row['trips']) if row['trips'] else 0
-        kcard('Avg diff / trip', money(avg))
-
-    # City sub-tables for grouped regions (North / South California).
-    csum = city_summary(bk, code)
-    if len(csum) > 1:
-        st.markdown('### \U0001F3D9\ufe0f City breakdown')
-        cdisp = csum.rename(columns={'city': 'City', 'drivers': 'Drivers', 'trips': 'Trips',
-                                     'first_pay': 'First Net Pay', 'policy_pay': 'Policy Pay',
-                                     'diff': 'Price Difference', 'margin': 'Margin'})
-        st.dataframe(_style_money(cdisp, ['First Net Pay', 'Policy Pay', 'Price Difference'], ['Margin']),
-                     use_container_width=True, hide_index=True)
-        st.bar_chart(csum.set_index('city')['diff'], color='#38bdf8', height=280)
-        st.caption('Open each city for its driver-level detail.')
-        for _, cr in csum.iterrows():
-            with st.expander('{} \u2014 {} ({} drivers, {} trips)'.format(
-                    cr['city'], money(cr['diff']), int(cr['drivers']), int(cr['trips']))):
-                dcity = driver_summary_city(bk, code, cr['city'])
-                dcshow = dcity.rename(columns={'driver': 'Driver', 'trips': 'Trips',
-                                               'first_pay': 'First Net Pay', 'policy_pay': 'Policy Pay',
-                                               'diff': 'Price Difference', 'margin': 'Margin'})
-                st.dataframe(_style_money(dcshow, ['First Net Pay', 'Policy Pay', 'Price Difference'], ['Margin']),
-                             use_container_width=True, hide_index=True)
-
-    st.markdown('### Driver breakdown')
-    ds = driver_summary(bk, code)
-    dsshow = ds.rename(columns={'driver': 'Driver', 'trips': 'Trips', 'first_pay': 'First Net Pay',
-                                'policy_pay': 'Policy Pay', 'diff': 'Price Difference', 'margin': 'Margin'})
-    st.dataframe(_style_money(dsshow, ['First Net Pay', 'Policy Pay', 'Price Difference'], ['Margin']),
-                 use_container_width=True, hide_index=True)
-
-    if len(reg_trips):
-        st.markdown('### Per-trip price difference')
-        tt = reg_trips.copy().sort_values('diff')
-        ttshow = tt[['driver', 'trip', 'miles', 'first_pay', 'policy_price', 'diff']].rename(
-            columns={'driver': 'Driver', 'trip': 'Trip', 'miles': 'Miles',
-                     'first_pay': 'First Net Pay', 'policy_price': 'Policy Price', 'diff': 'Difference'})
-        st.dataframe(_style_money(ttshow, ['First Net Pay', 'Policy Price', 'Difference'], []),
-                     use_container_width=True, hide_index=True)
-
-    # Per-trip charts: only shown when there are non-compliant trips.
-    if len(nc):
-        st.markdown('### \u26a0\ufe0f Non-compliant trips (loss: First Net Pay below policy price)')
-        ncshow = nc[['driver', 'trip', 'first_pay', 'policy_price', 'diff']].rename(
-            columns={'driver': 'Driver', 'trip': 'Trip', 'first_pay': 'First Net Pay',
-                     'policy_price': 'Policy Price', 'diff': 'Difference'})
-        st.dataframe(_style_money(ncshow, ['First Net Pay', 'Policy Price', 'Difference'], []),
-                     use_container_width=True, hide_index=True)
-        chart = nc.copy()
-        chart['label'] = chart['driver'].str.slice(0, 18) + ' | ' + chart['trip'].str.slice(0, 20)
-        st.bar_chart(chart.set_index('label')['diff'], color='#f87171', height=300)
+# ============================== TRIP RECONCILIATION ==============================
+elif view == "Trip reconciliation":
+    st.subheader("Trip count reconciliation - First report vs Breakup")
+    rg = agg_by(bk, "region")[["region", "Trips", "revenue"]].rename(
+        columns={"Trips": "Breakup Trips", "revenue": "Breakup Revenue"})
+    if not first_lookup.empty:
+        rg["First Trips"] = rg["region"].map(first_lookup["first_trips"]).fillna(0).astype(int)
+        rg["First Paid"] = rg["region"].map(first_lookup["first_paid"]).fillna(0.0)
     else:
-        st.success('All trips in this state are compliant (First Net Pay meets or exceeds the policy price).')
+        rg["First Trips"] = 0; rg["First Paid"] = 0.0
+    rg["Trip Diff"] = rg["First Trips"] - rg["Breakup Trips"]
+    rg["$ Diff"] = rg["First Paid"] - rg["Breakup Revenue"]
+    rg["Match"] = rg.apply(lambda r: "MATCH" if (r["Trip Diff"] == 0 and abs(r["$ Diff"]) < 0.5) else "CHECK", axis=1)
+    rg = region_order(rg.rename(columns={"Breakup Revenue": "revenue"})).rename(columns={"revenue": "Breakup Revenue"})
+    disp = rg[["region", "First Trips", "Breakup Trips", "Trip Diff",
+               "First Paid", "Breakup Revenue", "$ Diff", "Match"]].copy()
+    disp["First Paid"] = disp["First Paid"].map(money)
+    disp["Breakup Revenue"] = disp["Breakup Revenue"].map(money)
+    disp["$ Diff"] = disp["$ Diff"].map(money)
+    disp = disp.rename(columns={"region": "Region"})
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+    st.caption("A region shows MATCH when the First report and the Breakup sheet "
+               "cover the exact same trips and dollars. CHECK means one source has "
+               "a trip the other does not - treat that region's figure as an "
+               "estimate until the two files line up trip-by-trip.")
+
+# ============================== ARIZONA ==============================
+elif view == "Arizona":
+    st.subheader("Arizona - standalone")
+    az = bk[bk["region_norm"].isin(["arizona", "az"])]
+    if az.empty:
+        st.info("No Arizona rows in the uploaded workbook(s) this week.")
+    else:
+        rev = float(az["revenue"].sum()); pay = float(az["driverpay"].sum())
+        profit = rev - pay; margin = (profit/rev*100) if rev else 0
+        c = st.columns(4)
+        kpi(c[0], "Trips", "{:,}".format(int(az["trips"].sum())))
+        kpi(c[1], "Revenue (First Paid)", money(rev))
+        kpi(c[2], "Driver Pay", money(pay))
+        kpi(c[3], "Profit", money(profit), "{:.1f}% margin".format(margin),
+            "good" if profit >= 0 else "bad")
+        dt = enrich(az.groupby("driver", as_index=False).agg(
+            Trips=("trips", "sum"), revenue=("revenue", "sum"), driverpay=("driverpay", "sum")))
+        dt = dt.sort_values("revenue", ascending=False)
+        st.markdown("#### Arizona - driver detail")
+        st.dataframe(fmt(dt[["driver", "Trips", "revenue", "driverpay", "Profit", "Margin %"]]),
+                     use_container_width=True, hide_index=True)
+        st.caption("Split out of the combined Riverside + Arizona (RS&AZ) file using "
+                   "the Arizona region header in the Breakup sheet.")
+        st.download_button("Download Arizona (Excel)",
+            data=to_excel({"Arizona": fmt(dt[["driver","Trips","revenue","driverpay","Profit","Margin %"]])}),
+            file_name="BT_Arizona.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ============================== NORTH CA ==============================
+elif view == "North CA (analytical)":
+    st.subheader("Northern California - analytical")
+    nca = bk[bk["group"] == "N.CA (Northern California)"]
+    if nca.empty:
+        st.info("No Northern California rows in the uploaded workbook(s) this week.")
+    else:
+        rev = float(nca["revenue"].sum()); pay = float(nca["driverpay"].sum())
+        profit = rev - pay; margin = (profit/rev*100) if rev else 0
+        c = st.columns(4)
+        kpi(c[0], "Trips", "{:,}".format(int(nca["trips"].sum())))
+        kpi(c[1], "Revenue (First Paid)", money(rev))
+        kpi(c[2], "Driver Pay", money(pay))
+        kpi(c[3], "Profit", money(profit), "{:.1f}% margin".format(margin),
+            "good" if profit >= 0 else "bad")
+        area = agg_by(nca, "region")
+        area["_o"] = area["region"].map(lambda x: NCA_AREA_ORDER.index(x) if x in NCA_AREA_ORDER else 99)
+        area = area.sort_values("_o").drop(columns="_o")
+        st.markdown("#### Summary by area")
+        st.dataframe(fmt(metric_cols(area)), use_container_width=True, hide_index=True)
+        st.markdown("#### Profit by area")
+        st.bar_chart(area.set_index("region")[["Profit"]])
+        missing = [a for a in NCA_AREA_ORDER if a not in set(area["region"])]
+        if missing:
+            st.caption("Areas with no trips this week: " + ", ".join(missing) + ".")
+        dd = enrich(nca.groupby(["region", "driver"], as_index=False).agg(
+            Trips=("trips", "sum"), revenue=("revenue", "sum"), driverpay=("driverpay", "sum")))
+        dd["_o"] = dd["region"].map(lambda x: NCA_AREA_ORDER.index(x) if x in NCA_AREA_ORDER else 99)
+        dd = dd.sort_values(["_o", "revenue"], ascending=[True, False]).drop(columns="_o")
+        st.markdown("#### Driver detail (by area)")
+        st.dataframe(fmt(dd[["region", "driver", "Trips", "revenue", "driverpay", "Profit", "Margin %"]]),
+                     use_container_width=True, hide_index=True)
+        st.download_button("Download North CA (Excel)",
+            data=to_excel({"NCA by area": fmt(metric_cols(area)),
+                           "NCA drivers": fmt(dd[["region","driver","Trips","revenue","driverpay","Profit","Margin %"]])}),
+            file_name="BT_NorthCA.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ============================== ALASKA ==============================
+elif view == "Alaska":
+    st.subheader("Alaska")
+    ak = bk[bk["group"] == "Alaska"]
+    if ak.empty:
+        st.info("No Alaska workbook uploaded this week.")
+    else:
+        rev = float(ak["revenue"].sum()); pay = float(ak["driverpay"].sum())
+        profit = rev - pay; margin = (profit/rev*100) if rev else 0
+        c = st.columns(4)
+        kpi(c[0], "Trips", "{:,}".format(int(ak["trips"].sum())))
+        kpi(c[1], "Revenue (First Paid)", money(rev))
+        kpi(c[2], "Driver Pay", money(pay))
+        kpi(c[3], "Profit", money(profit), "{:.1f}% margin".format(margin),
+            "good" if profit >= 0 else "bad")
+        dt = enrich(ak.groupby(["driver", "monitor"], as_index=False).agg(
+            Trips=("trips", "sum"), revenue=("revenue", "sum"), driverpay=("driverpay", "sum")))
+        dt["Monitor"] = dt["monitor"].map(lambda m: "MONITOR" if m else "")
+        dt = dt.sort_values("revenue", ascending=False)
+        st.markdown("#### Alaska - driver detail")
+        st.dataframe(fmt(dt[["driver", "Monitor", "Trips", "revenue", "driverpay", "Profit", "Margin %"]]),
+                     use_container_width=True, hide_index=True)
+        mon = dt[dt["monitor"]]
+        if not mon.empty:
+            st.caption("Monitors (MO) show 0 trips but are still paid "
+                       "({} in driver pay) - they lower the Alaska margin.".format(
+                           money(mon['driverpay'].sum())))
+        st.download_button("Download Alaska (Excel)",
+            data=to_excel({"Alaska": fmt(dt[["driver","Monitor","Trips","revenue","driverpay","Profit","Margin %"]])}),
+            file_name="BT_Alaska.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
