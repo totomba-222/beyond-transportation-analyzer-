@@ -1,27 +1,20 @@
-# Hatem's B.T. Analyzer - Beyond Transportation weekly financial analyzer
-# =============================================================================
-# THREE INPUT SOURCES (uploaded separately in the sidebar):
-#   1) First reports      -> itemized trip report(s) from the First broker
-#                            (per trip: DRIVER NAME ... NET PAY = what First paid)
-#   2) EverDriven reports  -> itemized trip report(s) from the EverDriven broker
-#                            (same idea: driver + amount paid per trip)
-#   3) State workbooks     -> weekly workbook(s) whose "Breakup" sheet holds the
-#                            per-region, per-driver breakdown (trips / revenue /
-#                            driver pay). This is the ONLY source that splits
-#                            Arizona out of Riverside and splits North CA into
-#                            its areas, so region grouping is read from it.
+# Hatem's B.T. Analyzer  -  Beyond Transportation weekly financial analyzer
+# -------------------------------------------------------------------------
+# DATA MODEL (as defined by Hatem):
+#   First report  (SP ITEMIZED REPORT)  -> NET PAY = what First ACTUALLY paid
+#                                           Beyond, per trip  (the cash truth).
+#   State reports (one file per state)   -> per trip:
+#        revenue  = the CONTRACTED price Beyond is supposed to earn
+#        PAY/payment = what Beyond pays the driver for that trip (the policy).
+#   So the pricing policy is taken straight from the state files - no manual
+#   rates to type. The state files also tell us which driver belongs to which
+#   state (grouping is baked into the files: S.CA = Riverside+Arizona,
+#   N.CA = Benicia+Sacramento+San Leandro+Berkeley+Richmond+El Dorado ...).
 #
-# If no dedicated First file is uploaded, the app falls back to the
-# "SP ITEMIZED REPORT" (First) sheet found inside the state workbook(s).
-#
-# DEFINITIONS:
-#   Revenue (booked)  = Breakup revenue column (what Beyond booked for the trip)
-#   Driver Pay        = Breakup payment column (what Beyond pays the driver)
-#   Profit = Revenue - Driver Pay ; Margin = Profit / Revenue
-#   Payer paid        = sum of NET PAY / amount from the broker itemized report
-#   Reconciliation    = broker trips & dollars vs Breakup trips & dollars, per
-#                       region (a 0 difference proves they cover the same trips)
-# =============================================================================
+#   Revenue Gap = Contract Revenue - First Paid   (what First still owes)
+#   Profit      = Contract Revenue - Driver Pay
+#   Margin      = Profit / Contract Revenue
+# -------------------------------------------------------------------------
 import io, re, unicodedata
 import pandas as pd
 import streamlit as st
@@ -41,46 +34,41 @@ h1,h2,h3,h4 { color:#f2f6ff; }
 .kpi .sub { font-size:12px; color:#8aa0c2; margin-top:2px; }
 .good { color:#35d49a; } .bad { color:#ff6b6b; } .warn { color:#ffcf5c; }
 div[data-testid="stDataFrame"] { border-radius:12px; overflow:hidden; }
-section[data-testid="stSidebar"] hr { border-color:#27324a; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------------------- region grouping -----------------------------
-SCA_REGIONS = {"riverside", "riverside ca", "arizona", "az"}
-NCA_REGIONS = {"benicia", "benicia ca", "richmond", "san leandro", "san leandro ca",
-               "berkeley", "el dorado", "sacramento", "sacramento ca"}
-
-def group_of(region_norm):
-    r = region_norm
-    if r in SCA_REGIONS:
-        return "S.CA (Riverside + Arizona)"
-    if r in NCA_REGIONS:
-        return "N.CA (Northern California)"
-    if r in ("new mexico", "nm"):
-        return "New Mexico"
-    if r in ("il", "illinois"):
-        return "Illinois"
-    if r in ("oregon", "or"):
-        return "Oregon"
-    if r in ("alaska", "ak"):
-        return "Alaska"
-    return region_norm.title()
-
-GROUP_ORDER = ["S.CA (Riverside + Arizona)", "N.CA (Northern California)",
-               "New Mexico", "Illinois", "Oregon", "Alaska"]
-NCA_AREA_ORDER = ["Benicia CA", "Richmond", "San Leandro CA", "Berkeley", "El Dorado", "Sacramento"]
-REGION_PREF = ["Riverside CA", "Arizona", "Benicia CA", "Richmond", "San Leandro CA",
-               "Berkeley", "El Dorado", "Sacramento", "New Mexico", "IL", "Oregon", "Alaska"]
-
+# ----------------------------- helpers -----------------------------
 MONITOR_RE = re.compile(r"\((?:M|MO|MON|MONITOR)\)", re.I)
-SKIP_HEADERS = {"sr #", "grand total", "total", ""}
 
-def norm(s):
+SUMMARY_NAMES = {"total", "grand total", "subtotal", "sub total", "sum", "totals", "nan", ""}
+
+STATE_ALIASES = {
+    "SCA":"S.CA","SOUTHCA":"S.CA","SOUTHERNCA":"S.CA","SOUTHCALIFORNIA":"S.CA",
+    "RSAZ":"S.CA","RIVERSIDE":"S.CA","ARIZONA":"S.CA","AZ":"S.CA",
+    "NCA":"N.CA","NORTHCA":"N.CA","NORTHERNCA":"N.CA","NORTHCALIFORNIA":"N.CA",
+    "NORTHCAREPORT":"N.CA","BENICIA":"N.CA","SACRAMENTO":"N.CA","SANLEANDRO":"N.CA",
+    "BERKELEY":"N.CA","RICHMOND":"N.CA","ELDORADO":"N.CA",
+    "IL":"IL","ILLINOIS":"IL","ILREPORT":"IL",
+    "NM":"NM","NEWMEXICO":"NM","ABQ":"NM","ALBUQUERQUE":"NM",
+    "OR":"OR","OREGON":"OR",
+    "AK":"AK","ALASKA":"AK",
+}
+
+def norm_name(s):
     s = unicodedata.normalize("NFKD", str(s)).replace("\u200b", "")
     return re.sub(r"\s+", " ", s).strip().lower()
 
-# ----------------------------- sheet / column finders -----------------------------
-def _find_col(cols, *keys):
+def state_from_filename(name):
+    base = re.sub(r"\.[^.]+$", "", str(name))
+    key = re.sub(r"[^A-Za-z]", "", base).upper()
+    if key in STATE_ALIASES:
+        return STATE_ALIASES[key]
+    for alias, val in STATE_ALIASES.items():
+        if alias in key:
+            return val
+    return (re.sub(r"[_\s]+", " ", base).strip().upper() or "STATE")
+
+def find_col(cols, *keys):
     low = {re.sub(r"\s+", "", str(c)).lower(): c for c in cols}
     for k in keys:
         kk = re.sub(r"\s+", "", k).lower()
@@ -93,408 +81,368 @@ def _find_col(cols, *keys):
                 return orig
     return None
 
-def _find_sheet(xl, *needles):
-    for sh in xl.sheet_names:
-        low = sh.strip().lower()
-        if any(n in low for n in needles):
-            return sh
-    return None
-
-# ----------------------------- readers -----------------------------
-@st.cache_data(show_spinner=False)
-def read_breakup(file_bytes, fname):
-    """Read the master Breakup sheet -> per-region, per-driver rows."""
-    xl = pd.ExcelFile(io.BytesIO(file_bytes))
-    sh = _find_sheet(xl, "breakup")
-    cols = ["region","region_norm","group","driver","monitor","trips","revenue","driverpay","source"]
-    if sh is None:
-        return pd.DataFrame(columns=cols)
-    df = xl.parse(sh, header=None)
-    rows, region = [], None
-    for _, r in df.iterrows():
-        c0, c1, c2, c3, c4 = r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)
-        if isinstance(c0, str) and c0.strip() and pd.isna(c1) and norm(c0) not in SKIP_HEADERS:
-            region = c0.strip()
-            continue
-        if pd.notna(c0) and pd.notna(c1) and str(c0).strip().replace(".", "").isdigit():
-            name = str(c1).strip()
-            if norm(name) in SKIP_HEADERS:
-                continue
-            rows.append(dict(region=region or "Unknown", driver=name,
-                monitor=bool(MONITOR_RE.search(name)),
-                trips=pd.to_numeric(c2, errors="coerce"),
-                revenue=pd.to_numeric(c3, errors="coerce"),
-                driverpay=pd.to_numeric(c4, errors="coerce")))
-    out = pd.DataFrame(rows)
-    if out.empty:
-        return pd.DataFrame(columns=cols)
-    for c in ["trips", "revenue", "driverpay"]:
-        out[c] = out[c].fillna(0.0)
-    out["region_norm"] = out["region"].map(norm)
-    out["group"] = out["region_norm"].map(group_of)
-    out["source"] = fname
-    return out[cols]
-
-DRIVER_KEYS = ("DRIVER NAME", "DRIVER", "NAME")
-AMOUNT_KEYS = ("NET PAY", "NETPAY", "AMOUNT PAID", "TOTAL PAY", "AMOUNT", "PAID",
-               "PAYMENT", "REVENUE", "FARE", "TOTAL")
-TRIP_KEYS   = ("TRIP NAME", "TRIP ID", "TRIP #", "TRIP", "TRIPS", "RUN")
-
-@st.cache_data(show_spinner=False)
-def read_itemized(file_bytes, fname, payer):
-    """Generic broker itemized reader (First / EverDriven). Scans the sheets,
-    prefers one whose name contains 'itemized', and picks the first sheet that
-    exposes a driver column + an amount column. Returns trip-level rows."""
-    xl = pd.ExcelFile(io.BytesIO(file_bytes))
-    cols = ["driver","driver_key","amount","trip","payer","source"]
-    order = ([s for s in xl.sheet_names if "itemized" in s.lower()] +
-             [s for s in xl.sheet_names if "itemized" not in s.lower()])
-    for sh in order:
-        try:
-            df = xl.parse(sh)
-        except Exception:
-            continue
-        df.columns = [str(c).strip() for c in df.columns]
-        dn = _find_col(df.columns, *DRIVER_KEYS)
-        amt = _find_col(df.columns, *AMOUNT_KEYS)
-        if not (dn and amt):
-            continue
-        tn = _find_col(df.columns, *TRIP_KEYS)
-        out = pd.DataFrame({
-            "driver": df[dn].astype(str).str.strip(),
-            "amount": pd.to_numeric(df[amt], errors="coerce"),
-            "trip": df[tn].astype(str) if tn else "",
-        })
-        out = out[out["driver"].notna() & out["driver"].ne("") & out["driver"].ne("nan")]
-        out = out.dropna(subset=["amount"])
-        out = out[out["driver"].map(norm).isin(("total", "grand total")) == False]
-        if out.empty:
-            continue
-        out["driver_key"] = out["driver"].map(norm)
-        out["payer"] = payer
-        out["source"] = fname
-        return out[cols]
-    return pd.DataFrame(columns=cols)
-
-# ----------------------------- analytics -----------------------------
-def enrich(g):
-    g = g.copy()
-    g["Profit"] = g["revenue"] - g["driverpay"]
-    g["Margin %"] = g.apply(lambda r: round(r["Profit"]/r["revenue"]*100, 1) if r["revenue"] else 0.0, axis=1)
-    return g
-
-def agg_by(df, key):
-    g = df.groupby(key, as_index=False).agg(
-        Drivers=("driver", "nunique"), Trips=("trips", "sum"),
-        revenue=("revenue", "sum"), driverpay=("driverpay", "sum"))
-    return enrich(g)
-
-def driver_region_map(bk):
-    dmap = {}
-    for _, r in bk.iterrows():
-        dmap.setdefault(norm(r["driver"]), r["region"])
-    return dmap
-
-def itemized_by_region(it_payer, bk):
-    """Map one payer's itemized rows to Breakup regions; per-region trips+paid.
-    Returns (per_region_df, unmatched_df)."""
-    dmap = driver_region_map(bk)
-    f = it_payer.copy()
-    f["region"] = f["driver_key"].map(dmap)
-    matched = f[f["region"].notna()]
-    g = matched.groupby("region", as_index=False).agg(
-        trips=("amount", "size"), paid=("amount", "sum"))
-    return g, f[f["region"].isna()]
-
 def money(x):
     try:
-        return "${:,.0f}".format(x)
+        return f"${x:,.0f}"
     except Exception:
         return "-"
 
-RENAME = {"region": "Region", "group": "Operating Group", "driver": "Driver",
-          "revenue": "Revenue (booked)", "driverpay": "Driver Pay",
-          "trips": "Trips", "paid": "Paid"}
-MONEY_COLS = ["Revenue (booked)", "Driver Pay", "Profit", "First Paid",
-              "EverDriven Paid", "Paid", "Booked Revenue", "$ Diff"]
+# ----------------------------- readers -----------------------------
+def _clean_driver(df):
+    df = df[df["driver"].ne("")]
+    df = df[df["driver"].ne("nan")]
+    return df
 
-def fmt(df):
-    out = df.rename(columns=RENAME).copy()
-    for c in MONEY_COLS:
-        if c in out.columns:
-            out[c] = out[c].map(money)
-    if "Margin %" in out.columns:
-        out["Margin %"] = out["Margin %"].map(lambda v: "{:.1f}%".format(v))
-    return out
+@st.cache_data(show_spinner=False)
+def read_first(file_bytes, fname):
+    """Read a First report (SP ITEMIZED). Returns per-trip df:
+       driver, driver_disp, net (First paid), trip, miles, monitor."""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    best = None
+    for sh in xl.sheet_names:
+        df = xl.parse(sh)
+        df.columns = [str(c).strip() for c in df.columns]
+        dn = find_col(df.columns, "DRIVER NAME", "DRIVER")
+        npc = find_col(df.columns, "NET PAY", "NETPAY")
+        if not (dn and npc):
+            continue
+        tn = find_col(df.columns, "TRIP NAME", "TRIP")
+        mi = find_col(df.columns, "TOTAL MILES", "MILES")
+        out = pd.DataFrame({
+            "driver": df[dn].map(norm_name),
+            "driver_disp": df[dn].astype(str).str.strip(),
+            "net": pd.to_numeric(df[npc], errors="coerce"),
+            "trip": df[tn].astype(str) if tn else "",
+            "miles": pd.to_numeric(df[mi], errors="coerce") if mi else 0,
+        })
+        out = out.dropna(subset=["net"])
+        out = _clean_driver(out)
+        if best is None or len(out) > len(best):
+            best = out
+    if best is None:
+        return pd.DataFrame(columns=["driver", "driver_disp", "net", "trip", "miles", "monitor"])
+    best = best.copy()
+    best["monitor"] = best["trip"].astype(str).apply(lambda t: bool(MONITOR_RE.search(t)))
+    best["source"] = fname
+    return best
+
+@st.cache_data(show_spinner=False)
+def read_state(file_bytes, fname):
+    """Read a state reference file. Returns (state_code, per-trip df:
+       driver, driver_disp, contract, driverpay, state)."""
+    xl = pd.ExcelFile(io.BytesIO(file_bytes))
+    best = None
+    for sh in xl.sheet_names:
+        df = xl.parse(sh)
+        df.columns = [str(c).strip() for c in df.columns]
+        dn = find_col(df.columns, "DRIVER NAME", "DRIVER")
+        rc = find_col(df.columns, "revenue")
+        pc = find_col(df.columns, "PAY", "payment")
+        if not (dn and rc and pc):
+            continue
+        out = pd.DataFrame({
+            "driver": df[dn].map(norm_name),
+            "driver_disp": df[dn].astype(str).str.strip(),
+            "contract": pd.to_numeric(df[rc], errors="coerce"),
+            "driverpay": pd.to_numeric(df[pc], errors="coerce"),
+        }).dropna(subset=["driver"])
+        out = _clean_driver(out)
+        out = out[~out["driver"].isin(SUMMARY_NAMES)]
+        out = out.dropna(subset=["contract", "driverpay"], how="all")
+        if best is None or len(out) > len(best):
+            best = out
+    code = state_from_filename(fname)
+    if best is None:
+        best = pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay"])
+    best = best.copy()
+    best["contract"] = best["contract"].fillna(0.0)
+    best["driverpay"] = best["driverpay"].fillna(0.0)
+    best["state"] = code
+    return code, best
+
+# ----------------------------- analytics -----------------------------
+def classify(first_df, state_df):
+    dmap = {}
+    for _, r in state_df.iterrows():
+        dmap.setdefault(r["driver"], r["state"])
+    first_df = first_df.copy()
+    first_df["state"] = first_df["driver"].map(dmap).fillna("Unassigned")
+    return first_df
+
+def state_totals(first_df, state_df, code):
+    f = first_df[first_df["state"] == code]
+    s = state_df[state_df["state"] == code]
+    runs = int((~f["monitor"]).sum()) if len(f) else 0
+    first_paid = float(f["net"].sum())
+    contract = float(s["contract"].sum())
+    driverpay = float(s["driverpay"].sum())
+    gap = contract - first_paid
+    profit = contract - driverpay
+    margin = (profit / contract * 100.0) if contract else 0.0
+    return {
+        "State": code, "First Trips": runs, "State Trips": int(len(s)),
+        "First Paid": first_paid,
+        "Contract Revenue": contract, "Revenue Gap": gap,
+        "Driver Pay": driverpay, "Profit": profit, "Margin %": round(margin, 1),
+    }
+
+def trips_comparison(first_df, state_df):
+    """Per-state trip-count comparison: how many trips each state price file
+    lists vs how many trips the First report has for those same drivers."""
+    rows = []
+    for code in state_df["state"].dropna().unique():
+        s = state_df[state_df["state"] == code]
+        drivers = set(s["driver"].unique())
+        f = first_df[first_df["driver"].isin(drivers)]
+        matched = sum(1 for d in drivers if d in set(first_df["driver"]))
+        rows.append({
+            "State": code,
+            "Price-File Trips": int(len(s)),
+            "First Trips": int(len(f)),
+            "Trip Difference": int(len(s) - len(f)),
+            "Price Drivers": len(drivers),
+            "Matched Drivers": matched,
+            "Unmatched Drivers": len(drivers) - matched,
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        tot = {"State": "TOTAL",
+               "Price-File Trips": int(df["Price-File Trips"].sum()),
+               "First Trips": int(df["First Trips"].sum()),
+               "Trip Difference": int(df["Trip Difference"].sum()),
+               "Price Drivers": int(df["Price Drivers"].sum()),
+               "Matched Drivers": int(df["Matched Drivers"].sum()),
+               "Unmatched Drivers": int(df["Unmatched Drivers"].sum())}
+        df = pd.concat([df, pd.DataFrame([tot])], ignore_index=True)
+    return df
+
+
+def driver_table(first_df, state_df, code):
+    f = first_df[first_df["state"] == code]
+    fg = f.groupby(["driver", "driver_disp"]).agg(
+        Runs=("monitor", lambda m: int((~m).sum())),
+        **{"First Paid": ("net", "sum")}
+    ).reset_index()
+    s = state_df[state_df["state"] == code]
+    sg = s.groupby("driver").agg(
+        **{"Contract Revenue": ("contract", "sum"), "Driver Pay": ("driverpay", "sum")}
+    ).reset_index()
+    t = fg.merge(sg, on="driver", how="outer")
+    t["driver_disp"] = t["driver_disp"].fillna(t["driver"].str.title())
+    for c in ["Runs", "First Paid", "Contract Revenue", "Driver Pay"]:
+        t[c] = pd.to_numeric(t.get(c), errors="coerce").fillna(0.0)
+    t["Revenue Gap"] = t["Contract Revenue"] - t["First Paid"]
+    t["Profit"] = t["Contract Revenue"] - t["Driver Pay"]
+    t["Margin %"] = t.apply(
+        lambda r: round(r["Profit"] / r["Contract Revenue"] * 100, 1) if r["Contract Revenue"] else 0.0,
+        axis=1,
+    )
+    # non-compliant = Beyond loses money on the driver (First paid below driver pay)
+    t["Flag"] = ""
+    nofirst = (t["First Paid"].le(0)) & (t["Contract Revenue"].gt(0))
+    nocontract = (t["Contract Revenue"].le(0)) & (t["First Paid"].gt(0))
+    loss = (t["First Paid"].lt(t["Driver Pay"])) & (t["First Paid"].gt(0))
+    t.loc[loss, "Flag"] = "LOSS"
+    t.loc[nocontract, "Flag"] = "NO CONTRACT"
+    t.loc[nofirst, "Flag"] = "NO FIRST MATCH"
+    t = t.rename(columns={"driver_disp": "Driver"})
+    cols = ["Driver", "Runs", "First Paid", "Contract Revenue", "Revenue Gap",
+            "Driver Pay", "Profit", "Margin %", "Flag"]
+    return t[cols].sort_values("Contract Revenue", ascending=False).reset_index(drop=True)
 
 def to_excel(frames):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in frames.items():
-            df.to_excel(xw, sheet_name=str(name)[:31], index=False)
+            df.to_excel(xw, sheet_name=name[:31], index=False)
     return buf.getvalue()
-XLMIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+# ----------------------------- UI -----------------------------
 def kpi(col, label, value, sub="", cls=""):
     col.markdown(
-        '<div class="kpi"><div class="lbl">{}</div>'
-        '<div class="val {}">{}</div>'
-        '<div class="sub">{}</div></div>'.format(label, cls, value, sub),
-        unsafe_allow_html=True)
+        f'<div class="kpi"><div class="lbl">{label}</div>'
+        f'<div class="val {cls}">{value}</div>'
+        f'<div class="sub">{sub}</div></div>',
+        unsafe_allow_html=True,
+    )
 
-def region_order(df):
-    df = df.copy()
-    df["_o"] = df["region"].map(lambda x: REGION_PREF.index(x) if x in REGION_PREF else 99)
-    return df.sort_values(["_o", "revenue"], ascending=[True, False]).drop(columns="_o") \
-        if "revenue" in df.columns else df.sort_values("_o").drop(columns="_o")
-
-def metric_cols(g):
-    return g[[c for c in ["region", "group", "driver", "Drivers", "Trips",
-             "revenue", "driverpay", "Profit", "Margin %"] if c in g.columns]]
-
-# ----------------------------- UI: upload -----------------------------
-st.title("Hatem's B.T. Analyzer  \u2014  v2 (3 upload boxes)")
-st.caption("Beyond Transportation - upload First reports, EverDriven reports and "
-           "the state workbooks, then open a consolidated report per payer, a "
-           "state-by-state view, and the trip reconciliation.")
-st.success("NEW LAYOUT v2 \u00b7 3 separate upload boxes (First / EverDriven / "
-           "State workbooks) in the left sidebar \u00b7 per-state buttons \u00b7 "
-           "3 consolidated reports. If you still see one upload box, you are "
-           "running the OLD file.")
+st.title("Hatem's B.T. Analyzer")
+st.caption("Beyond Transportation - weekly state profit, revenue gap and compliance")
 
 with st.sidebar:
-    st.header("1) First reports")
-    first_files = st.file_uploader("First itemized report file(s).",
+    st.header("1) First report(s)")
+    first_files = st.file_uploader(
+        "First / SP ITEMIZED reports (NET PAY = what First paid)",
         type=["xlsx", "xls"], accept_multiple_files=True, key="first")
-    st.markdown("---")
-    st.header("2) EverDriven reports")
-    ed_files = st.file_uploader("EverDriven itemized report file(s).",
-        type=["xlsx", "xls"], accept_multiple_files=True, key="ed")
-    st.markdown("---")
-    st.header("3) State workbooks")
-    state_files = st.file_uploader("Weekly state workbook(s) with the 'Breakup' sheet.",
-        type=["xlsx", "xls"], accept_multiple_files=True, key="states")
-    st.markdown("---")
+    st.header("2) State price references")
+    state_files = st.file_uploader(
+        "One file per state (revenue = contract, PAY = driver payment)",
+        type=["xlsx", "xls"], accept_multiple_files=True, key="state")
 
-def _concat(frames, cols=None):
-    frames = [f for f in frames if f is not None and not f.empty]
-    if frames:
-        return pd.concat(frames, ignore_index=True)
-    return pd.DataFrame(columns=cols) if cols else pd.DataFrame()
-
-if not (first_files or ed_files or state_files):
-    st.info("Upload at least one file. Put First reports in box 1, EverDriven "
-            "reports in box 2, and the weekly state workbook(s) (with the "
-            "'Breakup' sheet) in box 3. If you skip box 1, the app reads the "
-            "First 'SP ITEMIZED REPORT' sheet from the state workbook instead.")
+if not first_files:
+    st.info("Upload at least one First report to begin. Add the state price "
+            "reference files to unlock contract revenue, the revenue gap and profit.")
     st.stop()
 
-bk = _concat([read_breakup(f.getvalue(), f.name) for f in (state_files or [])])
-first_it = _concat([read_itemized(f.getvalue(), f.name, "First") for f in (first_files or [])])
-if first_it.empty and state_files:  # fallback: First itemized sheet inside the state workbook
-    first_it = _concat([read_itemized(f.getvalue(), f.name, "First") for f in state_files])
-ed_it = _concat([read_itemized(f.getvalue(), f.name, "EverDriven") for f in (ed_files or [])])
-it = _concat([first_it, ed_it])
+first_all = pd.concat([read_first(f.getvalue(), f.name) for f in first_files], ignore_index=True)
 
-# build navigation dynamically
-views = []
-if not first_it.empty: views.append("First - consolidated")
-if not ed_it.empty: views.append("EverDriven - consolidated")
-if not bk.empty:
-    views.append("States - consolidated")
-    present_groups = [g for g in GROUP_ORDER if g in set(bk["group"])]
-    present_groups += [g for g in bk["group"].unique() if g not in present_groups]
-    views += ["State: " + g for g in present_groups]
-    if bk["region_norm"].isin(["arizona", "az"]).any():
-        views.append("Arizona (standalone)")
-    views.append("Trip reconciliation")
-if not views:
-    st.error("Could not read any usable data. First/EverDriven files need a "
-             "driver + amount column; state workbooks need a 'Breakup' sheet.")
-    st.stop()
+state_frames, state_codes = [], []
+if state_files:
+    for f in state_files:
+        code, sdf = read_state(f.getvalue(), f.name)
+        state_frames.append(sdf)
+        if code not in state_codes:
+            state_codes.append(code)
+state_all = (pd.concat(state_frames, ignore_index=True)
+             if state_frames else
+             pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay", "state"]))
 
-view = st.sidebar.radio("Open report", views)
+first_all = classify(first_all, state_all)
+present_codes = state_codes + [c for c in first_all["state"].unique()
+                               if c not in state_codes and c != "Unassigned"]
+if (first_all["state"] == "Unassigned").any():
+    present_codes = present_codes + ["Unassigned"]
 
-# ============================== PAYER CONSOLIDATED ==============================
-def payer_report(it_payer, payer):
-    st.subheader(payer + " - consolidated report")
-    tot_trips = int(len(it_payer)); tot_paid = float(it_payer["amount"].sum())
-    drivers = int(it_payer["driver_key"].nunique())
+summary = pd.DataFrame([state_totals(first_all, state_all, c)
+                        for c in present_codes if c != "Unassigned"])
+
+view = st.sidebar.radio("View", ["Consolidated Report", "Trips Comparison"] + present_codes)
+
+# ----------------------------- rendering -----------------------------
+def fmt_money_cols(df, cols):
+    out = df.copy()
+    for c in cols:
+        if c in out.columns:
+            out[c] = out[c].map(money)
+    return out
+
+MONEY_COLS = ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit"]
+
+if view == "Consolidated Report":
+    st.subheader("Consolidated Report - all states")
+    tot_runs = int((~first_all["monitor"]).sum())
+    tot_first = float(first_all["net"].sum())
+    tot_contract = float(state_all["contract"].sum())
+    tot_pay = float(state_all["driverpay"].sum())
+    tot_gap = tot_contract - tot_first
+    tot_profit = tot_contract - tot_pay
+    tot_margin = (tot_profit / tot_contract * 100) if tot_contract else 0
+
     c = st.columns(4)
-    kpi(c[0], "Trips (lines)", "{:,}".format(tot_trips))
-    kpi(c[1], payer + " Paid", money(tot_paid), "total amount from the report")
-    kpi(c[2], "Drivers", "{:,}".format(drivers))
-    kpi(c[3], "Avg / trip", money(tot_paid / tot_trips) if tot_trips else "-")
-    frames = {}
-    if not bk.empty:
-        reg, unm = itemized_by_region(it_payer, bk)
-        if not reg.empty:
-            reg["group"] = reg["region"].map(lambda x: group_of(norm(x)))
-            reg = region_order(reg)
-            st.markdown("#### " + payer + " paid by region")
-            disp = reg.rename(columns={"trips": "Trips", "paid": "Paid", "region": "Region", "group": "Operating Group"}).copy()
-            disp["Paid"] = disp["Paid"].map(money)
-            st.dataframe(disp, use_container_width=True, hide_index=True)
-            st.bar_chart(reg.set_index("region")[["paid"]])
-            frames[payer + " by region"] = disp
-        if not unm.empty:
-            st.warning("{:,} {} line(s) ({} ) are for drivers not found in any "
-                "Breakup region - usually a name-spelling difference.".format(
-                    len(unm), payer, money(unm["amount"].sum())))
-    dd = it_payer.groupby("driver", as_index=False).agg(
-        Trips=("amount", "size"), Paid=("amount", "sum")).sort_values("Paid", ascending=False)
-    st.markdown("#### " + payer + " - by driver")
-    dddisp = dd.rename(columns={"driver": "Driver"}).copy(); dddisp["Paid"] = dddisp["Paid"].map(money)
-    st.dataframe(dddisp, use_container_width=True, hide_index=True)
-    frames[payer + " by driver"] = dddisp
-    st.download_button("Download " + payer + " (Excel)", data=to_excel(frames),
-        file_name="BT_" + payer + ".xlsx", mime=XLMIME)
-
-if view == "First - consolidated":
-    payer_report(first_it, "First")
-
-elif view == "EverDriven - consolidated":
-    payer_report(ed_it, "EverDriven")
-
-# ============================== STATES CONSOLIDATED ==============================
-elif view == "States - consolidated":
-    st.subheader("States - consolidated profit")
-    tot_trips = int(bk["trips"].sum()); tot_rev = float(bk["revenue"].sum())
-    tot_pay = float(bk["driverpay"].sum()); tot_profit = tot_rev - tot_pay
-    tot_margin = (tot_profit / tot_rev * 100) if tot_rev else 0
+    kpi(c[0], "Total Trips", f"{tot_runs:,}")
+    kpi(c[1], "First Paid", money(tot_first), "cash received from First")
+    kpi(c[2], "Contract Revenue", money(tot_contract), "what Beyond should earn")
+    kpi(c[3], "Revenue Gap", money(tot_gap),
+        "owed by First" if tot_gap >= 0 else "overpaid", "bad" if tot_gap > 0 else "good")
     c = st.columns(4)
-    kpi(c[0], "Total Trips", "{:,}".format(tot_trips))
-    kpi(c[1], "Revenue (booked)", money(tot_rev))
-    kpi(c[2], "Driver Pay", money(tot_pay))
-    kpi(c[3], "Profit", money(tot_profit), "{:.1f}% margin".format(tot_margin),
-        "good" if tot_profit >= 0 else "bad")
-    gg = agg_by(bk, "group")
-    gg["_o"] = gg["group"].map(lambda x: GROUP_ORDER.index(x) if x in GROUP_ORDER else 99)
-    gg = gg.sort_values("_o").drop(columns="_o")
-    st.markdown("#### Summary by operating group")
-    st.dataframe(fmt(metric_cols(gg)), use_container_width=True, hide_index=True)
-    st.markdown("#### Revenue vs driver pay by group")
-    st.bar_chart(gg.set_index("group")[["revenue", "driverpay"]])
-    st.markdown("#### Profit by group")
-    st.bar_chart(gg.set_index("group")[["Profit"]])
-    rg = region_order(agg_by(bk, "region"))
-    st.markdown("#### Summary by region")
-    st.dataframe(fmt(metric_cols(rg)), use_container_width=True, hide_index=True)
-    st.download_button("Download States (Excel)",
-        data=to_excel({"By group": fmt(metric_cols(gg)), "By region": fmt(metric_cols(rg))}),
-        file_name="BT_States_consolidated.xlsx", mime=XLMIME)
+    kpi(c[0], "Driver Pay", money(tot_pay))
+    kpi(c[1], "Profit", money(tot_profit), cls="good" if tot_profit >= 0 else "bad")
+    kpi(c[2], "Margin", f"{tot_margin:.1f}%")
+    kpi(c[3], "States", f"{len(summary)}")
 
-# ============================== ARIZONA STANDALONE ==============================
-elif view == "Arizona (standalone)":
-    st.subheader("Arizona - standalone")
-    az = bk[bk["region_norm"].isin(["arizona", "az"])]
-    rev = float(az["revenue"].sum()); pay = float(az["driverpay"].sum())
-    profit = rev - pay; margin = (profit/rev*100) if rev else 0
+    if not summary.empty:
+        st.markdown("#### Per-state summary")
+        st.dataframe(fmt_money_cols(summary, MONEY_COLS), use_container_width=True, hide_index=True)
+        st.caption("Revenue Gap = Contract Revenue - First Paid. Compare 'First Trips' "
+                   "vs 'State Trips': if they differ for a state, that gap is an estimate "
+                   "(the two files don't cover the exact same trips yet).")
+        chart = summary.set_index("State")[["First Paid", "Contract Revenue"]]
+        st.markdown("#### First paid vs contract revenue by state")
+        st.bar_chart(chart)
+        st.markdown("#### Revenue gap by state (what First still owes)")
+        st.bar_chart(summary.set_index("State")[["Revenue Gap"]])
+        st.download_button(
+            "Download Excel report",
+            data=to_excel({"Consolidated": summary}),
+            file_name="BT_consolidated.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    un = first_all[first_all["state"] == "Unassigned"]
+    if len(un):
+        st.warning(f"{len(un):,} trips ({money(un['net'].sum())} First paid) belong to drivers "
+                   f"not found in any uploaded state file. Upload those state price references "
+                   f"to classify them (e.g. NM, OR, Alaska).")
+
+elif view == "Trips Comparison":
+    st.subheader("Trips Comparison - price files vs First report")
+    st.caption("For each state this counts the trips listed in the price file "
+               "and the trips the First report holds for the SAME drivers. A "
+               "non-zero 'Trip Difference' means the two files don't yet cover "
+               "the exact same trips, so the revenue gap for that state is an "
+               "estimate. 'Unmatched Drivers' are in the price file but have no "
+               "matching name in First (often a spelling difference).")
+    cmp = trips_comparison(first_all, state_all)
+    if cmp.empty:
+        st.info("Upload the state price reference files to build the comparison.")
+    else:
+        tot = cmp[cmp["State"] == "TOTAL"].iloc[0]
+        c = st.columns(4)
+        kpi(c[0], "Price-File Trips", f"{int(tot['Price-File Trips']):,}")
+        kpi(c[1], "First Trips", f"{int(tot['First Trips']):,}")
+        kpi(c[2], "Trip Difference", f"{int(tot['Trip Difference']):,}",
+            "extra trips in price files", "warn" if tot['Trip Difference'] else "good")
+        kpi(c[3], "Unmatched Drivers", f"{int(tot['Unmatched Drivers']):,}",
+            "no First name match", "bad" if tot['Unmatched Drivers'] else "good")
+        st.dataframe(cmp, use_container_width=True, hide_index=True)
+        chart = cmp[cmp["State"] != "TOTAL"].set_index("State")[["Price-File Trips", "First Trips"]]
+        st.markdown("#### Trip counts by state")
+        st.bar_chart(chart)
+        st.download_button(
+            "Download trips comparison (Excel)",
+            data=to_excel({"Trips Comparison": cmp}),
+            file_name="BT_trips_comparison.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+else:
+    code = view
+    st.subheader(f"{code} - state report")
+    row = state_totals(first_all, state_all, code)
     c = st.columns(4)
-    kpi(c[0], "Trips", "{:,}".format(int(az["trips"].sum())))
-    kpi(c[1], "Revenue (booked)", money(rev))
-    kpi(c[2], "Driver Pay", money(pay))
-    kpi(c[3], "Profit", money(profit), "{:.1f}% margin".format(margin),
-        "good" if profit >= 0 else "bad")
-    dt = enrich(az.groupby("driver", as_index=False).agg(
-        Trips=("trips", "sum"), revenue=("revenue", "sum"), driverpay=("driverpay", "sum"))) \
-        .sort_values("revenue", ascending=False)
-    st.markdown("#### Arizona - driver detail")
-    st.dataframe(fmt(dt[["driver", "Trips", "revenue", "driverpay", "Profit", "Margin %"]]),
-                 use_container_width=True, hide_index=True)
-    st.caption("Split out of the combined Riverside + Arizona file using the "
-               "Arizona region header in the Breakup sheet.")
-    st.download_button("Download Arizona (Excel)",
-        data=to_excel({"Arizona": fmt(dt[["driver","Trips","revenue","driverpay","Profit","Margin %"]])}),
-        file_name="BT_Arizona.xlsx", mime=XLMIME)
+    kpi(c[0], "Trips", f"{row['First Trips']:,}")
+    kpi(c[1], "First Paid", money(row["First Paid"]))
+    kpi(c[2], "Contract Revenue", money(row["Contract Revenue"]))
+    kpi(c[3], "Revenue Gap", money(row["Revenue Gap"]),
+        "owed by First" if row["Revenue Gap"] >= 0 else "overpaid",
+        "bad" if row["Revenue Gap"] > 0 else "good")
+    c = st.columns(3)
+    kpi(c[0], "Driver Pay", money(row["Driver Pay"]))
+    kpi(c[1], "Profit", money(row["Profit"]), cls="good" if row["Profit"] >= 0 else "bad")
+    kpi(c[2], "Margin", f"{row['Margin %']}%")
 
-# ============================== PER-STATE VIEW ==============================
-elif view.startswith("State: "):
-    grp = view[len("State: "):]
-    sub = bk[bk["group"] == grp]
-    st.subheader(grp)
-    rev = float(sub["revenue"].sum()); pay = float(sub["driverpay"].sum())
-    profit = rev - pay; margin = (profit/rev*100) if rev else 0
-    c = st.columns(4)
-    kpi(c[0], "Trips", "{:,}".format(int(sub["trips"].sum())))
-    kpi(c[1], "Revenue (booked)", money(rev))
-    kpi(c[2], "Driver Pay", money(pay))
-    kpi(c[3], "Profit", money(profit), "{:.1f}% margin".format(margin),
-        "good" if profit >= 0 else "bad")
-    # region / area breakdown when the state has more than one region
-    if sub["region"].nunique() > 1:
-        area = agg_by(sub, "region")
-        if grp == "N.CA (Northern California)":
-            area["_o"] = area["region"].map(lambda x: NCA_AREA_ORDER.index(x) if x in NCA_AREA_ORDER else 99)
-            area = area.sort_values("_o").drop(columns="_o")
-        else:
-            area = region_order(area)
-        st.markdown("#### By region / area")
-        st.dataframe(fmt(metric_cols(area)), use_container_width=True, hide_index=True)
-        st.bar_chart(area.set_index("region")[["Profit"]])
-        if grp == "N.CA (Northern California)":
-            miss = [a for a in NCA_AREA_ORDER if a not in set(area["region"])]
-            if miss:
-                st.caption("Areas with no trips this week: " + ", ".join(miss) + ".")
-    # driver detail (flag monitors)
-    dd = enrich(sub.groupby(["region", "driver", "monitor"], as_index=False).agg(
-        Trips=("trips", "sum"), revenue=("revenue", "sum"), driverpay=("driverpay", "sum")))
-    dd["Monitor"] = dd["monitor"].map(lambda m: "MONITOR" if m else "")
-    dd = dd.sort_values(["region", "revenue"], ascending=[True, False])
-    st.markdown("#### Driver detail")
-    st.dataframe(fmt(dd[["region", "driver", "Monitor", "Trips", "revenue", "driverpay", "Profit", "Margin %"]]),
-                 use_container_width=True, hide_index=True)
-    mon = dd[dd["monitor"]]
-    if not mon.empty:
-        st.caption("Monitors (MO) show 0 trips but are still paid ({} in driver "
-                   "pay) - they lower this state's margin.".format(money(mon["driverpay"].sum())))
-    # payer cross-check for this state's regions
-    regions_here = set(sub["region"])
-    rows = []
-    for payer, src in (("First", first_it), ("EverDriven", ed_it)):
-        if src.empty:
-            continue
-        reg, _ = itemized_by_region(src, bk)
-        here = reg[reg["region"].isin(regions_here)]
-        if not here.empty:
-            rows.append((payer, int(here["trips"].sum()), float(here["paid"].sum())))
-    if rows:
-        st.markdown("#### Payer cross-check (this state)")
-        pc = pd.DataFrame(rows, columns=["Payer", "Trips", "Paid"])
-        pc["Paid"] = pc["Paid"].map(money)
-        st.dataframe(pc, use_container_width=True, hide_index=True)
-    st.download_button("Download " + grp + " (Excel)",
-        data=to_excel({"Drivers": fmt(dd[["region","driver","Monitor","Trips","revenue","driverpay","Profit","Margin %"]])}),
-        file_name="BT_" + re.sub(r"[^A-Za-z0-9]+", "_", grp) + ".xlsx", mime=XLMIME)
+    st_rows = int(row["State Trips"])
+    if code != "Unassigned" and st_rows:
+        delta = st_rows - int(row["First Trips"])
+        if delta != 0:
+            st.warning(
+                f"Reconciliation check: the {code} price file lists {st_rows} trips, "
+                f"but the First report has {int(row['First Trips'])} trips for {code}. "
+                f"That {abs(delta)}-trip difference means this gap is NOT trip-by-trip "
+                f"verified - it mixes real price differences with trips that exist in "
+                f"one file but not the other. Treat the gap as an estimate until the "
+                f"two files cover the exact same trips.")
 
-# ============================== TRIP RECONCILIATION ==============================
-elif view == "Trip reconciliation":
-    st.subheader("Trip reconciliation - payers vs Breakup")
-    rg = agg_by(bk, "region")[["region", "Trips", "revenue"]].rename(
-        columns={"Trips": "Breakup Trips", "revenue": "Booked Revenue"})
-    if not first_it.empty:
-        fr, _ = itemized_by_region(first_it, bk); fl = fr.set_index("region")
-        rg["First Trips"] = rg["region"].map(fl["trips"]).fillna(0).astype(int)
-        rg["First Paid"] = rg["region"].map(fl["paid"]).fillna(0.0)
-    if not ed_it.empty:
-        er, _ = itemized_by_region(ed_it, bk); el = er.set_index("region")
-        rg["EverDriven Trips"] = rg["region"].map(el["trips"]).fillna(0).astype(int)
-        rg["EverDriven Paid"] = rg["region"].map(el["paid"]).fillna(0.0)
-    if "First Trips" in rg.columns:
-        rg["Trip Diff"] = rg["First Trips"] - rg["Breakup Trips"]
-        rg["$ Diff"] = rg["First Paid"] - rg["Booked Revenue"]
-        rg["Match"] = rg.apply(lambda r: "MATCH" if (r["Trip Diff"] == 0 and abs(r["$ Diff"]) < 0.5) else "CHECK", axis=1)
-    rg = region_order(rg.rename(columns={"Booked Revenue": "revenue"})).rename(columns={"revenue": "Booked Revenue"})
-    order = ["region", "First Trips", "EverDriven Trips", "Breakup Trips", "Trip Diff",
-             "First Paid", "EverDriven Paid", "Booked Revenue", "$ Diff", "Match"]
-    disp = rg[[c for c in order if c in rg.columns]].copy()
-    for c in ["First Paid", "EverDriven Paid", "Booked Revenue", "$ Diff"]:
-        if c in disp.columns:
-            disp[c] = disp[c].map(money)
-    disp = disp.rename(columns={"region": "Region"})
-    st.dataframe(disp, use_container_width=True, hide_index=True)
-    st.caption("MATCH = the First report and the Breakup sheet cover the exact "
-               "same trips and dollars for that region. CHECK = one source has a "
-               "trip the other does not; treat that region as an estimate until "
-               "the files line up trip-by-trip. EverDriven columns show only when "
-               "an EverDriven report is uploaded.")
+    if code == "Unassigned":
+        st.info("These drivers are not in any state price reference yet. "
+                "Upload the matching state file so their contract prices and policy load.")
+    dt = driver_table(first_all, state_all, code)
+    st.markdown("#### Driver breakdown")
+    st.caption("Flags: LOSS = First paid below driver pay. NO FIRST MATCH = this driver "
+               "is in the price file but not matched in the First report (contract counted, "
+               "First paid 0 - inflates the gap, often a name spelling difference). "
+               "NO CONTRACT = in First but missing from the price file.")
+    st.dataframe(fmt_money_cols(dt, MONEY_COLS), use_container_width=True, hide_index=True)
+
+    noncompliant = dt[dt["Flag"] == "LOSS"]
+    if len(noncompliant):
+        st.markdown(f"#### Non-compliant drivers - {len(noncompliant)} losing money "
+                    f"(First paid below driver pay)")
+        st.bar_chart(noncompliant.set_index("Driver")[["First Paid", "Driver Pay"]])
+    else:
+        st.success("All drivers compliant - First paid covers driver pay on every driver. "
+                   "(Trip chart hidden because there are no non-compliant trips.)")
+
+    st.download_button(
+        "Download this state (Excel)",
+        data=to_excel({code: dt}),
+        file_name=f"BT_{code.replace('.', '')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
