@@ -118,10 +118,12 @@ def _clean_driver(df):
 
 @st.cache_data(show_spinner=False)
 def read_first(file_bytes, fname):
-    """Read a First report (SP ITEMIZED). Returns per-trip df:
+    """Read a First report. Pick the TRIP-LEVEL sheet (SP ITEMIZED REPORT),
+    never an aggregated summary sheet, so trip counts and NET PAY are the real
+    per-trip cash. Returns per-trip df:
        driver, driver_disp, net (First paid), trip, miles, monitor."""
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
-    best = None
+    best, best_key = None, (-1, -1)
     for sh in xl.sheet_names:
         df = xl.parse(sh)
         df.columns = [str(c).strip() for c in df.columns]
@@ -131,6 +133,16 @@ def read_first(file_bytes, fname):
             continue
         tn = find_col(df.columns, "TRIP NAME", "TRIP")
         mi = find_col(df.columns, "TOTAL MILES", "MILES")
+        tc = find_col(df.columns, "TRIP CODE")
+        dt = find_col(df.columns, "DATE")
+        # prefer the itemized trip-level sheet over any aggregated sheet
+        name = str(sh).lower()
+        if "itemized" in name:
+            score = 3
+        elif tn and (tc or dt):
+            score = 2
+        else:
+            score = 1
         out = pd.DataFrame({
             "driver": df[dn].map(norm_name),
             "driver_disp": df[dn].astype(str).str.strip(),
@@ -140,8 +152,10 @@ def read_first(file_bytes, fname):
         })
         out = out.dropna(subset=["net"])
         out = _clean_driver(out)
-        if best is None or len(out) > len(best):
-            best = out
+        out = out[~out["driver"].isin(SUMMARY_NAMES)]
+        key = (score, len(out))
+        if key > best_key:
+            best_key, best = key, out
     if best is None:
         return pd.DataFrame(columns=["driver", "driver_disp", "net", "trip", "miles", "monitor"])
     best = best.copy()
@@ -283,9 +297,13 @@ def underpay_analysis(first_df, code):
     per = round(agreed - paid, 2)
     hit = f[f["net"].round(2) == round(paid, 2)]
     n = int(len(hit))
+    mon = int(hit["monitor"].sum()) if "monitor" in hit.columns else 0
+    runs = n - mon
     return {
         "paid": paid, "agreed": agreed, "per": per,
-        "underpaid_trips": n, "owed": round(n * per, 2),
+        "underpaid_trips": n,
+        "underpaid_runs": runs, "underpaid_monitors": mon,
+        "owed": round(n * per, 2), "owed_runs": round(runs * per, 2),
         "total_trips": int(len(f)),
     }
 
@@ -659,12 +677,16 @@ else:
         kpi(c[0], "Agreed rate", money(up["agreed"]), "per trip")
         kpi(c[1], "First paid rate", money(up["paid"]), "per trip", "bad")
         kpi(c[2], "Underpaid trips", f"{up['underpaid_trips']:,}",
-            f"paid {money(up['paid'])} instead of {money(up['agreed'])}")
+            f"{up['underpaid_runs']:,} runs + {up['underpaid_monitors']:,} monitor (M)")
         kpi(c[3], "First owes", money(up["owed"]),
             f"{up['underpaid_trips']:,} x {money(up['per'])}", "bad")
-        st.caption(f"{up['underpaid_trips']:,} trips were paid {money(up['paid'])} each, "
-                   f"but the agreed rate is {money(up['agreed'])}. First still owes "
-                   f"{up['underpaid_trips']:,} x {money(up['per'])} = {money(up['owed'])}.")
+        st.caption(
+            f"{up['underpaid_trips']:,} trips were paid {money(up['paid'])} each "
+            f"({up['underpaid_runs']:,} driving runs + {up['underpaid_monitors']:,} monitor (M) lines), "
+            f"but the agreed rate is {money(up['agreed'])}. First still owes "
+            f"{up['underpaid_trips']:,} x {money(up['per'])} = {money(up['owed'])} on all lines, "
+            f"or {money(up['owed_runs'])} if monitor lines are excluded "
+            f"({up['underpaid_runs']:,} runs x {money(up['per'])}).")
 
     st_rows = int(row["State Trips"])
     if code != "Unassigned" and st_rows:
