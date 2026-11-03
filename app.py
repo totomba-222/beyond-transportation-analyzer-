@@ -15,7 +15,7 @@
 #   Profit      = Contract Revenue - Driver Pay
 #   Margin      = Profit / Contract Revenue
 # -------------------------------------------------------------------------
-import io, re, unicodedata
+import io, re, unicodedata, json, tempfile
 import pandas as pd
 import streamlit as st
 
@@ -34,6 +34,10 @@ h1,h2,h3,h4 { color:#f2f6ff; }
 .kpi .sub { font-size:12px; color:#8aa0c2; margin-top:2px; }
 .good { color:#35d49a; } .bad { color:#ff6b6b; } .warn { color:#ffcf5c; }
 div[data-testid="stDataFrame"] { border-radius:12px; overflow:hidden; }
+.brand {padding:14px;border-radius:16px;background:linear-gradient(135deg,#1d4ed8,#6d28d9);color:white;margin-bottom:12px;box-shadow:0 8px 22px rgba(0,0,0,.25);}
+.brand-title {font-size:17px;font-weight:800;} .brand-sub {font-size:11px;opacity:.8;margin-top:4px;}
+.section-title {font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:#9cc5ff;font-weight:800;margin:15px 2px 7px;}
+section[data-testid="stSidebar"] .stFileUploader {border-radius:12px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,6 +57,219 @@ STATE_ALIASES = {
     "OR":"OR","OREGON":"OR",
     "AK":"AK","ALASKA":"AK",
 }
+
+# Route/city hints. Exact city pricing should be supplied in the weekly
+# breakdown; these hints only assign a trip to its state.
+ROUTE_STATE_HINTS = {
+    "BERKELEY":"N.CA", "BENICIA":"N.CA", "RICHMOND":"N.CA",
+    "SAN LEANDRO":"N.CA", "EL DORADO":"N.CA", "ELDORADO":"N.CA",
+    "OAKLAND":"N.CA", "HAYWARD":"N.CA", "FREMONT":"N.CA",
+    "CONCORD":"N.CA", "WALNUT CREEK":"N.CA", "VALLEJO":"N.CA",
+    "SAN PABLO":"N.CA", "ANTIOCH":"N.CA", "FAIRFIELD":"N.CA",
+    "SACRAMENTO":"SAC",
+    "RIVERSIDE":"S.CA", "ARIZONA":"S.CA", "PHOENIX":"S.CA",
+    "SAN DIEGO":"S.CA", "LOS ANGELES":"S.CA",
+    "ANCHORAGE":"AK", "PORTLAND":"OR", "GRESHAM":"OR",
+    "SALEM":"OR", "ALBUQUERQUE":"NM", "CHICAGO":"IL",
+}
+
+def state_from_route(text):
+    t = str(text or '').upper()
+    for city, code in sorted(ROUTE_STATE_HINTS.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if city in t:
+            return code
+    return None
+
+# Driver-to-location map extracted from the supplied weekly locations report.
+LOCATION_DRIVER_STATE = {'2 608': 'N.CA',
+ 'abdalrahman omer fadlalla': 'N.CA',
+ 'abdelaziz dafi': 'NM',
+ 'abdoun abdulmutalb hassan abdoun': 'OR',
+ 'abdulazlz hamwl': 'OR',
+ 'abdulfatah ali alowdi': 'N.CA',
+ 'abdulgaleel a albadani': 'N.CA',
+ 'abdullah ahmed eissa': 'N.CA',
+ 'abdulrahman alnagar alnagar': 'N.CA',
+ 'abeer ahmad dhaifallah': 'N.CA',
+ 'abla suleiman': 'S.CA',
+ 'adam ait azzat': 'NM',
+ 'adeeb saleh anagar': 'N.CA',
+ 'adham hammadeh': 'OR',
+ 'adonis gonzalez': 'NM',
+ 'ahmad jaarah': 'S.CA',
+ 'ahmat aboubakar': 'OR',
+ 'ahmed musaad almakkawi': 'N.CA',
+ 'aicha orabi': 'OR',
+ 'akram awad': 'S.CA',
+ 'alaa hassan alhalaqi': 'OR',
+ 'alberto ramirez': 'S.CA',
+ 'alexis santos': 'NM',
+ 'ali saleh hassan': 'N.CA',
+ 'alsadig m mohammed': 'N.CA',
+ 'amer ali alabshalah': 'N.CA',
+ 'ammar alammari': 'N.CA',
+ 'angely wladiuska carrero': 'NM',
+ 'arette celeste eredia': 'S.CA',
+ 'asalia azucena escobedo barrios de giron': 'OR',
+ 'ashu no last name': 'S.CA',
+ 'asma mohammed alhamdani': 'N.CA',
+ 'atta ul mohsin': 'S.CA',
+ 'avinash tiwari': 'S.CA',
+ 'awad ali arbab': 'IL',
+ 'ayman awad': 'NM',
+ 'aziza rayan': 'S.CA',
+ 'azmi maghathe': 'S.CA',
+ 'basem chami': 'OR',
+ 'bashka hussein abdirahman': 'OR',
+ 'bassel bahnassi': 'S.CA',
+ 'brahim bouhamadi': 'NM',
+ 'christine abrego leyva': 'NM',
+ 'dana r dbiesi': 'S.CA',
+ 'danier requejo': 'NM',
+ 'dayanys pie rodriguez': 'NM',
+ 'denakhalil mahmoud al shoukha': 'S.CA',
+ 'dianelis dr la caridad delgado san juan': 'NM',
+ 'dina farha': 'S.CA',
+ 'djamal ali alkhali': 'OR',
+ 'doangjok otan': 'OR',
+ 'douglas omar giron': 'OR',
+ 'emad h zaki': 'OR',
+ 'fares ameen alshalh': 'N.CA',
+ 'fitsum t tessema': 'NM',
+ 'fuad aleiadih': 'S.CA',
+ 'getachew dadi areda': 'OR',
+ 'ghofran aldudu': 'OR',
+ 'hadeel m al imam': 'OR',
+ 'hanan hassan almalahi': 'N.CA',
+ 'hanan mezher alhashimi': 'OR',
+ 'hasan ammar alkadi': 'OR',
+ 'hashmatullah alam': 'OR',
+ 'hassan mahmoud hassan': 'N.CA',
+ 'heba al nser': 'S.CA',
+ 'hesham alrawhani': 'N.CA',
+ 'hiadar elsayed': 'N.CA',
+ 'himanshu gupta': 'S.CA',
+ 'hiter requejo pena': 'NM',
+ 'hoda sharaby': 'S.CA',
+ 'husni mubarik': 'N.CA',
+ 'hussein ibrahim alsheikh': 'OR',
+ 'hussien al akraa': 'OR',
+ 'ibrahim m elsayed': 'N.CA',
+ 'ibrahim mahmoud hassan mohamed': 'N.CA',
+ 'isam qadari': 'N.CA',
+ 'issa a ghallan': 'OR',
+ 'iyad yousef hamdan': 'S.CA',
+ 'jaafar jaafar': 'OR',
+ 'jennifer soes alizon': 'NM',
+ 'jihane benchaouch': 'S.CA',
+ 'jinan jasim': 'OR',
+ 'juan fuenmayor': 'NM',
+ 'judith mutalegwa kizungu': 'IL',
+ 'julie ali hussein': 'OR',
+ 'jumana f naser': 'NM',
+ 'kassaye amaha medhin': 'OR',
+ 'katy martinez barboza': 'OR',
+ 'khaled almaliki': 'N.CA',
+ 'khalid abu sarriyeh': 'S.CA',
+ 'khalil asfan': 'NM',
+ 'leen albahnassi': 'S.CA',
+ 'leila hamad rayan': 'S.CA',
+ 'lithe farouk abdullah': 'S.CA',
+ 'lucia c rosendo': 'NM',
+ 'lulit girma bune': 'N.CA',
+ 'mahamat noh': 'OR',
+ 'mandeep singh': 'S.CA',
+ 'maram issa ghallan': 'OR',
+ 'maria rivera ramirez': 'S.CA',
+ 'martin bugere': 'IL',
+ 'mayelin rives santiesteban': 'NM',
+ 'miriam dawod rayan': 'S.CA',
+ 'mohamad ali alakraa': 'OR',
+ 'mohamad ali shukur': 'OR',
+ 'mohamed ahmed hugais': 'N.CA',
+ 'mohamed hussein altayeb abdalla': 'N.CA',
+ 'mohamed omar ali': 'N.CA',
+ 'mohamed omir': 'N.CA',
+ 'mohammad hamdan ahmad alsutari': 'S.CA',
+ 'mohammad m al bitari': 'NM',
+ 'mohammad qasem hemat': 'N.CA',
+ 'mohammed a i hejab': 'N.CA',
+ 'mohammed h adam': 'N.CA',
+ 'mohaned abdelazim ahmed elwali': 'N.CA',
+ 'mona bazzoun': 'S.CA',
+ 'mostafa safwan alhakim': 'S.CA',
+ 'mostafa sharaby': 'S.CA',
+ 'muhammad bilal naeem': 'S.CA',
+ 'muhammad laiq': 'N.CA',
+ 'muhammad obaidul hussain': 'S.CA',
+ 'mustafa ali albarea': 'N.CA',
+ 'mustafa f m zatar': 'S.CA',
+ 'mustafa hassan abdalkareem': 'N.CA',
+ 'mustafa mabrour': 'OR',
+ 'nabeel aldabbas': 'S.CA',
+ 'nada a suleiman': 'S.CA',
+ 'nada abusnoubar': 'S.CA',
+ 'nafeesa hakimi': 'NM',
+ 'nagi alnaeem': 'N.CA',
+ 'nagibah e alghazali': 'N.CA',
+ 'najib fettah': 'NM',
+ 'nasri abdirahman hussen': 'OR',
+ 'nesrin elshabasy': 'S.CA',
+ 'niazbina joyan': 'NM',
+ 'niveen mohd abdel aziz abbad': 'S.CA',
+ 'nonamegiven sukhvinder': 'S.CA',
+ 'omer mustafa': 'N.CA',
+ 'omer omer': 'N.CA',
+ 'radwan soueidan': 'NM',
+ 'raisa rosendo': 'NM',
+ 'rana muhammad abrar bashir': 'S.CA',
+ 'rana nazmi abu samrah salaymeh': 'S.CA',
+ 'rasem s alessa': 'NM',
+ 'rashid masood malik': 'N.CA',
+ 'rehan ahmad malik': 'S.CA',
+ 'robert luis cabrera ibargoyin': 'NM',
+ 'rodney perez': 'NM',
+ 'ruben bruno ramirez rivera': 'S.CA',
+ 'safwan alhakim': 'S.CA',
+ 'saif said awda': 'S.CA',
+ 'salah hassan': 'N.CA',
+ 'salah musa hussein': 'S.CA',
+ 'salwa saleh anagar': 'N.CA',
+ 'samir m abas': 'N.CA',
+ 'sandeep singh bajwa': 'S.CA',
+ 'sanoussi ali alkhali': 'OR',
+ 'saqib hussain': 'S.CA',
+ 'sarah hamade rayyan': 'S.CA',
+ 'siddieg basher khair': 'N.CA',
+ 'snose omar hamid ali': 'N.CA',
+ 'solomon bekkele': 'N.CA',
+ 'sucad hassan cali': 'N.CA',
+ 'suhaib yousef batayneh': 'N.CA',
+ 'sukhjit singh': 'S.CA',
+ 'sultan alhalemi': 'N.CA',
+ 'syed saleem ahmad': 'S.CA',
+ 'tahani hussain': 'S.CA',
+ 'taquia davis': 'S.CA',
+ 'taranjeet singh': 'S.CA',
+ 'tarek m beltagy': 'NM',
+ 'thaer abusnoubar': 'S.CA',
+ 'thet naing tun': 'OR',
+ 'wadah alomaisi alomaisi': 'N.CA',
+ 'waeel al auosh': 'OR',
+ 'wesal m alemam': 'OR',
+ 'wilder antonio montejo arencibia': 'NM',
+ 'yara fakhrieh jaber': 'S.CA',
+ 'yaremys rodriguez rosendo': 'NM',
+ 'yasmany carmona luna': 'NM',
+ 'yeshi challa': 'N.CA',
+ 'yoel graveran': 'NM',
+ 'yosmer armando carrero': 'NM',
+ 'yousef yahya alzawkari': 'N.CA',
+ 'yuder casanova robles': 'NM',
+ 'zainab gheni': 'OR',
+ 'zajary laza chapotin': 'NM',
+ 'zeinab ali': 'NM',
+ 'zohra joyan': 'NM'}
 
 def norm_name(s):
     s = unicodedata.normalize("NFKD", str(s)).replace("\u200b", "")
@@ -150,6 +367,7 @@ def read_first(file_bytes, fname):
             "trip": df[tn].astype(str) if tn else "",
             "miles": pd.to_numeric(df[mi], errors="coerce") if mi else 0,
         })
+        out["route_state"] = out["trip"].map(state_from_route)
         out = out.dropna(subset=["net"])
         out = _clean_driver(out)
         out = out[~out["driver"].isin(SUMMARY_NAMES)]
@@ -164,7 +382,7 @@ def read_first(file_bytes, fname):
     return best
 
 @st.cache_data(show_spinner=False)
-def read_state(file_bytes, fname):
+def read_state(file_bytes, fname, forced_code=None):
     """Read a state reference file. Returns (state_code, per-trip df:
        driver, driver_disp, contract, driverpay, state)."""
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
@@ -186,9 +404,13 @@ def read_state(file_bytes, fname):
         out = _clean_driver(out)
         out = out[~out["driver"].isin(SUMMARY_NAMES)]
         out = out.dropna(subset=["contract", "driverpay"], how="all")
+        # Monitor rows are operational labels, not payable trips. Keep MO rows
+        # because the state report's numbered run count includes them.
+        out["monitor"] = out["driver_disp"].astype(str).str.contains(r"\(\s*MONITOR\s*\)", case=False, regex=True)
+        out = out[~out["monitor"]].copy()
         if best is None or len(out) > len(best):
             best = out
-    code = state_from_filename(fname)
+    code = forced_code or state_from_filename(fname)
     if best is None:
         best = pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay"])
     best = best.copy()
@@ -250,12 +472,16 @@ def read_first_statemap(file_bytes, fname):
 
 # ----------------------------- analytics -----------------------------
 def classify(first_df, state_df, embedded_map=None):
-    dmap = dict(embedded_map or {})
+    dmap = dict(LOCATION_DRIVER_STATE)
+    dmap.update(embedded_map or {})
     # state price files add/override mapping for drivers they list
     for _, r in state_df.iterrows():
         dmap.setdefault(r["driver"], r["state"])
     first_df = first_df.copy()
-    first_df["state"] = first_df["driver"].map(dmap).fillna("Unassigned")
+    first_df["state"] = first_df["driver"].map(dmap)
+    if "route_state" in first_df.columns:
+        first_df["state"] = first_df["state"].fillna(first_df["route_state"])
+    first_df["state"] = first_df["state"].fillna("Unassigned")
     return first_df
 
 def state_totals(first_df, state_df, code):
@@ -414,7 +640,68 @@ def to_excel(frames):
             df.to_excel(xw, sheet_name=name[:31], index=False)
     return buf.getvalue()
 
+
+def history_path():
+    for candidate in (Path.cwd() / ".bt_weekly_history.json",
+                      Path(tempfile.gettempdir()) / "bt_weekly_history.json"):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if not candidate.exists():
+                candidate.write_text("{}", encoding="utf-8")
+            return candidate
+        except OSError:
+            continue
+    return None
+
+
+def save_weekly_snapshot(summary):
+    """Save per-state First/contract/pay metrics and return prior snapshot."""
+    path = history_path()
+    if path is None or summary.empty:
+        return None
+    now = pd.Timestamp.today()
+    key = f"{int(now.isocalendar().year)}-W{int(now.isocalendar().week):02d}"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    previous_keys = sorted(k for k in data if k < key)
+    previous = data.get(previous_keys[-1]) if previous_keys else None
+    records = summary.to_dict("records")
+    data[key] = {"saved_at": now.isoformat(), "states": records}
+    try:
+        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    except OSError:
+        pass
+    return previous
+
+
+def show_weekly_change(summary, previous):
+    if not previous:
+        return
+    old = pd.DataFrame(previous.get("states", []))
+    if old.empty or "State" not in old:
+        return
+    cur = summary.set_index("State")
+    old = old.set_index("State")
+    rows = []
+    for state in sorted(set(cur.index) | set(old.index)):
+        row = {"State": state}
+        for col in ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit", "Margin %"]:
+            a = pd.to_numeric(cur[col], errors="coerce").get(state, float("nan")) if col in cur else float("nan")
+            b = pd.to_numeric(old[col], errors="coerce").get(state, float("nan")) if col in old else float("nan")
+            row[f"{col} change"] = round(a - b, 2) if pd.notna(a) and pd.notna(b) else float("nan")
+        rows.append(row)
+    st.markdown("#### Change vs previous saved week")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
 # ----------------------------- UI -----------------------------
+STATE_UPLOAD_ORDER = [
+    ('AK', 'Alaska'), ('SAC', 'Sacramento'), ('N.CA', 'North California'),
+    ('S.CA', 'South California / Riverside & Arizona'), ('AZ', 'Arizona'),
+    ('OR', 'Oregon'), ('IL', 'Illinois'), ('NM', 'New Mexico'), ('NE', 'Nebraska'),
+    ('MON', 'Monterey'),
+]
 def kpi(col, label, value, sub="", cls=""):
     col.markdown(
         f'<div class="kpi"><div class="lbl">{label}</div>'
@@ -427,15 +714,25 @@ st.title("Hatem's B.T. Analyzer")
 st.caption("Beyond Transportation - weekly state profit, revenue gap and compliance")
 
 with st.sidebar:
-    st.header("1) First report(s)")
+    st.markdown('''<div class="brand"><div class="brand-title">🚐 Hatem's B.T. Analyzer</div><div class="brand-sub">Beyond Transportation · weekly financial control</div></div>''', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">1 · First reports</div>', unsafe_allow_html=True)
     first_files = st.file_uploader(
-        "First / SP ITEMIZED reports (NET PAY = what First paid)",
-        type=["xlsx", "xls"], accept_multiple_files=True, key="first")
-    st.header("2) State price references (optional)")
-    state_files = st.file_uploader(
-        "Optional - one file per state (revenue = contract, PAY = driver "
-        "payment). Only needed for contract revenue, the revenue gap and profit.",
-        type=["xlsx", "xls"], accept_multiple_files=True, key="state")
+        'First / SP ITEMIZED reports (NET PAY = what First paid)',
+        type=['xlsx', 'xls'], accept_multiple_files=True, key='first')
+    st.markdown('<div class="section-title">2 · Ever Driven / state reports</div>', unsafe_allow_html=True)
+    st.caption('Upload all files together or place each file under its state. Revenue is the contract price; PAY is driver payment.')
+    all_state_files = st.file_uploader(
+        'Upload all state reports together', type=['xlsx', 'xls'],
+        accept_multiple_files=True, key='state_all')
+    state_inputs = []
+    with st.expander('Upload one report per state', expanded=True):
+        for code, label in STATE_UPLOAD_ORDER:
+            files = st.file_uploader(label, type=['xlsx', 'xls'],
+                                     accept_multiple_files=True, key=f'state_{code}')
+            for file_obj in files or []:
+                state_inputs.append((file_obj, code))
+    for file_obj in all_state_files or []:
+        state_inputs.append((file_obj, None))
 
 if not first_files:
     st.info("Upload at least one First report to begin. Each state's trips and "
@@ -452,12 +749,15 @@ for f in first_files:
     embedded_map.update(read_first_statemap(f.getvalue(), f.name))
 
 state_frames, state_codes = [], []
-if state_files:
-    for f in state_files:
-        code, sdf = read_state(f.getvalue(), f.name)
-        state_frames.append(sdf)
-        if code not in state_codes:
-            state_codes.append(code)
+seen_state_files = set()
+for f, forced_code in state_inputs:
+    if f.name in seen_state_files:
+        continue
+    seen_state_files.add(f.name)
+    code, sdf = read_state(f.getvalue(), f.name, forced_code=forced_code)
+    state_frames.append(sdf)
+    if code not in state_codes:
+        state_codes.append(code)
 state_all = (pd.concat(state_frames, ignore_index=True)
              if state_frames else
              pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay", "state"]))
@@ -479,6 +779,7 @@ if (first_all["state"] == "Unassigned").any():
 
 summary = pd.DataFrame([state_totals(first_all, state_all, c)
                         for c in present_codes if c != "Unassigned"])
+previous_snapshot = save_weekly_snapshot(summary)
 
 view = st.sidebar.radio("View", ["Consolidated Report", "Amounts Owed by First",
                                  "Trips Comparison"] + present_codes)
@@ -560,6 +861,7 @@ if view == "Consolidated Report":
             data=to_excel({"Consolidated": summary}),
             file_name="BT_consolidated.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        show_weekly_change(summary, previous_snapshot)
 
     up_rows = []
     for c0 in present_codes:
