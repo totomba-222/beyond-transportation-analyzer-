@@ -281,6 +281,42 @@ def norm_name(s):
     s = unicodedata.normalize("NFKD", str(s)).replace("\u200b", "")
     return re.sub(r"\s+", " ", s).strip().lower()
 
+
+# Persistent driver -> state database. The embedded map is the initial seed;
+# every uploaded state report extends/corrects it for future First reports.
+DRIVER_STATE_DB_PATH = Path.cwd() / "bt_driver_state.json"
+
+
+def load_driver_state_db():
+    mapping = dict(LOCATION_DRIVER_STATE)
+    try:
+        saved = json.loads(DRIVER_STATE_DB_PATH.read_text(encoding="utf-8"))
+        if isinstance(saved, dict):
+            mapping.update({norm_name(k): str(v) for k, v in saved.items()
+                            if k and v and str(v) != "Unassigned"})
+    except (OSError, json.JSONDecodeError):
+        pass
+    return mapping
+
+
+def save_driver_state_db(state_df):
+    """Persist reliable driver/state pairs from the reports just uploaded."""
+    mapping = load_driver_state_db()
+    if state_df is not None and not state_df.empty:
+        for _, row in state_df.iterrows():
+            driver = norm_name(row.get("driver", ""))
+            state = str(row.get("state", ""))
+            if driver and driver not in SUMMARY_NAMES and state and state != "Unassigned":
+                mapping[driver] = state
+    try:
+        DRIVER_STATE_DB_PATH.write_text(
+            json.dumps(dict(sorted(mapping.items())), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    return mapping
+
 def state_from_filename(name):
     base = re.sub(r"\.[^.]+$", "", str(name))
     key = re.sub(r"[^A-Za-z]", "", base).upper()
@@ -401,12 +437,17 @@ def read_first(file_bytes, fname):
 
 @st.cache_data(show_spinner=False)
 def read_state(file_bytes, fname, forced_code=None):
-    """Read a state reference file. Returns (state_code, per-trip df:
-       driver, driver_disp, contract, driverpay, state)."""
+    """Read a state reference file.
+
+    State exports are not always one row per trip: North California, for
+    example, has one row per driver plus a RUNS count. Prefer that driver
+    summary sheet and carry RUNS forward instead of counting driver rows.
+    """
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
     best = None
     best_report_contract_total = None
     best_report_pay_total = None
+    best_score = None
     for sh in xl.sheet_names:
         df = xl.parse(sh)
         df.columns = [str(c).strip() for c in df.columns]
@@ -415,8 +456,10 @@ def read_state(file_bytes, fname, forced_code=None):
         pc = find_col(df.columns, "PAY", "payment")
         if not (dn and rc and pc):
             continue
+        runs_col = find_col(df.columns, "RUNS", "TRIPS", "TRIP COUNT", "TRIPCOUNT")
         raw_contract = pd.to_numeric(df[rc], errors="coerce")
         raw_pay = pd.to_numeric(df[pc], errors="coerce")
+        raw_runs = pd.to_numeric(df[runs_col], errors="coerce") if runs_col else None
         raw_driver = df[dn].astype(str).str.strip()
         # State reports often end with an official total row. Depending on the
         # export, its driver cell is blank, "Total", "Grand Total", "Subtotal",
@@ -432,6 +475,8 @@ def read_state(file_bytes, fname, forced_code=None):
             "contract": raw_contract,
             "driverpay": raw_pay,
         }).dropna(subset=["driver"])
+        if raw_runs is not None:
+            out["runs"] = raw_runs
         out = _clean_driver(out)
         out = out[~out["driver"].isin(SUMMARY_NAMES)]
         out = out.dropna(subset=["contract", "driverpay"], how="all")
@@ -439,20 +484,39 @@ def read_state(file_bytes, fname, forced_code=None):
         # because the state report's numbered run count includes them.
         out["monitor"] = out["driver_disp"].astype(str).str.contains(r"\(\s*MONITOR\s*\)", case=False, regex=True)
         out = out[~out["monitor"]].copy()
-        if best is None or len(out) > len(best):
+        # A RUNS-bearing driver summary is authoritative over a larger
+        # per-trip sheet. Within the same category, prefer a sheet named
+        # summary/report and then the sheet with the most usable rows.
+        sheet_name = str(sh).lower()
+        score = (
+            2 if runs_col else 0,
+            1 if any(k in sheet_name for k in ("summary", "report", "weekly")) else 0,
+            len(out),
+        )
+        if best is None or score > best_score:
             best = out
             best_report_contract_total = report_contract_total
             best_report_pay_total = report_pay_total
+            best_score = score
     code = forced_code or state_from_filename(fname)
     # Sacramento and Monterey are reporting locations inside North California,
     # never standalone states. Normalize both uploaded and filename-derived codes.
     code = {"SAC": "N.CA", "MON": "N.CA", "SACRAMENTO": "N.CA",
             "MONTEREY": "N.CA"}.get(str(code).upper(), code)
     if best is None:
-        best = pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay"])
+        best = pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay", "runs"])
     best = best.copy()
     best["contract"] = best["contract"].fillna(0.0)
     best["driverpay"] = best["driverpay"].fillna(0.0)
+    if "runs" not in best.columns:
+        best["runs"] = 1.0
+    best["runs"] = pd.to_numeric(best["runs"], errors="coerce").fillna(1.0)
+    # If the selected sheet is the driver summary and has no explicit total
+    # row, its row sums are the report totals (not a count of driver rows).
+    if best_report_contract_total is None and "runs" in best.columns:
+        best_report_contract_total = float(best["contract"].sum())
+    if best_report_pay_total is None and "runs" in best.columns:
+        best_report_pay_total = float(best["driverpay"].sum())
     # Carry official report totals on every detail row so downstream summaries
     # use one authoritative total instead of accidentally summing a duplicated
     # or rounded detail line.
@@ -515,12 +579,15 @@ def read_first_statemap(file_bytes, fname):
 
 # ----------------------------- analytics -----------------------------
 def classify(first_df, state_df, embedded_map=None):
-    # Priority: explicit city/route in First > First embedded state sheet >
-    # supplied driver/location map > state-file driver map > Unassigned.
-    dmap = dict(LOCATION_DRIVER_STATE)
+    # Priority: explicit city/route in First > the currently uploaded state
+    # report > First's embedded state sheets > fallback hints > Unassigned.
+    # The uploaded report must override the old fallback map; otherwise a
+    # previously stored driver location can misclassify this week's report.
+    dmap = load_driver_state_db()
     dmap.update(embedded_map or {})
     for _, r in state_df.iterrows():
-        dmap.setdefault(r["driver"], r["state"])
+        if r.get("driver") and r.get("state"):
+            dmap[r["driver"]] = r["state"]
     first_df = first_df.copy()
     first_df["state_from_driver"] = first_df["driver"].map(dmap)
     route = first_df.get("route_state", pd.Series(index=first_df.index, dtype=object))
@@ -541,8 +608,9 @@ def state_totals(first_df, state_df, code):
     gap = contract - first_paid
     profit = contract - driverpay
     margin = (profit / contract * 100.0) if contract else 0.0
+    state_runs = int(round(s["runs"].sum())) if "runs" in s.columns else int(len(s))
     return {
-        "State": code, "First Trips": runs, "State Trips": int(len(s)),
+        "State": code, "First Trips": runs, "State Trips": state_runs,
         "First Paid": first_paid,
         "Contract Revenue": contract, "Revenue Gap": gap,
         "Driver Pay": driverpay, "Profit": profit, "Margin %": round(margin, 1),
@@ -834,7 +902,8 @@ st.title("Hatem's B.T. Analyzer")
 st.caption("Weekly financial control center · First vs contract revenue · state compliance")
 
 with st.sidebar:
-    st.markdown('''<div class="brand"><div class="brand-title">🚐 Hatem's B.T. Analyzer</div><div class="brand-sub">Beyond Transportation · weekly financial control</div></div>''', unsafe_allow_html=True)
+    st.markdown('<div class="brand"><div class="brand-title">🚐 Hatem\'s B.T. Analyzer</div><div class="brand-sub">Beyond Transportation · weekly financial control</div></div>', unsafe_allow_html=True)
+    st.caption(f"Driver location database: {len(load_driver_state_db()):,} saved drivers")
     st.markdown('<div class="section-title">1 · First reports</div>', unsafe_allow_html=True)
     first_files = st.file_uploader(
         'First / SP ITEMIZED reports (NET PAY = what First paid)',
@@ -895,6 +964,9 @@ state_all = (pd.concat(state_frames, ignore_index=True)
              if state_frames else
              pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay", "state"]))
 
+# Learn the current authoritative driver/state pairs before classifying First.
+# This makes the mapping reusable on the next weekly upload.
+save_driver_state_db(state_all)
 first_all = classify(first_all, state_all, embedded_map)
 
 # Filename fallback: a First file that clearly belongs to ONE state (e.g.
@@ -904,6 +976,14 @@ if "source" in first_all.columns:
     mask = first_all["state"].eq("Unassigned")
     fb = first_all.loc[mask, "source"].map(lambda s: file_state.get(s) or "Unassigned")
     first_all.loc[mask, "state"] = fb
+
+unassigned_count = int(first_all["state"].eq("Unassigned").sum())
+if unassigned_count:
+    st.warning(
+        f"لم أستطع تحديد المنطقة لـ {unassigned_count:,} رحلة من تقرير First. "
+        "ارفع تقرير الولاية/المنطقة الحالي لربط الرحلات بأسماء السائقين؛ "
+        "لن أضعها في North California أو أي منطقة بالتخمين."
+    )
 
 present_codes = state_codes + [c for c in first_all["state"].unique()
                                if c not in state_codes and c != "Unassigned"]
@@ -952,7 +1032,7 @@ def first_only_report(first_df, state_df):
     summary["Average First Pay"] = summary["Average First Pay"].fillna(0).round(2)
     if not state_df.empty:
         state_summary = state_df.groupby("state").agg(
-            **{"State Revenue": ("contract", "sum"), "State Report Trips": ("driver", "size")}
+            **{"State Revenue": ("contract", "sum"), "State Report Trips": ("runs", "sum")}
         ).reset_index().rename(columns={"state": "State"})
         if "report_contract_total" in state_df.columns:
             official = (state_df.dropna(subset=["report_contract_total"])
