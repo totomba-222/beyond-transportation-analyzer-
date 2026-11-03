@@ -72,7 +72,7 @@ ROUTE_STATE_HINTS = {
     "OAKLAND":"N.CA", "HAYWARD":"N.CA", "FREMONT":"N.CA",
     "CONCORD":"N.CA", "WALNUT CREEK":"N.CA", "VALLEJO":"N.CA",
     "SAN PABLO":"N.CA", "ANTIOCH":"N.CA", "FAIRFIELD":"N.CA",
-    "SACRAMENTO":"N.CA",
+    "SACRAMENTO":"N.CA", "MONTEREY":"N.CA",
     "RIVERSIDE":"S.CA", "ARIZONA":"S.CA", "PHOENIX":"S.CA",
     "SAN DIEGO":"S.CA", "LOS ANGELES":"S.CA",
     "ANCHORAGE":"AK", "PORTLAND":"OR", "GRESHAM":"OR",
@@ -373,7 +373,19 @@ def read_first(file_bytes, fname):
             "trip": df[tn].astype(str) if tn else "",
             "miles": pd.to_numeric(df[mi], errors="coerce") if mi else 0,
         })
-        out["route_state"] = out["trip"].map(state_from_route)
+        # First reports vary by export: city may be in Trip Name, District,
+        # pickup/drop-off, company, or location columns. Combine all available
+        # route fields so classification is based on the trip itself first.
+        route_parts = [out["trip"].astype(str)]
+        for alias in ("DISTRICT", "CITY", "LOCATION", "PICKUP", "PICK UP",
+                      "DROP OFF", "DROPOFF", "ORIGIN", "DESTINATION", "COMPANY"):
+            col = find_col(df.columns, alias)
+            if col and col != tn:
+                route_parts.append(df[col].astype(str).reset_index(drop=True))
+        out["route_text"] = pd.Series(route_parts[0], index=out.index).fillna("")
+        for part in route_parts[1:]:
+            out["route_text"] = out["route_text"] + " | " + part.to_numpy(dtype=str)
+        out["route_state"] = out["route_text"].map(state_from_route)
         out = out.dropna(subset=["net"])
         out = _clean_driver(out)
         out = out[~out["driver"].isin(SUMMARY_NAMES)]
@@ -438,6 +450,7 @@ SHEET_STATE_RULES = [
     ("crossborder", "AK"), ("alaska", "AK"),
     ("new mexico", "NM"), ("nm ", "NM"), ("nm_", "NM"), (" nm", "NM"),
     ("north ca", "N.CA"), ("northern ca", "N.CA"), ("n.ca", "N.CA"),
+    ("sacramento", "N.CA"), ("monterey", "N.CA"),
     ("rs&az", "S.CA"), ("rs & az", "S.CA"), ("riverside", "S.CA"),
     ("arizona", "S.CA"), ("south ca", "S.CA"), ("s.ca", "S.CA"),
     ("oregon", "OR"), ("or ", "OR"), ("or_", "OR"),
@@ -482,16 +495,16 @@ def read_first_statemap(file_bytes, fname):
 
 # ----------------------------- analytics -----------------------------
 def classify(first_df, state_df, embedded_map=None):
+    # Priority: explicit city/route in First > First embedded state sheet >
+    # supplied driver/location map > state-file driver map > Unassigned.
     dmap = dict(LOCATION_DRIVER_STATE)
     dmap.update(embedded_map or {})
-    # state price files add/override mapping for drivers they list
     for _, r in state_df.iterrows():
         dmap.setdefault(r["driver"], r["state"])
     first_df = first_df.copy()
-    first_df["state"] = first_df["driver"].map(dmap)
-    if "route_state" in first_df.columns:
-        first_df["state"] = first_df["state"].fillna(first_df["route_state"])
-    first_df["state"] = first_df["state"].fillna("Unassigned")
+    first_df["state_from_driver"] = first_df["driver"].map(dmap)
+    route = first_df.get("route_state", pd.Series(index=first_df.index, dtype=object))
+    first_df["state"] = route.combine_first(first_df["state_from_driver"]).fillna("Unassigned")
     return first_df
 
 def state_totals(first_df, state_df, code):
@@ -664,7 +677,7 @@ def history_path():
     return None
 
 
-def save_weekly_snapshot(summary):
+def save_weekly_snapshot(summary, first_df=None, state_df=None):
     """Save per-state First/contract/pay metrics and return prior snapshot."""
     path = history_path()
     if path is None or summary.empty:
@@ -678,7 +691,14 @@ def save_weekly_snapshot(summary):
     previous_keys = sorted(k for k in data if k < key)
     previous = data.get(previous_keys[-1]) if previous_keys else None
     records = summary.to_dict("records")
-    data[key] = {"saved_at": now.isoformat(), "states": records}
+    data[key] = {
+        "saved_at": now.isoformat(),
+        "states": records,
+        "first_total_paid": round(float(first_df["net"].sum()), 2) if first_df is not None and "net" in first_df else None,
+        "first_trip_rows": int(len(first_df)) if first_df is not None else None,
+        "state_contract_total": round(float(state_df["contract"].sum()), 2) if state_df is not None and "contract" in state_df else None,
+        "state_trip_rows": int(len(state_df)) if state_df is not None else None,
+    }
     try:
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
     except OSError:
@@ -862,7 +882,7 @@ if (first_all["state"] == "Unassigned").any():
 
 summary = pd.DataFrame([state_totals(first_all, state_all, c)
                         for c in present_codes if c != "Unassigned"])
-previous_snapshot = save_weekly_snapshot(summary)
+previous_snapshot = save_weekly_snapshot(summary, first_all, state_all)
 history_for_download = history_path()
 if history_for_download is not None:
     st.sidebar.download_button(
@@ -880,6 +900,7 @@ STATE_LABELS = {
 }
 view_labels = {
     "📊  Consolidated Dashboard": "Consolidated Report",
+    "🧾  First Report Only": "First Report Only",
     "💰  Amounts owed by First": "Amounts Owed by First",
     "🔎  Trips comparison": "Trips Comparison",
 }
@@ -887,6 +908,67 @@ for code in present_codes:
     view_labels[f"📍  {STATE_LABELS.get(code, code)}"] = code
 selected_view = st.sidebar.radio("Navigation", list(view_labels), key="view_nav")
 view = view_labels[selected_view]
+
+def first_only_report(first_df, state_df):
+    """First-only reconciliation view. It never replaces state contract revenue."""
+    work = first_df.copy()
+    work["Trip Count"] = (~work["monitor"]).astype(int)
+    summary = work.groupby("state", dropna=False).agg(
+        **{"First Trips": ("Trip Count", "sum"),
+           "First Paid": ("net", "sum"),
+           "First Drivers": ("driver", "nunique")}
+    ).reset_index().rename(columns={"state": "State"})
+    summary["Average First Pay"] = summary["First Paid"] / summary["First Trips"].replace(0, pd.NA)
+    summary["Average First Pay"] = summary["Average First Pay"].fillna(0).round(2)
+    if not state_df.empty:
+        state_summary = state_df.groupby("state").agg(
+            **{"State Revenue": ("contract", "sum"), "State Report Trips": ("driver", "size")}
+        ).reset_index().rename(columns={"state": "State"})
+        summary = summary.merge(state_summary, on="State", how="outer")
+        summary["First Paid"] = summary["First Paid"].fillna(0)
+        summary["First Trips"] = summary["First Trips"].fillna(0).astype(int)
+        summary["State Revenue"] = summary["State Revenue"].fillna(0)
+        summary["State Report Trips"] = summary["State Report Trips"].fillna(0).astype(int)
+        summary["Revenue Coverage Difference"] = (summary["State Revenue"] - summary["First Paid"]).round(2)
+        summary["Trip Coverage Difference"] = summary["State Report Trips"] - summary["First Trips"]
+    # Keep the independent First fields first; no hidden replacement of First by state revenue.
+    summary = summary.sort_values("First Paid", ascending=False).reset_index(drop=True)
+    detail_cols = ["state", "driver_disp", "trip", "miles", "net", "monitor"]
+    detail = work[[c for c in detail_cols if c in work.columns]].copy()
+    detail = detail.rename(columns={"state": "State", "driver_disp": "Driver", "trip": "Trip", "miles": "Miles", "net": "First Net Pay", "monitor": "Monitor"})
+    return summary, detail
+
+
+def render_first_only(first_df, state_df):
+    st.subheader("First Report Only")
+    st.caption("This page is the independent First view. First Paid comes only from the First report's NET PAY column; state contract revenue is shown separately only for reconciliation.")
+    first_summary, first_detail = first_only_report(first_df, state_df)
+    total_trips = int(first_summary["First Trips"].sum()) if not first_summary.empty else 0
+    total_paid = float(first_summary["First Paid"].sum()) if not first_summary.empty else 0.0
+    a, b, c = st.columns(3)
+    kpi(a, "First Trips", f"{total_trips:,}")
+    kpi(b, "First Paid / NET PAY", money(total_paid), "read only from First")
+    kpi(c, "States detected", f"{len(first_summary):,}")
+
+    st.markdown("### First revenue by state")
+    display_cols = ["State", "First Trips", "First Paid", "First Drivers", "Average First Pay"]
+    if "State Revenue" in first_summary.columns:
+        display_cols += ["State Revenue", "Revenue Coverage Difference", "Trip Coverage Difference"]
+    display_cols = [c for c in display_cols if c in first_summary.columns]
+    st.dataframe(fmt_money_cols(first_summary[display_cols], ["First Paid", "Average First Pay", "State Revenue", "Revenue Coverage Difference"]), use_container_width=True, hide_index=True)
+    st.bar_chart(first_summary.set_index("State")[["First Paid"]], height=320)
+
+    if "State Revenue" in first_summary.columns:
+        st.info("Coverage difference = State Report Revenue − First Paid. A positive amount means the state report contains more contract revenue than the First rows currently classified for that state; it is a reconciliation difference, not an automatic claim until trips are matched.")
+        st.markdown("### First vs state-report coverage")
+        cov = first_summary.set_index("State")[["First Paid", "State Revenue"]].fillna(0)
+        st.bar_chart(cov, height=320)
+
+    st.markdown("### Download First report for reference")
+    # Exclude the technical source column from the user-facing report.
+    download_detail = first_detail.drop(columns=["Source"], errors="ignore")
+    download_summary = first_summary.drop(columns=["Trip Coverage Difference"], errors="ignore")
+    st.download_button("Download First-only Excel report", data=to_excel({"First Summary": download_summary, "First Detail": download_detail}), file_name="BT_First_only_report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ----------------------------- rendering -----------------------------
 def fmt_money_cols(df, cols):
@@ -898,7 +980,10 @@ def fmt_money_cols(df, cols):
 
 MONEY_COLS = ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit"]
 
-if view == "Consolidated Report":
+if view == "First Report Only":
+    render_first_only(first_all, state_all)
+
+elif view == "Consolidated Report":
     st.subheader("Consolidated Report - all states")
     owed_all = owed_table(first_all, state_all, present_codes)
     if not owed_all.empty:
