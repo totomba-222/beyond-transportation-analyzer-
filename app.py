@@ -547,6 +547,22 @@ def sheet_state(name):
     for kw, code in SHEET_STATE_RULES:
         if kw in n:
             return code
+    # Exports frequently write the same labels with punctuation/spaces
+    # changed ("N. CA", "North California", "Southwest CA"). Match a
+    # compact form too so First's own workbook remains the direct source.
+    compact = re.sub(r"[^a-z0-9]", "", str(name).lower())
+    compact_rules = [
+        ("crossborder", "AK"), ("alaska", "AK"),
+        ("newmexico", "NM"), ("northcalifornia", "N.CA"),
+        ("northerncalifornia", "N.CA"), ("northca", "N.CA"),
+        ("sacramento", "N.CA"), ("monterey", "N.CA"),
+        ("southwestcalifornia", "S.CA"), ("southcalifornia", "S.CA"),
+        ("southca", "S.CA"), ("riverside", "S.CA"), ("arizona", "S.CA"),
+        ("oregon", "OR"), ("illinois", "IL"),
+    ]
+    for kw, code in compact_rules:
+        if kw in compact:
+            return code
     return None
 
 
@@ -597,7 +613,10 @@ def classify(first_df, state_df, embedded_map=None):
 def state_totals(first_df, state_df, code):
     f = first_df[first_df["state"] == code]
     s = state_df[state_df["state"] == code]
-    runs = int((~f["monitor"]).sum()) if len(f) else 0
+    # Monitor-labelled rows are still rows in the First report and must remain
+    # in the reconciliation. Excluding them was the direct cause of N.CA
+    # showing 474 instead of the report's 509 runs.
+    runs = int(len(f))
     first_paid = float(f["net"].sum())
     detail_contract = float(s["contract"].sum())
     detail_driverpay = float(s["driverpay"].sum())
@@ -1022,7 +1041,9 @@ view = view_labels[selected_view]
 def first_only_report(first_df, state_df):
     """First-only reconciliation view. It never replaces state contract revenue."""
     work = first_df.copy()
-    work["Trip Count"] = (~work["monitor"]).astype(int)
+    # Keep every First itemized row in the state reconciliation, including
+    # operational/monitor-labelled rows present in the official run count.
+    work["Trip Count"] = 1
     summary = work.groupby("state", dropna=False).agg(
         **{"First Trips": ("Trip Count", "sum"),
            "First Paid": ("net", "sum"),
