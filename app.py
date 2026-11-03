@@ -16,6 +16,7 @@
 #   Margin      = Profit / Contract Revenue
 # -------------------------------------------------------------------------
 import io, re, unicodedata, json, tempfile
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
@@ -24,20 +25,24 @@ st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon="BT", layout="w
 # ----------------------------- styling (dark app) -----------------------------
 st.markdown("""
 <style>
-.stApp { background:#0f1420; color:#e8edf6; }
-section[data-testid="stSidebar"] { background:#131a2a; }
+.stApp { background:radial-gradient(circle at 10% 0%,#172554 0%,#0b1020 42%,#0b101b 100%); color:#e8edf6; }
+section[data-testid="stSidebar"] { background:linear-gradient(180deg,#111b36 0%,#12172a 55%,#1e1635 100%); border-right:1px solid #26365d; }
+[data-testid="stSidebar"] .block-container { padding:1rem .85rem 2rem; }
 h1,h2,h3,h4 { color:#f2f6ff; }
-.kpi { background:linear-gradient(145deg,#1b2436,#141c2c); border:1px solid #27324a;
-       border-radius:14px; padding:14px 16px; }
-.kpi .lbl { font-size:12px; letter-spacing:.5px; color:#9fb0cc; text-transform:uppercase; }
-.kpi .val { font-size:26px; font-weight:700; color:#ffffff; margin-top:4px; }
-.kpi .sub { font-size:12px; color:#8aa0c2; margin-top:2px; }
-.good { color:#35d49a; } .bad { color:#ff6b6b; } .warn { color:#ffcf5c; }
-div[data-testid="stDataFrame"] { border-radius:12px; overflow:hidden; }
-.brand {padding:14px;border-radius:16px;background:linear-gradient(135deg,#1d4ed8,#6d28d9);color:white;margin-bottom:12px;box-shadow:0 8px 22px rgba(0,0,0,.25);}
-.brand-title {font-size:17px;font-weight:800;} .brand-sub {font-size:11px;opacity:.8;margin-top:4px;}
-.section-title {font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:#9cc5ff;font-weight:800;margin:15px 2px 7px;}
-section[data-testid="stSidebar"] .stFileUploader {border-radius:12px;}
+.kpi { background:linear-gradient(145deg,rgba(30,41,72,.95),rgba(15,23,42,.96)); border:1px solid #33456f;
+       border-radius:16px; padding:16px 18px; min-height:94px; box-shadow:0 8px 22px rgba(0,0,0,.16); }
+.kpi .lbl { font-size:11px; letter-spacing:.08em; color:#a9bbdb; text-transform:uppercase; }
+.kpi .val { font-size:26px; font-weight:750; color:#ffffff; margin-top:7px; }
+.kpi .sub { font-size:12px; color:#8fa5ce; margin-top:4px; }
+.good { color:#35d49a !important; } .bad { color:#ff7777 !important; } .warn { color:#ffcf5c !important; }
+div[data-testid="stDataFrame"] { border-radius:14px; overflow:hidden; border:1px solid #2a3a60; }
+.brand {padding:17px 15px;border-radius:18px;background:linear-gradient(135deg,#2563eb 0%,#4f46e5 48%,#7c3aed 100%);color:white;margin-bottom:17px;box-shadow:0 10px 28px rgba(37,99,235,.25);}
+.brand-title {font-size:18px;font-weight:850;letter-spacing:-.02em;} .brand-sub {font-size:11px;opacity:.82;margin-top:5px;}
+.section-title {font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:#9fc5ff;font-weight:850;margin:18px 3px 8px;}
+.sidebar-note {font-size:11px;color:#9aaed0;padding:7px 4px 10px;line-height:1.45;}
+section[data-testid="stSidebar"] .stFileUploader {border-radius:12px;background:rgba(255,255,255,.035);}
+section[data-testid="stSidebar"] [data-testid="stExpander"] {border:1px solid #2a3b64;border-radius:12px;background:rgba(15,23,42,.32);}
+[data-testid="stMetric"] {background:#111b32;border:1px solid #2d416d;border-radius:13px;padding:10px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -682,23 +687,82 @@ def save_weekly_snapshot(summary):
 
 
 def show_weekly_change(summary, previous):
+    """Render the current-vs-previous weekly performance dashboard."""
+    st.markdown("## Weekly performance dashboard")
     if not previous:
+        st.info('Upload the saved JSON from last week in the sidebar to activate the graphical comparison.')
         return
     old = pd.DataFrame(previous.get("states", []))
     if old.empty or "State" not in old:
+        st.info('The uploaded history file does not contain a previous state snapshot yet.')
         return
-    cur = summary.set_index("State")
-    old = old.set_index("State")
+
+    cur = summary.set_index("State").copy()
+    old = old.set_index("State").copy()
+    states = sorted(set(cur.index) | set(old.index))
+    metrics = ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit", "Margin %"]
     rows = []
-    for state in sorted(set(cur.index) | set(old.index)):
+    for state in states:
         row = {"State": state}
-        for col in ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit", "Margin %"]:
+        for col in metrics:
             a = pd.to_numeric(cur[col], errors="coerce").get(state, float("nan")) if col in cur else float("nan")
             b = pd.to_numeric(old[col], errors="coerce").get(state, float("nan")) if col in old else float("nan")
-            row[f"{col} change"] = round(a - b, 2) if pd.notna(a) and pd.notna(b) else float("nan")
+            row[f"Current {col}"] = a
+            row[f"Previous {col}"] = b
+            row[f"Change {col}"] = round(a - b, 2) if pd.notna(a) and pd.notna(b) else float("nan")
         rows.append(row)
-    st.markdown("#### Change vs previous saved week")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    comparison = pd.DataFrame(rows)
+
+    # Headline cards: current total versus the previous saved week.
+    cards = [
+        ("First Paid", "Current First Paid", "Previous First Paid", "money"),
+        ("Contract Revenue", "Current Contract Revenue", "Previous Contract Revenue", "money"),
+        ("Revenue Gap", "Current Revenue Gap", "Previous Revenue Gap", "money"),
+        ("Profit", "Current Profit", "Previous Profit", "money"),
+        ("Margin", "Current Margin %", "Previous Margin %", "pct"),
+    ]
+    cols = st.columns(5)
+    for col, (label, current_key, previous_key, kind) in zip(cols, cards):
+        current = pd.to_numeric(comparison[current_key], errors="coerce").sum()
+        previous_total = pd.to_numeric(comparison[previous_key], errors="coerce").sum()
+        delta = current - previous_total
+        if kind == "pct":
+            # Margin is a ratio, not additive across states: use weighted total when available.
+            value = (pd.to_numeric(cur.get("Profit", pd.Series(dtype=float)), errors="coerce").sum() /
+                     pd.to_numeric(cur.get("Contract Revenue", pd.Series(dtype=float)), errors="coerce").sum() * 100
+                     if pd.to_numeric(cur.get("Contract Revenue", pd.Series(dtype=float)), errors="coerce").sum() else current)
+            prev_value = (pd.to_numeric(old.get("Profit", pd.Series(dtype=float)), errors="coerce").sum() /
+                          pd.to_numeric(old.get("Contract Revenue", pd.Series(dtype=float)), errors="coerce").sum() * 100
+                          if pd.to_numeric(old.get("Contract Revenue", pd.Series(dtype=float)), errors="coerce").sum() else previous_total)
+            kpi(col, label, f"{value:.1f}%", f"previous {prev_value:.1f}% · change {value-prev_value:+.1f} pts",
+                "good" if value >= prev_value else "bad")
+        else:
+            kpi(col, label, money(current), f"previous {money(previous_total)} · change {money(delta)}",
+                "good" if delta >= 0 else "bad")
+
+    st.markdown("### State performance: current vs previous")
+    chart_cols = ["Current First Paid", "Previous First Paid", "Current Contract Revenue", "Previous Contract Revenue"]
+    chart = comparison.set_index("State")[chart_cols].fillna(0)
+    st.bar_chart(chart, height=360)
+
+    st.markdown("### Profit and revenue-gap movement by state")
+    movement = comparison.set_index("State")[["Current Profit", "Previous Profit", "Current Revenue Gap", "Previous Revenue Gap"]].fillna(0)
+    st.bar_chart(movement, height=340)
+
+    st.markdown("### Biggest changes this week")
+    ranking = comparison[["State", "Change First Paid", "Change Contract Revenue", "Change Revenue Gap", "Change Profit", "Change Margin %"]].copy()
+    ranking["Total movement"] = ranking[["Change First Paid", "Change Contract Revenue", "Change Profit"]].abs().sum(axis=1)
+    ranking = ranking.sort_values("Total movement", ascending=False)
+    # Remove the final helper column from the displayed report as requested.
+    ranking = ranking.drop(columns=["Total movement"])
+    st.dataframe(ranking, use_container_width=True, hide_index=True)
+
+    st.download_button(
+        "Download weekly comparison (Excel)",
+        data=to_excel({"Weekly Comparison": ranking}),
+        file_name="BT_weekly_comparison.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 # ----------------------------- UI -----------------------------
 STATE_UPLOAD_ORDER = [
@@ -717,7 +781,7 @@ def kpi(col, label, value, sub="", cls=""):
     )
 
 st.title("Hatem's B.T. Analyzer")
-st.caption("Beyond Transportation - weekly state profit, revenue gap and compliance")
+st.caption("Weekly financial control center · First vs contract revenue · state compliance")
 
 with st.sidebar:
     st.markdown('''<div class="brand"><div class="brand-title">🚐 Hatem's B.T. Analyzer</div><div class="brand-sub">Beyond Transportation · weekly financial control</div></div>''', unsafe_allow_html=True)
@@ -726,7 +790,7 @@ with st.sidebar:
         'First / SP ITEMIZED reports (NET PAY = what First paid)',
         type=['xlsx', 'xls'], accept_multiple_files=True, key='first')
     st.markdown('<div class="section-title">2 · Ever Driven / state reports</div>', unsafe_allow_html=True)
-    st.caption('Upload all files together or place each file under its state. Revenue is the contract price; PAY is driver payment.')
+    st.markdown('<div class="sidebar-note">Revenue = contract price · PAY = driver payment · NET PAY = First payment</div>', unsafe_allow_html=True)
     all_state_files = st.file_uploader(
         'Upload all state reports together', type=['xlsx', 'xls'],
         accept_multiple_files=True, key='state_all')
@@ -740,12 +804,25 @@ with st.sidebar:
     for file_obj in all_state_files or []:
         state_inputs.append((file_obj, None))
 
+    st.markdown('<div class="section-title">3 · Weekly history</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-note">Upload last week’s history JSON before analysis. After analysis, download the updated file and keep it for next week.</div>', unsafe_allow_html=True)
+    history_file = st.file_uploader('Upload saved weekly history', type=['json'], key='history_up')
+
 if not first_files:
     st.info("Upload at least one First report to begin. Each state's trips and "
             "revenue (First Paid) are read straight from the First report. Add "
             "the state price reference files only if you also want contract "
             "revenue, the revenue gap and profit.")
     st.stop()
+
+# Restore the previous saved weeks when the app is running on a stateless host.
+if history_file is not None:
+    try:
+        hp = history_path()
+        hp.write_bytes(history_file.getvalue())
+        st.sidebar.success('Weekly history restored')
+    except Exception as exc:
+        st.sidebar.error(f'History file could not be loaded: {exc}')
 
 first_all = pd.concat([read_first(f.getvalue(), f.name) for f in first_files], ignore_index=True)
 
@@ -786,9 +863,30 @@ if (first_all["state"] == "Unassigned").any():
 summary = pd.DataFrame([state_totals(first_all, state_all, c)
                         for c in present_codes if c != "Unassigned"])
 previous_snapshot = save_weekly_snapshot(summary)
+history_for_download = history_path()
+if history_for_download is not None:
+    st.sidebar.download_button(
+        'Download updated weekly history',
+        data=history_for_download.read_bytes(),
+        file_name='bt_weekly_history.json',
+        mime='application/json',
+        use_container_width=True,
+    )
 
-view = st.sidebar.radio("View", ["Consolidated Report", "Amounts Owed by First",
-                                 "Trips Comparison"] + present_codes)
+STATE_LABELS = {
+    "AK": "Alaska", "N.CA": "North California", "S.CA": "South California",
+    "AZ": "Arizona", "OR": "Oregon", "IL": "Illinois", "NM": "New Mexico",
+    "NE": "Nebraska", "Unassigned": "Unassigned"
+}
+view_labels = {
+    "📊  Consolidated Dashboard": "Consolidated Report",
+    "💰  Amounts owed by First": "Amounts Owed by First",
+    "🔎  Trips comparison": "Trips Comparison",
+}
+for code in present_codes:
+    view_labels[f"📍  {STATE_LABELS.get(code, code)}"] = code
+selected_view = st.sidebar.radio("Navigation", list(view_labels), key="view_nav")
+view = view_labels[selected_view]
 
 # ----------------------------- rendering -----------------------------
 def fmt_money_cols(df, cols):
