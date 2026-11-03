@@ -50,7 +50,8 @@ STATE_ALIASES = {
     "SCA":"S.CA","SOUTHCA":"S.CA","SOUTHERNCA":"S.CA","SOUTHCALIFORNIA":"S.CA",
     "RSAZ":"S.CA","RIVERSIDE":"S.CA","ARIZONA":"S.CA","AZ":"S.CA",
     "NCA":"N.CA","NORTHCA":"N.CA","NORTHERNCA":"N.CA","NORTHCALIFORNIA":"N.CA",
-    "NORTHCAREPORT":"N.CA","BENICIA":"N.CA","SACRAMENTO":"N.CA","SANLEANDRO":"N.CA",
+    "NORTHCAREPORT":"N.CA","BENICIA":"N.CA","SAC":"N.CA","SACRAMENTO":"N.CA",
+    "MON":"N.CA","MONTEREY":"N.CA","SANLEANDRO":"N.CA",
     "BERKELEY":"N.CA","RICHMOND":"N.CA","ELDORADO":"N.CA",
     "IL":"IL","ILLINOIS":"IL","ILREPORT":"IL",
     "NM":"NM","NEWMEXICO":"NM","ABQ":"NM","ALBUQUERQUE":"NM",
@@ -66,7 +67,7 @@ ROUTE_STATE_HINTS = {
     "OAKLAND":"N.CA", "HAYWARD":"N.CA", "FREMONT":"N.CA",
     "CONCORD":"N.CA", "WALNUT CREEK":"N.CA", "VALLEJO":"N.CA",
     "SAN PABLO":"N.CA", "ANTIOCH":"N.CA", "FAIRFIELD":"N.CA",
-    "SACRAMENTO":"SAC",
+    "SACRAMENTO":"N.CA",
     "RIVERSIDE":"S.CA", "ARIZONA":"S.CA", "PHOENIX":"S.CA",
     "SAN DIEGO":"S.CA", "LOS ANGELES":"S.CA",
     "ANCHORAGE":"AK", "PORTLAND":"OR", "GRESHAM":"OR",
@@ -411,6 +412,10 @@ def read_state(file_bytes, fname, forced_code=None):
         if best is None or len(out) > len(best):
             best = out
     code = forced_code or state_from_filename(fname)
+    # Sacramento and Monterey are reporting locations inside North California,
+    # never standalone states. Normalize both uploaded and filename-derived codes.
+    code = {"SAC": "N.CA", "MON": "N.CA", "SACRAMENTO": "N.CA",
+            "MONTEREY": "N.CA"}.get(str(code).upper(), code)
     if best is None:
         best = pd.DataFrame(columns=["driver", "driver_disp", "contract", "driverpay"])
     best = best.copy()
@@ -697,10 +702,11 @@ def show_weekly_change(summary, previous):
 
 # ----------------------------- UI -----------------------------
 STATE_UPLOAD_ORDER = [
-    ('AK', 'Alaska'), ('SAC', 'Sacramento'), ('N.CA', 'North California'),
-    ('S.CA', 'South California / Riverside & Arizona'), ('AZ', 'Arizona'),
-    ('OR', 'Oregon'), ('IL', 'Illinois'), ('NM', 'New Mexico'), ('NE', 'Nebraska'),
-    ('MON', 'Monterey'),
+    ('AK', 'Alaska'),
+    ('N.CA', 'North California (includes Sacramento & Monterey)'),
+    ('S.CA', 'South California / Riverside & Arizona'),
+    ('AZ', 'Arizona'), ('OR', 'Oregon'), ('IL', 'Illinois'),
+    ('NM', 'New Mexico'), ('NE', 'Nebraska'),
 ]
 def kpi(col, label, value, sub="", cls=""):
     col.markdown(
