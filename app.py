@@ -203,14 +203,18 @@ def classify(first_df, driver_state):
     """Assign each First trip to a state: driver->state from the uploaded state
     reports first; then the Alaska First file; then Oregon-school fallback."""
     df = first_df.copy()
-    df["state"] = df["driver"].map(driver_state)
+    # keep the column as object dtype so string assignment never hits
+    # pandas 3.0 LossySetitemError (float->str) when there are no matches.
+    state = df["driver"].map(driver_state).astype("object")
     fs = df.get("file_state")
     if fs is not None:
-        m = df["state"].isna() & fs.notna()
-        df.loc[m, "state"] = fs[m]
-    m = df["state"].isna()
-    df.loc[m, "state"] = df.loc[m, "trip"].map(lambda t: "OR" if or_school_hit(t) else None)
-    df["state"] = df["state"].fillna("Unassigned")
+        fs = fs.astype("object")
+        need = state.isna() & fs.notna()
+        state = state.where(~need, fs)
+    need = state.isna()
+    or_state = df["trip"].map(lambda t: "OR" if or_school_hit(t) else None).astype("object")
+    state = state.where(~need, or_state)
+    df["state"] = state.fillna("Unassigned").astype("object")
     return df
 
 def to_excel(frames):
