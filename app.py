@@ -405,6 +405,8 @@ def read_state(file_bytes, fname, forced_code=None):
        driver, driver_disp, contract, driverpay, state)."""
     xl = pd.ExcelFile(io.BytesIO(file_bytes))
     best = None
+    best_report_contract_total = None
+    best_report_pay_total = None
     for sh in xl.sheet_names:
         df = xl.parse(sh)
         df.columns = [str(c).strip() for c in df.columns]
@@ -413,11 +415,22 @@ def read_state(file_bytes, fname, forced_code=None):
         pc = find_col(df.columns, "PAY", "payment")
         if not (dn and rc and pc):
             continue
+        raw_contract = pd.to_numeric(df[rc], errors="coerce")
+        raw_pay = pd.to_numeric(df[pc], errors="coerce")
+        raw_driver = df[dn].astype(str).str.strip()
+        # State reports often end with an official total row. Depending on the
+        # export, its driver cell is blank, "Total", "Grand Total", "Subtotal",
+        # or another label from SUMMARY_NAMES. Read the last such numeric row
+        # explicitly; never treat it as a trip.
+        summary_driver = raw_driver.map(norm_name)
+        total_mask = summary_driver.isin(SUMMARY_NAMES) & (raw_contract.notna() | raw_pay.notna())
+        report_contract_total = float(raw_contract[total_mask].dropna().iloc[-1]) if raw_contract[total_mask].notna().any() else None
+        report_pay_total = float(raw_pay[total_mask].dropna().iloc[-1]) if raw_pay[total_mask].notna().any() else None
         out = pd.DataFrame({
             "driver": df[dn].map(norm_name),
             "driver_disp": df[dn].astype(str).str.strip(),
-            "contract": pd.to_numeric(df[rc], errors="coerce"),
-            "driverpay": pd.to_numeric(df[pc], errors="coerce"),
+            "contract": raw_contract,
+            "driverpay": raw_pay,
         }).dropna(subset=["driver"])
         out = _clean_driver(out)
         out = out[~out["driver"].isin(SUMMARY_NAMES)]
@@ -428,6 +441,8 @@ def read_state(file_bytes, fname, forced_code=None):
         out = out[~out["monitor"]].copy()
         if best is None or len(out) > len(best):
             best = out
+            best_report_contract_total = report_contract_total
+            best_report_pay_total = report_pay_total
     code = forced_code or state_from_filename(fname)
     # Sacramento and Monterey are reporting locations inside North California,
     # never standalone states. Normalize both uploaded and filename-derived codes.
@@ -438,6 +453,11 @@ def read_state(file_bytes, fname, forced_code=None):
     best = best.copy()
     best["contract"] = best["contract"].fillna(0.0)
     best["driverpay"] = best["driverpay"].fillna(0.0)
+    # Carry official report totals on every detail row so downstream summaries
+    # use one authoritative total instead of accidentally summing a duplicated
+    # or rounded detail line.
+    best["report_contract_total"] = best_report_contract_total
+    best["report_pay_total"] = best_report_pay_total
     best["state"] = code
     return code, best
 
@@ -512,8 +532,12 @@ def state_totals(first_df, state_df, code):
     s = state_df[state_df["state"] == code]
     runs = int((~f["monitor"]).sum()) if len(f) else 0
     first_paid = float(f["net"].sum())
-    contract = float(s["contract"].sum())
-    driverpay = float(s["driverpay"].sum())
+    detail_contract = float(s["contract"].sum())
+    detail_driverpay = float(s["driverpay"].sum())
+    official_contract = pd.to_numeric(s.get("report_contract_total", pd.Series(dtype=float)), errors="coerce").dropna()
+    official_pay = pd.to_numeric(s.get("report_pay_total", pd.Series(dtype=float)), errors="coerce").dropna()
+    contract = float(official_contract.iloc[0]) if len(official_contract) else detail_contract
+    driverpay = float(official_pay.iloc[0]) if len(official_pay) else detail_driverpay
     gap = contract - first_paid
     profit = contract - driverpay
     margin = (profit / contract * 100.0) if contract else 0.0
@@ -522,6 +546,12 @@ def state_totals(first_df, state_df, code):
         "First Paid": first_paid,
         "Contract Revenue": contract, "Revenue Gap": gap,
         "Driver Pay": driverpay, "Profit": profit, "Margin %": round(margin, 1),
+        # Keep the independently summed trip details visible for audit. The
+        # official report totals above remain authoritative for the KPIs.
+        "Detail Revenue Sum": detail_contract,
+        "Revenue Reconciliation Diff": round(detail_contract - contract, 2),
+        "Detail Payment Sum": detail_driverpay,
+        "Payment Reconciliation Diff": round(detail_driverpay - driverpay, 2),
     }
 
 # Agreed-rate rules that come straight from the First report (no price file
@@ -924,6 +954,12 @@ def first_only_report(first_df, state_df):
         state_summary = state_df.groupby("state").agg(
             **{"State Revenue": ("contract", "sum"), "State Report Trips": ("driver", "size")}
         ).reset_index().rename(columns={"state": "State"})
+        if "report_contract_total" in state_df.columns:
+            official = (state_df.dropna(subset=["report_contract_total"])
+                        .groupby("state")["report_contract_total"].first()
+                        .rename("State Revenue"))
+            state_summary = state_summary.drop(columns=["State Revenue"]).join(official, on="State")
+            state_summary["State Revenue"] = state_summary["State Revenue"].fillna(0)
         summary = summary.merge(state_summary, on="State", how="outer")
         summary["First Paid"] = summary["First Paid"].fillna(0)
         summary["First Trips"] = summary["First Trips"].fillna(0).astype(int)
@@ -978,7 +1014,9 @@ def fmt_money_cols(df, cols):
             out[c] = out[c].map(money)
     return out
 
-MONEY_COLS = ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit"]
+MONEY_COLS = ["First Paid", "Contract Revenue", "Revenue Gap", "Driver Pay", "Profit",
+              "Detail Revenue Sum", "Revenue Reconciliation Diff",
+              "Detail Payment Sum", "Payment Reconciliation Diff"]
 
 if view == "First Report Only":
     render_first_only(first_all, state_all)
