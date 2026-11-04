@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon="\U0001f690", layout="wide")
+st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon="🚐", layout="wide")
 
 st.markdown("""
 <style>
@@ -235,7 +235,10 @@ def per_state_table(first_df):
     g["Revenue"] = g["Revenue"].round(2)
     g["Miles"] = g["Miles"].round(1)
     g["State"] = g["state"].map(lambda c: STATE_NAMES.get(c, c))
-    g = g[["State", "Trips", "Revenue", "Miles", "Drivers"]]
+    tot = g["Revenue"].sum()
+    g["Share %"] = (g["Revenue"] / tot * 100).round(1) if tot else 0.0
+    g["Rev/Trip"] = (g["Revenue"] / g["Trips"].replace(0, pd.NA)).round(2)
+    g = g[["State", "Trips", "Revenue", "Miles", "Drivers", "Share %", "Rev/Trip"]]
     g = g.sort_values("Revenue", ascending=False).reset_index(drop=True)
     return g
 
@@ -261,23 +264,23 @@ def kpi(col, label, value, sub=""):
 
 # ----------------------------- UI -----------------------------
 st.title("Hatem's B.T. Analyzer")
-st.caption("\u062a\u0642\u0631\u064a\u0631 First \u00b7 \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0648\u0627\u0644\u062a\u0641\u0635\u064a\u0644 \u0644\u0643\u0644 \u0648\u0644\u0627\u064a\u0629")
+st.caption("First Report · Totals & Per-State Breakdown")
 
 with st.sidebar:
-    st.markdown('<div class="brand"><div class="brand-title">\U0001f690 Hatem\'s B.T. Analyzer</div>'
+    st.markdown('<div class="brand"><div class="brand-title">🚐 Hatem\'s B.T. Analyzer</div>'
                 '<div class="brand-sub">Beyond Transportation</div></div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-title">1 \u00b7 \u062a\u0642\u0627\u0631\u064a\u0631 First</div>', unsafe_allow_html=True)
-    st.markdown('<div class="note">\u0627\u0631\u0641\u0639 \u062a\u0642\u0631\u064a\u0631 First (\u0643\u0644 \u0627\u0644\u0648\u0644\u0627\u064a\u0627\u062a) \u0648\u062a\u0642\u0631\u064a\u0631 First Alaska. NET PAY = \u0627\u0644\u0625\u064a\u0631\u0627\u062f.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">1 · First Reports</div>', unsafe_allow_html=True)
+    st.markdown('<div class="note">Upload the First report (all states) and the First Alaska report. NET PAY = Revenue.</div>', unsafe_allow_html=True)
     first_files = st.file_uploader("First / SP ITEMIZED reports", type=["xlsx", "xls"],
                                    accept_multiple_files=True, key="first")
-    st.markdown('<div class="section-title">2 \u00b7 \u062a\u0642\u0627\u0631\u064a\u0631 \u0627\u0644\u0648\u0644\u0627\u064a\u0627\u062a (\u0627\u0644\u0645\u0631\u062c\u0639)</div>', unsafe_allow_html=True)
-    st.markdown('<div class="note">\u062a\u062d\u062f\u062f \u0623\u064a \u0633\u0627\u0626\u0642 \u0641\u064a \u0623\u064a \u0648\u0644\u0627\u064a\u0629 (\u0627\u062e\u062a\u064a\u0627\u0631\u064a). \u0627\u0644\u0625\u064a\u0631\u0627\u062f \u062f\u0627\u0626\u0645\u064b\u0627 \u0645\u0646 First.</div>', unsafe_allow_html=True)
-    state_files = st.file_uploader("\u062a\u0642\u0627\u0631\u064a\u0631 \u0627\u0644\u0648\u0644\u0627\u064a\u0627\u062a", type=["xlsx", "xls"],
+    st.markdown('<div class="section-title">2 · State Reports (reference)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="note">Maps each driver to a state (optional). Revenue always comes from First.</div>', unsafe_allow_html=True)
+    state_files = st.file_uploader("State reports", type=["xlsx", "xls"],
                                    accept_multiple_files=True, key="states")
 
 if not first_files:
-    st.info("\u0627\u0631\u0641\u0639 \u062a\u0642\u0631\u064a\u0631 First \u0648\u0627\u062d\u062f \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644 \u0644\u0644\u0628\u062f\u0621. "
-            "\u0643\u0644 \u0631\u062d\u0644\u0629 \u0648\u0625\u064a\u0631\u0627\u062f\u0647\u0627 \u064a\u064f\u0642\u0631\u0623 \u0645\u0646 \u062a\u0642\u0631\u064a\u0631 First \u0645\u0628\u0627\u0634\u0631\u0629.")
+    st.info("Upload at least one First report to begin. "
+            "Every trip and its revenue is read directly from the First report.")
     st.stop()
 
 first_all = pd.concat([read_first(f.getvalue(), f.name) for f in first_files], ignore_index=True)
@@ -340,57 +343,61 @@ excel_bytes = to_excel({
 })
 
 STATE_ORDER = [c for c in first_all["state"].unique()]
-nav = ["\U0001f4ca \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a", "\U0001f5fa\ufe0f \u062a\u0642\u0631\u064a\u0631 \u0643\u0644 \u0648\u0644\u0627\u064a\u0629"]
-nav += [f"\U0001f4cd {STATE_NAMES.get(c, c)}" for c in STATE_ORDER]
+nav = ["📊 Overview", "🗺️ Per-State Report"]
+nav += [f"📍 {STATE_NAMES.get(c, c)}" for c in STATE_ORDER]
 choice = st.sidebar.radio("Navigation", nav)
-st.sidebar.download_button("\u2b07\ufe0f \u062a\u062d\u0645\u064a\u0644 \u0627\u0644\u062a\u0642\u0631\u064a\u0631 (Excel)", data=excel_bytes,
+st.sidebar.download_button("⬇️ Download Report (Excel)", data=excel_bytes,
                            file_name="BT_First_Report.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True)
 
 if unassigned:
-    st.warning(f"\u064a\u0648\u062c\u062f {unassigned:,} \u0631\u062d\u0644\u0629 \u0644\u0645 \u064a\u062a\u0645 \u0631\u0628\u0637\u0647\u0627 \u0628\u0648\u0644\u0627\u064a\u0629 (\u0627\u0644\u0633\u0627\u0626\u0642 \u063a\u064a\u0631 \u0645\u0648\u062c\u0648\u062f \u0641\u064a \u0623\u064a \u062a\u0642\u0631\u064a\u0631 \u0648\u0644\u0627\u064a\u0629 \u0648\u0644\u0627 \u0645\u062f\u0631\u0633\u0629 \u0623\u0648\u0631\u064a\u062c\u0648\u0646 \u0645\u0639\u0631\u0648\u0641\u0629). \u0627\u0631\u0641\u0639 \u062a\u0642\u0631\u064a\u0631 \u0627\u0644\u0648\u0644\u0627\u064a\u0629 \u0627\u0644\u0646\u0627\u0642\u0635.")
+    st.warning(f"{unassigned:,} trips could not be matched to a state (driver not found in any state report or known Oregon school). Upload the missing state report.")
 
 if choice == nav[0]:
-    st.subheader("\U0001f4ca \u0627\u0644\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0639\u0627\u0645")
+    st.subheader("📊 Overall Totals")
     c = st.columns(4)
-    kpi(c[0], "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0631\u062d\u0644\u0627\u062a", f"{total_trips:,}")
-    kpi(c[1], "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0625\u064a\u0631\u0627\u062f", money(total_rev), "First NET PAY")
-    kpi(c[2], "\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0623\u0645\u064a\u0627\u0644", f"{total_miles:,.0f}")
-    kpi(c[3], "\u0639\u062f\u062f \u0627\u0644\u0633\u0627\u0626\u0642\u064a\u0646", f"{total_drivers:,}")
-    st.markdown("#### \u0627\u0644\u0625\u064a\u0631\u0627\u062f \u062d\u0633\u0628 \u0627\u0644\u0648\u0644\u0627\u064a\u0629")
+    kpi(c[0], "Total Trips", f"{total_trips:,}")
+    kpi(c[1], "Total Revenue", money(total_rev), "First NET PAY")
+    kpi(c[2], "Total Miles", f"{total_miles:,.0f}")
+    kpi(c[3], "Drivers", f"{total_drivers:,}")
+    st.markdown("#### Revenue by State")
     st.bar_chart(per_state.set_index("State")[["Revenue"]], height=340)
-    st.markdown("#### \u0627\u0644\u0631\u062d\u0644\u0627\u062a \u062d\u0633\u0628 \u0627\u0644\u0648\u0644\u0627\u064a\u0629")
+    st.markdown("#### Trips by State")
     st.bar_chart(per_state.set_index("State")[["Trips"]], height=340)
 
 elif choice == nav[1]:
-    st.subheader("\U0001f5fa\ufe0f \u062a\u0642\u0631\u064a\u0631 \u0643\u0644 \u0648\u0644\u0627\u064a\u0629")
+    st.subheader("🗺️ Per-State Report")
     show = per_state.copy()
     grand = {"State": "TOTAL", "Trips": total_trips, "Revenue": round(total_rev, 2),
-             "Miles": round(total_miles, 1), "Drivers": total_drivers}
+             "Miles": round(total_miles, 1), "Drivers": total_drivers,
+             "Share %": 100.0,
+             "Rev/Trip": round(total_rev / total_trips, 2) if total_trips else 0.0}
     show = pd.concat([show, pd.DataFrame([grand])], ignore_index=True)
     show_disp = show.copy()
     show_disp["Revenue"] = show_disp["Revenue"].map(money)
     show_disp["Miles"] = show_disp["Miles"].map(lambda x: f"{x:,.0f}")
+    show_disp["Share %"] = show_disp["Share %"].map(lambda x: f"{x:.1f}%")
+    show_disp["Rev/Trip"] = show_disp["Rev/Trip"].map(money)
     st.dataframe(show_disp, use_container_width=True, hide_index=True)
 
 else:
     label = choice.split(" ", 1)[1]
     code = next((c for c in STATE_ORDER if STATE_NAMES.get(c, c) == label), label)
     f = first_all[first_all["state"] == code]
-    st.subheader(f"\U0001f4cd {label}")
+    st.subheader(f"📍 {label}")
     c = st.columns(4)
-    kpi(c[0], "\u0627\u0644\u0631\u062d\u0644\u0627\u062a", f"{len(f):,}")
-    kpi(c[1], "\u0627\u0644\u0625\u064a\u0631\u0627\u062f", money(f["net"].sum()), "First NET PAY")
-    kpi(c[2], "\u0627\u0644\u0623\u0645\u064a\u0627\u0644", f"{f['miles'].sum():,.0f}")
-    kpi(c[3], "\u0627\u0644\u0633\u0627\u0626\u0642\u064a\u0646", f"{f['driver'].nunique():,}")
+    kpi(c[0], "Trips", f"{len(f):,}")
+    kpi(c[1], "Revenue", money(f["net"].sum()), "First NET PAY")
+    kpi(c[2], "Miles", f"{f['miles'].sum():,.0f}")
+    kpi(c[3], "Drivers", f"{f['driver'].nunique():,}")
     if code == "AK":
         n_short = int((f["net"] == 42.5).shape[0] and (f["net"] == 42.5).sum())
         owed = n_short * 2.5
         st.markdown(
-            '<div class="note">\u0623\u0644\u0627\u0633\u0643\u0627: \u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0645\u062a\u0641\u0642 \u0639\u0644\u064a\u0647 <b>$45</b> \u0644\u0644\u0631\u062d\u0644\u0629. \u0641\u064a\u0647 <b>'
+            '<div class="note">Alaska: agreed rate <b>$45</b> per trip. There are <b>'
             + f"{n_short:,}"
-            + '</b> \u0631\u062d\u0644\u0629 \u0645\u062f\u0641\u0648\u0639\u0629 <b>$42.50</b> (\u0646\u0627\u0642\u0635 $2.50 \u0644\u0644\u0631\u062d\u0644\u0629) \u2190 First \u0645\u062f\u064a\u0646 \u0644\u0644\u0634\u0631\u0643\u0629 \u0628\u0640 <b>'
+            + '</b> trips paid <b>$42.50</b> (short by $2.50 each) → First owes the company <b>'
             + money(owed)
             + '</b>.</div>',
             unsafe_allow_html=True,
@@ -399,9 +406,9 @@ else:
     dt_disp = dt.copy()
     dt_disp["Revenue"] = dt_disp["Revenue"].map(money)
     dt_disp["Miles"] = dt_disp["Miles"].map(lambda x: f"{x:,.0f}")
-    st.markdown("#### \u0627\u0644\u0633\u0627\u0626\u0642\u0648\u0646")
+    st.markdown("#### Drivers")
     st.dataframe(dt_disp, use_container_width=True, hide_index=True)
-    st.markdown("#### \u062a\u0641\u0627\u0635\u064a\u0644 \u0627\u0644\u0631\u062d\u0644\u0627\u062a")
+    st.markdown("#### Trip Details")
     d = f[["driver_disp", "date", "trip", "miles", "net"]].copy()
     d.columns = ["Driver", "Date", "Trip", "Miles", "First NET PAY"]
     st.dataframe(d, use_container_width=True, hide_index=True)
