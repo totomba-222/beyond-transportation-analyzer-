@@ -68,6 +68,90 @@ STATE_NAMES = {
     "Unassigned": "Unassigned",
 }
 
+# Driver -> state map (driver-first base map, 189 drivers / zero cross-state
+# collisions) learned from the state reports. It is baked in so a First-only
+# upload still classifies every trip to the right state; uploading a state
+# report still refines / overrides it.
+BASE_DRIVER_STATE = {
+    'abdalrahman omer fadlalla': 'N.CA', 'abdelaziz dafi': 'NM',
+    'abdelhakem benazouz': 'AK', 'abdul azizi': 'S.CA', 'abdulfatah ali alowdi': 'N.CA',
+    'abdulgaleel a albadani': 'N.CA', 'abdullah ahmed eissa': 'N.CA',
+    'abdulrahman alnagar alnagar': 'N.CA', 'abeer ahmad dhaifallah': 'N.CA',
+    'abla suleiman': 'S.CA', 'adam ait azzat': 'NM', 'adeeb saleh anagar': 'N.CA',
+    'adonis gonzalez': 'NM', 'ahmad jaarah': 'S.CA', 'ahmed (mo)': 'AK',
+    'ahmed musaad almakkawi': 'N.CA', 'akram awad': 'S.CA', 'alal mohammed bosh': 'N.CA',
+    'alamin mohammed y bakor': 'AK', 'alberto ramirez': 'S.CA', 'alexis santos': 'NM',
+    'ali adam babeker': 'AK', 'ali saleh hassan': 'N.CA', 'alsadig m mohammed': 'N.CA',
+    'ammar alammari': 'N.CA', 'angely wladiuska carrero': 'NM',
+    'arette celeste eredia': 'S.CA', 'ashu no last name': 'S.CA',
+    'asma mohammed alhamdani': 'N.CA', 'atta ul mohsin': 'S.CA', 'avinash tiwari': 'S.CA',
+    'awad ali arbab': 'IL', 'ayman awad': 'NM', 'aziza rayan': 'S.CA',
+    'azmi maghathe': 'S.CA', 'bahati basoma': 'AK', 'bassel bahnassi': 'S.CA',
+    'brahim bouhamadi': 'NM', 'brahima conde': 'AK', 'christine abrego leyva': 'NM',
+    'christopher nicholas rutty': 'AK', 'dana r dbiesi': 'S.CA', 'danier requejo': 'NM',
+    'dayanys pie rodriguez': 'NM', 'dehanyi ruiz piti (mo)': 'AK',
+    'denakhalil mahmoud al shoukha': 'S.CA', 'denis zamora': 'S.CA',
+    'dianelis dr la caridad delgado san juan': 'NM', 'dieumerci chongo (mo)': 'AK',
+    'dina farha': 'S.CA', 'ezzat (mo)': 'AK', 'faisal seifou mahamat eltahir': 'AK',
+    'fares ameen alshalh': 'N.CA', 'fathi aloui': 'NM', 'fausta piti montero': 'AK',
+    'fitsum t tessema': 'NM', 'francisco berrocal camposano': 'AK',
+    'franco berrocal camposano': 'AK', 'fuad aleiadih': 'S.CA',
+    'gabriel feliz suarez': 'AK', 'habes al tayyeb': 'N.CA',
+    'hanan hassan almalahi': 'N.CA', 'hassan mahmoud hassan': 'N.CA',
+    'hayat khudhair khalaf': 'AK', 'heba al nser': 'S.CA', 'hesham alrawhani': 'N.CA',
+    'hiadar elsayed': 'N.CA', 'himanshu gupta': 'S.CA', 'hiter requejo pena': 'NM',
+    'hoda sharaby': 'S.CA', 'husni mubarik': 'N.CA', 'ibrahim m elsayed': 'N.CA',
+    'ibrahim mahmoud hassan mohamed': 'N.CA', 'ildephonse tshimpumpu': 'AK',
+    'isam qadari': 'N.CA', 'iyad yousef hamdan': 'S.CA', 'james ken puol': 'AK',
+    'jennifer soes alizon': 'NM', 'jeremie kitenge katumba': 'AK',
+    'jihane benchaouch': 'S.CA', 'jose antonio abreu': 'AK', 'juan fuenmayor': 'NM',
+    'judith mutalegwa kizungu': 'IL', 'julio e victoriano': 'AK', 'jumana f naser': 'NM',
+    'kevin j machuca': 'AK', 'khalid abu sarriyeh': 'S.CA', 'khalil asfan': 'NM',
+    'laith alfayadh': 'S.CA', 'lazaro armentero': 'NM', 'leen albahnassi': 'S.CA',
+    'leila hamad rayan': 'S.CA', 'lithe farouk abdullah': 'S.CA', 'lucia c rosendo': 'NM',
+    'lulit girma bune': 'N.CA', 'magali de los angeles garcia': 'AK',
+    'mandeep singh': 'S.CA', 'mansoor saleh mohammed al ansy': 'AK',
+    'maria rivera-ramirez': 'S.CA', 'martin bugere': 'IL',
+    'mayelin rives santiesteban': 'NM', 'miriam dawod rayan': 'S.CA',
+    'mohamed ahmed hugais': 'N.CA', 'mohamed b ayuob': 'AK',
+    'mohamed hussein altayeb abdalla': 'N.CA', 'mohamed omar ali': 'N.CA',
+    'mohamed omir': 'N.CA', 'mohammad hamdan ahmad alsutari': 'S.CA',
+    'mohammad m al bitari': 'NM', 'mohammed a.i hejab': 'N.CA',
+    'mohammed emad bedaer': 'S.CA', 'mohammed h adam': 'N.CA',
+    'mohaned abdelazim ahmed elwali': 'N.CA', 'mona bazzoun': 'S.CA',
+    'mostafa safwan alhakim': 'S.CA', 'mostafa sharaby': 'S.CA',
+    'mubashar b ahmad': 'S.CA', 'muhammad bilal naeem': 'S.CA', 'muhammad laiq': 'N.CA',
+    'muhammad obaidul hussain': 'S.CA', 'mustafa ali albarea': 'N.CA',
+    'mustafa f m zatar': 'S.CA', 'mustafa hassan abdalkareem': 'N.CA',
+    'nabeel aldabbas': 'S.CA', 'nada a suleiman': 'S.CA', 'nafeesa hakimi': 'NM',
+    'nagibah e alghazali': 'N.CA', 'najib fettah': 'NM', 'neelam sadiq': 'S.CA',
+    'nesrin elshabasy': 'S.CA', 'niazbina joyan': 'NM', 'nihma farha': 'S.CA',
+    'niveen mohd abdel aziz abbad': 'S.CA', 'no given name rohit kumar': 'S.CA',
+    'nonamegiven sukhvinder': 'S.CA', 'noreldin saddig osaman': 'AK',
+    'nour rayyan': 'S.CA', 'omer mustafa': 'N.CA', 'omer omer': 'N.CA',
+    'pandasi mugisha': 'AK', 'pedro julio victoriano , (mo)': 'AK',
+    'radwan soueidan': 'NM', 'raisa rosendo': 'NM', 'rana muhammad abrar bashir': 'S.CA',
+    'rana nazmi abu samrah salaymeh': 'S.CA', 'rasem s alessa': 'NM',
+    'rashid masood malik': 'N.CA', 'rehan ahmad malik': 'S.CA',
+    'robert luis cabrera ibargoyin': 'NM', 'rodney perez': 'NM',
+    'ruben bruno ramirez rivera': 'S.CA', 'safwan alhakim': 'S.CA',
+    'saif said awda': 'S.CA', 'salah hassan': 'N.CA', 'salah musa hussein': 'S.CA',
+    'salwa saleh anagar': 'N.CA', 'samir m abas': 'N.CA', 'sandeep singh bajwa': 'S.CA',
+    'saqib hussain': 'S.CA', 'sarah hamade rayyan': 'S.CA',
+    'sheikh shahzaib anwar': 'N.CA', 'siddieg basher khair': 'N.CA',
+    'snose omar hamid ali': 'N.CA', 'solomon bekkele': 'N.CA', 'sucad hassan cali': 'N.CA',
+    'sukhjit singh': 'S.CA', 'sultan alhalemi': 'N.CA', 'syed saleem ahmad': 'S.CA',
+    'tahani hussain': 'S.CA', 'taquia davis': 'S.CA', 'taranjeet singh': 'S.CA',
+    'tarek m beltagy': 'NM', 'thaer abusnoubar': 'S.CA', 'wadah alomaisi alomaisi': 'N.CA',
+    'wilder antonio montejo arencibia': 'NM', 'xiomara estrellita (mo)': 'AK',
+    'yajaira mercedes rodriguez (mo)': 'AK', 'yanina leydinan burgos linares': 'AK',
+    'yara fakhrieh jaber': 'S.CA', 'yaremys rodriguez rosendo': 'NM',
+    'yasmany carmona luna': 'NM', 'yeshi challa': 'N.CA', 'yoel graveran': 'NM',
+    'yosmer armando carrero': 'NM', 'yousef yahya alzawkari': 'N.CA',
+    'yuder casanova robles': 'NM', 'zajary laza chapotin': 'NM', 'zeinab ali': 'NM',
+    'zohra joyan': 'NM',
+}
+
 # Map an uploaded state-report filename to its state code.
 STATE_FILE_HINTS = [
     ("albuquerque", "NM"), ("newmexico", "NM"), ("abq", "NM"),
@@ -285,7 +369,7 @@ if not first_files:
 
 first_all = pd.concat([read_first(f.getvalue(), f.name) for f in first_files], ignore_index=True)
 
-driver_state = {}
+driver_state = dict(BASE_DRIVER_STATE)
 state_ref = []
 for f in state_files or []:
     code, sdf = read_state(f.getvalue(), f.name)
