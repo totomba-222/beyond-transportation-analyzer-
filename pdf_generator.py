@@ -260,7 +260,10 @@ def _add_first(R_, main, label, adjustments=None):
     o = SR.first_overview(main, adjustments); k = {"Total trips": o["Trips"], "Total revenue (trip price paid)": o["Revenue"], "Drivers": o["Drivers"], "Miles": o["Miles"]}
     if "Adjustments" in o: k.update({"Adjustments (non-trip, e.g. drug test)": o["Adjustments"], "Net revenue received": o["Net revenue"]})
     R_.kpis(k)
-    t = SR.first_state_table(main); R_.table(t, "Totals by state")
+    if main.provider.nunique() > 1:
+        R_.table(SR.provider_table(main), "Totals by provider")
+        R_.table(SR.state_provider_table(main), "Totals by state and provider")
+    t = SR.first_state_table(main); R_.table(t, "Totals by state (all providers combined)")
     R_.land(); R_.story.append(_fig_img(SR.share_figure(t, ("Trips", "Revenue"))))
 
 
@@ -295,7 +298,8 @@ def _add_disc(R_, rec, rate=45.0):
         if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
-def first_report(main, label="First / EverDriven", adjustments=None):
+def first_report(main, label=None, adjustments=None):
+    label = label or SR.provider_label(main)
     R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments); return R_.build()
 
 
@@ -307,7 +311,8 @@ def discrepancy_report(rec, rate=45.0):
     R_ = Report("Price Discrepancy Report", _period(rec)); _add_disc(R_, rec, rate); return R_.build()
 
 
-def combined_report(main, rec, label="First / EverDriven", rate=45.0, adjustments=None):
+def combined_report(main, rec, label=None, rate=45.0, adjustments=None):
+    label = label or SR.provider_label(main)
     R_ = Report("Combined Report", _period(main)); _add_first(R_, main, label, adjustments)
     if (rec.state_source != "").any():
         R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec, rate)

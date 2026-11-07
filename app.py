@@ -74,7 +74,7 @@ has_state = bool(len(res.st))
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
 if n_un: st.warning(f"{n_un:,} trips have no state assigned - shown under 'Unassigned'.")
 
-page = st.sidebar.radio("Report", ["1) First / EverDriven report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
+page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
 if has_state:
     with st.sidebar:
         st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments))
@@ -82,21 +82,25 @@ names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
 if page.startswith("1"):
-    st.header("First / EverDriven report")
+    label = SR.provider_label(main)
+    st.header(f"{label} report")
     o = SR.first_overview(main, res.adjustments); c = st.columns(6 if "Adjustments" in o else 4)
     c[0].metric("Total trips", f"{o['Trips']:,}"); c[1].metric("Total revenue", money(o["Revenue"])); c[2].metric("Drivers", f"{o['Drivers']:,}"); c[3].metric("Miles", f"{o['Miles']:,.0f}")
     if "Adjustments" in o:
         c[4].metric("Adjustments", money(o["Adjustments"])); c[5].metric("Net revenue received", money(o["Net revenue"]))
         with st.expander("Non-trip adjustments"): show(res.adjustments)
-    t = SR.first_state_table(main); st.subheader("Totals by state"); show(t)
+    if main.provider.nunique() > 1:
+        st.subheader("Totals by provider"); show(SR.provider_table(main))
+        st.subheader("Totals by state and provider"); show(SR.state_provider_table(main))
+    t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t)
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
-    st.caption(f"{len(d):,} trips - total {money(d['First Revenue'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By state": t, "Adjustments": res.adjustments}
+    st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Adjustments": res.adjustments}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button("First / EverDriven report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments))
+    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):

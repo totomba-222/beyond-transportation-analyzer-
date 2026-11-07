@@ -33,8 +33,9 @@ def first_state_table(main):
 
 def first_state_detail(main, code):
     d = main[main.state == code].sort_values(["driver", "date"])
-    out = d[["date", "driver_disp", "trip_id", "trip_name", "miles", "main_amount", "flags", "src_file", "src_row"]].copy()
-    out.columns = ["Date", "Driver", "Trip ID", "Trip Name", "Miles", "First Revenue", "Data flags", "Source file", "Source row"]
+    out = d[["provider", "date", "driver_disp", "trip_id", "trip_name", "miles", "main_amount", "flags", "src_file", "src_row"]].copy()
+    out["provider"] = out.provider.map(PROVIDER_NAMES).fillna(out.provider)
+    out.columns = ["Provider", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Revenue (trip price paid)", "Data flags", "Source file", "Source row"]
     return out
 
 
@@ -196,3 +197,40 @@ def monitor_by_driver(rec, code):
     t = g.groupby("driver").agg(Entries=("driver_payment", "size"), Payment=("driver_payment", "sum")).reset_index()
     t.columns = ["Monitor", "Entries", "Driver Payment"]
     return _with_total(t, "Monitor", ["Entries", "Driver Payment"])
+
+
+PROVIDER_NAMES = {"FIRST": "First", "EVERDRIVEN": "EverDriven"}
+
+
+def _order(provs):
+    """First before EverDriven, anything else after, alphabetically."""
+    return sorted(provs, key=lambda p: (list(PROVIDER_NAMES.values()).index(p) if p in PROVIDER_NAMES.values() else 99, p))
+
+
+def provider_label(main):
+    """'First', 'EverDriven' or 'First + EverDriven' depending on what was uploaded."""
+    ps = _order([PROVIDER_NAMES.get(p, p) for p in main.provider.dropna().unique() if p])
+    return " + ".join(ps) if ps else "Main report"
+
+
+def provider_table(main):
+    g = main.assign(Provider=main.provider.map(PROVIDER_NAMES).fillna(main.provider)).groupby("Provider").agg(
+        Trips=("main_amount", "size"), Drivers=("driver", "nunique"), Miles=("miles", "sum"), Revenue=("main_amount", lambda s: s.sum(min_count=1))).reset_index()
+    g["Revenue/Trip"] = g.Revenue / g.Trips; g["Revenue %"] = g.Revenue / g.Revenue.sum() * 100
+    g = g.set_index("Provider").loc[_order(g.Provider)].reset_index()
+    t = {"Provider": "TOTAL", "Trips": int(g.Trips.sum()), "Drivers": main.driver.nunique(), "Miles": g.Miles.sum(), "Revenue": g.Revenue.sum(),
+         "Revenue/Trip": g.Revenue.sum() / g.Trips.sum(), "Revenue %": 100.0}
+    return pd.concat([g, pd.DataFrame([t])], ignore_index=True)
+
+
+def state_provider_table(main):
+    """One row per state; trips and revenue for each provider side by side, then the combined total."""
+    m = main.assign(P=main.provider.map(PROVIDER_NAMES).fillna(main.provider)); provs = _order(m.P.unique()); rows = []
+    for code, g in m.groupby("state"):
+        row = {"State": _nm(code)}
+        for p in provs:
+            gp = g[g.P == p]; row[f"{p} Trips"] = len(gp); row[f"{p} Revenue"] = gp.main_amount.sum()
+        row["Total Trips"] = len(g); row["Total Revenue"] = g.main_amount.sum(min_count=1); rows.append(row)
+    t = pd.DataFrame(rows).sort_values("Total Revenue", ascending=False)
+    tot = {c: t[c].sum() for c in t.columns if c != "State"}; tot["State"] = "TOTAL"
+    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
