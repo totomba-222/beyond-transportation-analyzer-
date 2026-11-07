@@ -77,29 +77,33 @@ if n_un: st.warning(f"{n_un:,} trips have no state assigned - shown under 'Unass
 page = st.sidebar.radio("Report", ["1) First / EverDriven report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
 if has_state:
     with st.sidebar:
-        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate))
+        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
 if page.startswith("1"):
     st.header("First / EverDriven report")
-    o = SR.first_overview(main); c = st.columns(4)
+    o = SR.first_overview(main, res.adjustments); c = st.columns(6 if "Adjustments" in o else 4)
     c[0].metric("Total trips", f"{o['Trips']:,}"); c[1].metric("Total revenue", money(o["Revenue"])); c[2].metric("Drivers", f"{o['Drivers']:,}"); c[3].metric("Miles", f"{o['Miles']:,.0f}")
+    if "Adjustments" in o:
+        c[4].metric("Adjustments", money(o["Adjustments"])); c[5].metric("Net revenue received", money(o["Net revenue"]))
+        with st.expander("Non-trip adjustments"): show(res.adjustments)
     t = SR.first_state_table(main); st.subheader("Totals by state"); show(t)
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['First Revenue'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By state": t}
+    sheets = {"Overall": pd.DataFrame([o]), "By state": t, "Adjustments": res.adjustments}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button("First / EverDriven report", "first_report", lambda: PG.first_report(main))
+    pdf_button("First / EverDriven report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):
     st.header("State reports")
     if not has_state: st.info("Upload the state reports in the sidebar to see revenue, payments and profit."); st.stop()
     t = SR.state_financials(rec); show(t)
+    if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
     if (t["Trips missing revenue"] > 0).any(): st.warning("Some state-report trips have no revenue. They are kept, not counted as zero, and excluded from profit.")
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue", "Driver Payments", "Profit"]])
     pick = st.selectbox("State detail", list(t.State[:-1])); show(SR.state_trip_detail(rec, names.get(pick, pick)), 500)
@@ -124,6 +128,8 @@ else:
         with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
             cl, ot = SR.claim_split(rec, code, ak_rate)
             if len(cl): st.markdown(f"**Claim to First: trips paid below the official ${ak_rate:,.2f} rate**"); show(cl)
+            mo = SR.monitor_by_driver(rec, code)
+            if len(mo): st.markdown("**Monitor (MO) payments - costs with no trip revenue (information only)**"); show(mo); sheets[f"{code} monitors"[:31]] = mo
             for ttl, df, sh in (("Trips with a different price", a, "price"), ("In the state report but not in First", s, "state-only"), ("In First but not in the state report", f, "First-only")):
                 if len(df): st.markdown(f"**{ttl}**"); show(df); sheets[f"{code} {sh}"[:31]] = df
     st.download_button("⬇️ Excel (discrepancies)", EG.build_workbook(sheets), "Discrepancies.xlsx", XLSX)

@@ -23,7 +23,7 @@ SS = getSampleStyleSheet()
 H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName="Helvetica-Bold", fontSize=15, textColor=NAVY, spaceAfter=6)
 H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, spaceBefore=8, spaceAfter=4)
 BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName="Helvetica", fontSize=8.5, leading=11)
-MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid")
+MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid", "adjust")
 
 
 def usd(v):
@@ -138,7 +138,7 @@ class Report:
 TRIP_COLS = {"date": "Date", "driver": "Driver", "main_trip_id": "Trip ID", "trip_name": "Trip Name", "main_miles": "Miles",
              "main_revenue": "Main Revenue", "state_revenue": "State Revenue", "driver_payment": "Driver Payment",
              "profit": "Profit", "revenue_difference": "Difference", "audit_status": "Status"}
-EXC_OK = ["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED"]
+EXC_OK = ["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED", "MONITOR PAYMENT"]
 
 
 def _period(rec):
@@ -255,9 +255,11 @@ def _fig_img(fig, w=250):
     return Image(b, width=w * mm, height=w * mm * 0.33)
 
 
-def _add_first(R_, main, label):
+def _add_first(R_, main, label, adjustments=None):
     R_.h1(f"{label}: overall and by state")
-    o = SR.first_overview(main); R_.kpis({"Total trips": o["Trips"], "Total revenue (trip price paid)": o["Revenue"], "Drivers": o["Drivers"], "Miles": o["Miles"]})
+    o = SR.first_overview(main, adjustments); k = {"Total trips": o["Trips"], "Total revenue (trip price paid)": o["Revenue"], "Drivers": o["Drivers"], "Miles": o["Miles"]}
+    if "Adjustments" in o: k.update({"Adjustments (non-trip, e.g. drug test)": o["Adjustments"], "Net revenue received": o["Net revenue"]})
+    R_.kpis(k)
     t = SR.first_state_table(main); R_.table(t, "Totals by state")
     R_.land(); R_.story.append(_fig_img(SR.share_figure(t, ("Trips", "Revenue"))))
 
@@ -266,7 +268,9 @@ def _add_states(R_, rec):
     R_.h1("State reports: revenue, payments, profit and margin")
     t = SR.state_financials(rec)
     if t.empty: R_.p("No state reports uploaded."); return
-    R_.table(t, "All states"); R_.chart(t[t.State != "TOTAL"], "State", ["Revenue", "Driver Payments", "Profit"], "Revenue, driver payments and profit by state")
+    R_.table(t, "All states")
+    if t["Monitor payments"].sum() > 0: R_.p("Monitor (MO) payments are costs: they are included in Driver Payments and in Profit; monitors have no trip revenue of their own.")
+    R_.chart(t[t.State != "TOTAL"], "State", ["Revenue", "Driver Payments", "Profit"], "Revenue, driver payments and profit by state")
 
 
 def _add_disc(R_, rec, rate=45.0):
@@ -284,13 +288,15 @@ def _add_disc(R_, rec, rate=45.0):
             if len(d): R_.table(d, f"{nm} - claim by driver (trip-by-trip detail is in the Excel file)", font=7)
         so = SR.state_only_by_driver(rec, code)
         if len(so): R_.table(so, f"{nm} - trips in the state report but NOT in First/EverDriven, by driver (detail is in the Excel file)", font=7)
+        mo = SR.monitor_by_driver(rec, code)
+        if len(mo): R_.table(mo, f"{nm} - monitor (MO) payments: monitors ride next to the driver, so there is no separate trip revenue (information only, not a discrepancy)", font=7)
         n_acc, amt_acc = SR.accepted_summary(rec[rec.state == code])
         if n_acc: R_.p(f"Note: {n_acc} {nm} trips paid at other rates differ by $2.50 each (total ${abs(amt_acc):,.2f}); they are treated as correct and are not part of the claim.")
         if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
-def first_report(main, label="First / EverDriven"):
-    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label); return R_.build()
+def first_report(main, label="First / EverDriven", adjustments=None):
+    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments); return R_.build()
 
 
 def states_financial_report(rec):
@@ -301,8 +307,8 @@ def discrepancy_report(rec, rate=45.0):
     R_ = Report("Price Discrepancy Report", _period(rec)); _add_disc(R_, rec, rate); return R_.build()
 
 
-def combined_report(main, rec, label="First / EverDriven", rate=45.0):
-    R_ = Report("Combined Report", _period(main)); _add_first(R_, main, label)
+def combined_report(main, rec, label="First / EverDriven", rate=45.0, adjustments=None):
+    R_ = Report("Combined Report", _period(main)); _add_first(R_, main, label, adjustments)
     if (rec.state_source != "").any():
         R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec, rate)
     return R_.build()

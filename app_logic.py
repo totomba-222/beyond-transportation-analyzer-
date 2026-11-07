@@ -20,6 +20,7 @@ class Result:
     unresolved_state_files: list = field(default_factory=list)   # (filename, suggestion)
     needs_mapping: list = field(default_factory=list)            # (filename, [fields])
     duplicate_uploads: list = field(default_factory=list)
+    adjustments: pd.DataFrame = None
 
 
 def detect_state_by_content(records: pd.DataFrame, extra_map=None):
@@ -47,8 +48,8 @@ def process_uploads(main_files, state_files, settings=None, state_overrides=None
             hint = None
             if role == "state":
                 hint = (state_overrides or {}).get(name) or C.state_from_filename(name)
-            elif "alaska" in name.lower():
-                hint = "AK"
+            else:
+                hint = C.state_from_filename(name)       # e.g. First_Alaska.xlsx -> AK, Ever_driven_Nebraska.PDF -> NE
             p = readers.read_report(data, name, role, overrides=(column_overrides or {}).get(name), state_hint=hint)
             res.warnings += [f"{name}: {w}" for w in p.warnings]
             if p.needs_mapping:
@@ -69,6 +70,8 @@ def process_uploads(main_files, state_files, settings=None, state_overrides=None
         res.rec["region"] = [C.region_label(s, t) for s, t in zip(res.rec.state, res.rec.trip_name)]
     else:
         res.rec = pd.DataFrame()
+    adjs = [p.adjustments for p in res.mains if len(p.adjustments)]
+    res.adjustments = pd.concat(adjs, ignore_index=True) if adjs else pd.DataFrame(columns=["Date", "Type", "Comments", "Amount", "Source"])
     ps = res.mains + res.sts
     ex = [p.excluded for p in ps if len(p.excluded)]
     res.excluded = pd.concat(ex, ignore_index=True) if ex else pd.DataFrame()

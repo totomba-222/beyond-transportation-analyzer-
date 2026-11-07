@@ -7,7 +7,7 @@ reports always overrides them (see classification.py).
 
 STATE_NAMES = {
     "NM": "New Mexico (ABQ)", "IL": "Illinois", "N.CA": "North California",
-    "S.CA": "South California", "AK": "Alaska", "OR": "Oregon",
+    "S.CA": "South California", "AK": "Alaska", "OR": "Oregon", "NE": "Nebraska",
     "Unassigned": "Unassigned",
 }
 
@@ -62,12 +62,12 @@ STATE_FILE_HINTS = [
     ("albuquerque", "NM"), ("newmexico", "NM"), ("abq", "NM"),
     ("northca", "N.CA"), ("northerncalifornia", "N.CA"),
     ("southca", "S.CA"), ("riverside", "S.CA"), ("arizona", "S.CA"),
-    ("alaska", "AK"), ("oregon", "OR"), ("illinois", "IL"),
+    ("alaska", "AK"), ("oregon", "OR"), ("illinois", "IL"), ("nebraska", "NE"),
 ]
 STATE_TOKEN_HINTS = {
     "nm": "NM", "abq": "NM", "nca": "N.CA", "ncal": "N.CA",
     "sca": "S.CA", "scal": "S.CA", "northca": "N.CA", "southca": "S.CA", "ak": "AK", "alaska": "AK",
-    "or": "OR", "oregon": "OR", "il": "IL", "illinois": "IL",
+    "or": "OR", "oregon": "OR", "il": "IL", "illinois": "IL", "ne": "NE", "nebraska": "NE",
 }
 
 BASE_DRIVER_STATE = {

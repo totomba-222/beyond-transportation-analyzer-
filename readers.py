@@ -30,7 +30,7 @@ SYN = {
     "deduction": {"deduction", "deductions"},
     "spiff": {"spiff"},
     "revenue": {"revenue", "contract", "contractprice", "contractrevenue", "tripprice", "price", "totalrevenue"},
-    "driver_pay": {"payment", "pay", "driverpay", "driverpayment", "driverpayments"},
+    "driver_pay": {"payment", "pay", "driverpay", "driverpayment", "driverpayments", "amount"},
     "cancel": {"cancellationreason", "cancelreason"},
 }
 CANON_COLS = ["src_file", "src_sheet", "src_row", "provider", "role", "state_hint",
@@ -55,6 +55,8 @@ class ParsedReport:
     mapping: dict = field(default_factory=dict)      # canonical field -> source header (what was assumed)
     warnings: list = field(default_factory=list)
     needs_mapping: list = field(default_factory=list)  # fields the user must map
+    adjustments: pd.DataFrame = field(default_factory=pd.DataFrame)   # non-trip adjustments (e.g. EverDriven drug test)
+    precomputed_checks: pd.DataFrame | None = None
 
 
 def _find_header(raw: pd.DataFrame, max_scan=25):
@@ -98,6 +100,10 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
     sha = file_hash(data)
     low = filename.lower()
     if low.endswith(".pdf"):
+        from everdriven_pdf import read_everdriven
+        ed = read_everdriven(data, filename, state_hint) if role == "main" else None
+        if ed is not None:
+            return ed
         from pdf_reader import pdf_to_sheets
         sheets, pdf_warn = pdf_to_sheets(data)
     else:
@@ -106,7 +112,11 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
     used_map, provider = {}, "UNKNOWN"
     ocr_used = any("OCR" in w for w in pdf_warn)
 
+    names = [str(n).lower() for n, _ in sheets]
+    skip_summary = role == "state" and len(sheets) > 1 and any("detail" in n for n in names)
     for sheet, raw in sheets:
+        if skip_summary and "summary" in str(sheet).lower():
+            warns.append(f"Sheet '{sheet}': summary sheet not imported as trips (the Details sheet is used)."); continue
         raw = raw.reset_index(drop=True)
         h = _find_header(raw)
         if h is None:
@@ -157,6 +167,14 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
 
         num = lambda c: body[m[c]].map(to_number) if c in m else pd.Series(np.nan, index=body.index)
         drv_raw = body[m["driver"]]
+        # grouped layout (driver written only on the first row of each group, e.g. Nebraska 'Details'): forward-fill
+        _hd = drv_raw.notna() & ~drv_raw.astype(str).str.strip().isin(["", "nan", "None"])
+        _mc = [m[c] for c in ("main_amount", "revenue", "driver_pay") if c in m]
+        _money = pd.concat([body[c].map(to_number).notna() for c in _mc], axis=1).any(axis=1) if _mc else pd.Series(False, index=body.index)
+        if _money.sum() and (_money & ~_hd).sum() > 0.5 * _money.sum() and _hd.any():
+            drv_raw = drv_raw.where(_hd, np.nan).ffill()
+            body[m["driver"]] = drv_raw
+            warns.append(f"Sheet '{sheet}': driver names carried down from the first row of each group.")
         has_driver = drv_raw.notna() & ~drv_raw.astype(str).str.strip().isin(["", "nan", "None"])
         is_tot = drv_raw.map(is_total_label) & has_driver
         money_cols = [m[c] for c in ("main_amount", "revenue", "driver_pay") if c in m]
@@ -237,6 +255,8 @@ def validate_control_totals(p: ParsedReport) -> pd.DataFrame:
     """Compare each declared Total / sub-total against the recomputed detail sum."""
     rows = []
     r, c = p.records, p.control_totals
+    if p.precomputed_checks is not None:
+        return p.precomputed_checks
     if c.empty:
         return pd.DataFrame(columns=["src_file", "src_row", "kind", "field", "declared", "computed", "difference"])
     for _, t in c.iterrows():

@@ -6,15 +6,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from config import STATE_NAMES
 
-OK = ["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED"]
+OK = ["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED", "MONITOR PAYMENT"]
 
 
 def _nm(c): return STATE_NAMES.get(c, c)
 
 
-def first_overview(main):
-    return {"Trips": len(main), "Revenue": main.main_amount.sum(min_count=1), "Drivers": main.driver.nunique(),
-            "Miles": main.miles.sum(min_count=1), "States": main.state.nunique()}
+def first_overview(main, adjustments=None):
+    o = {"Trips": len(main), "Revenue": main.main_amount.sum(min_count=1), "Drivers": main.driver.nunique(),
+         "Miles": main.miles.sum(min_count=1), "States": main.state.nunique()}
+    if adjustments is not None and len(adjustments):          # non-trip adjustments (e.g. EverDriven drug test)
+        o["Adjustments"] = adjustments.Amount.sum(); o["Net revenue"] = o["Revenue"] + o["Adjustments"]
+    return o
 
 
 def first_state_table(main):
@@ -36,23 +39,19 @@ def first_state_detail(main, code):
 
 
 def state_financials(rec):
-    """Only states that have an uploaded state report. Trips = rows present in the state report."""
-    r = rec[rec.state_source != ""]
-    rows = []
-    for code, g in r.groupby("state"):
-        both = g[g.state_revenue.notna() & g.driver_payment.notna()]
-        profit = (both.state_revenue - both.driver_payment).sum() if len(both) else np.nan
-        rev = g.state_revenue.sum(min_count=1)
-        rows.append({"State": _nm(code), "Trips": len(g), "Drivers": g.driver.str.lower().nunique(), "Revenue": rev,
-                     "Driver Payments": g.driver_payment.sum(min_count=1), "Profit": profit,
-                     "Margin %": profit / both.state_revenue.sum() * 100 if len(both) and both.state_revenue.sum() else np.nan,
-                     "Trips missing revenue": int(g.state_revenue.isna().sum())})
+    """Only states with an uploaded state report. Trips exclude monitor (MO) rows; monitor payments are costs
+    (included in Driver Payments and Profit) with no revenue of their own."""
+    r = rec[rec.state_source != ""]; rows = []
+    def line(label, g):
+        mon, trips = g[g.audit_status == "MONITOR PAYMENT"], g[g.audit_status != "MONITOR PAYMENT"]
+        pr = g[g.profit.notna()]; profit = pr.profit.sum() if len(pr) else np.nan; den = pr.state_revenue.sum(min_count=1)
+        return {"State": label, "Trips": len(trips), "Drivers": trips.driver.str.lower().nunique(), "Revenue": g.state_revenue.sum(min_count=1),
+                "Driver Payments": g.driver_payment.sum(min_count=1), "Monitor payments": mon.driver_payment.sum(),
+                "Profit": profit, "Margin %": profit / den * 100 if len(pr) and den else np.nan,
+                "Trips missing revenue": int(trips.state_revenue.isna().sum())}
+    for code, g in r.groupby("state"): rows.append(line(_nm(code), g))
     t = pd.DataFrame(rows).sort_values("Revenue", ascending=False)
-    if len(t):
-        tp = t.Profit.sum(min_count=1); br = r[r.state_revenue.notna() & r.driver_payment.notna()].state_revenue.sum()
-        t = pd.concat([t, pd.DataFrame([{"State": "TOTAL", "Trips": t.Trips.sum(), "Drivers": r.driver.str.lower().nunique(), "Revenue": t.Revenue.sum(),
-                                         "Driver Payments": t["Driver Payments"].sum(), "Profit": tp, "Margin %": tp / br * 100 if br else np.nan,
-                                         "Trips missing revenue": t["Trips missing revenue"].sum()}])], ignore_index=True)
+    if len(t): t = pd.concat([t, pd.DataFrame([line("TOTAL", r)])], ignore_index=True)
     return t
 
 
@@ -72,7 +71,8 @@ def discrepancy_summary(rec):
                      "Trips in First but not in state report": len(ms), "Their First revenue": ms.main_revenue.sum(),
                      "Trips in state report but not in First": len(mm), "Their state revenue": mm.state_revenue.sum(min_count=1),
                      "Trips with missing state revenue": int(mm.state_revenue.isna().sum()),
-                     "Their driver payments": mm.driver_payment.sum(min_count=1), "Their miles": mm.state_miles.sum(min_count=1)})
+                     "Their driver payments": mm.driver_payment.sum(min_count=1), "Their miles": mm.state_miles.sum(min_count=1),
+                     "Monitor payments (no trip revenue)": g[g.audit_status == "MONITOR PAYMENT"].driver_payment.sum()})
     t = pd.DataFrame(rows)
     if len(t):
         s = t.drop(columns="State").sum(min_count=1); s["State"] = "TOTAL"; t = pd.concat([t, pd.DataFrame([s])], ignore_index=True)
@@ -188,3 +188,11 @@ def apply_rate_rule(rec, rate=45.0):
 def accepted_summary(rec):
     a = rec[rec.notes.astype(str).str.startswith("ACCEPTED")]
     return len(a), (a.main_revenue - a.state_revenue).sum() if len(a) else 0.0
+
+
+def monitor_by_driver(rec, code):
+    g = rec[(rec.state == code) & (rec.audit_status == "MONITOR PAYMENT")]
+    if g.empty: return pd.DataFrame()
+    t = g.groupby("driver").agg(Entries=("driver_payment", "size"), Payment=("driver_payment", "sum")).reset_index()
+    t.columns = ["Monitor", "Entries", "Driver Payment"]
+    return _with_total(t, "Monitor", ["Entries", "Driver Payment"])
