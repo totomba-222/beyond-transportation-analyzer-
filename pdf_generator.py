@@ -23,7 +23,7 @@ SS = getSampleStyleSheet()
 H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName="Helvetica-Bold", fontSize=15, textColor=NAVY, spaceAfter=6)
 H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, spaceBefore=8, spaceAfter=4)
 BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName="Helvetica", fontSize=8.5, leading=11)
-MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent")
+MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid")
 
 
 def usd(v):
@@ -269,16 +269,24 @@ def _add_states(R_, rec):
     R_.table(t, "All states"); R_.chart(t[t.State != "TOTAL"], "State", ["Revenue", "Driver Payments", "Profit"], "Revenue, driver payments and profit by state")
 
 
-def _add_disc(R_, rec):
+def _add_disc(R_, rec, rate=45.0):
+    rec = SR.apply_rate_rule(rec, rate)
     R_.h1("Differences between First and the state reports")
     t = SR.discrepancy_summary(rec)
     if t.empty: R_.p("No state reports uploaded."); return
     R_.table(t, "Summary by state (difference = First revenue - state revenue)", font=6.5)
     for code in rec[rec.state_source != ""].state.unique():
-        a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
-        if len(a): R_.table(a, f"{nm} - trips with a different price", font=6.5)
-        if len(s): R_.table(s, f"{nm} - trips in the state report but not in First (miles, state revenue, driver payment)", font=6.5)
-        if len(f): R_.table(f, f"{nm} - trips in First but not in the state report", font=6.5)
+        nm = STATE_NAMES.get(code, code); a, s, f = SR.discrepancy_sections(rec, code)
+        claim, other = SR.claim_split(rec, code, rate)
+        if len(claim):
+            R_.table(claim, f"{nm} - CLAIM TO FIRST: trips paid below the official ${rate:,.2f} rate", font=8)
+            d = SR.claim_by_driver(rec, code, rate)
+            if len(d): R_.table(d, f"{nm} - claim by driver (trip-by-trip detail is in the Excel file)", font=7)
+        so = SR.state_only_by_driver(rec, code)
+        if len(so): R_.table(so, f"{nm} - trips in the state report but NOT in First/EverDriven, by driver (detail is in the Excel file)", font=7)
+        n_acc, amt_acc = SR.accepted_summary(rec[rec.state == code])
+        if n_acc: R_.p(f"Note: {n_acc} {nm} trips paid at other rates differ by $2.50 each (total ${abs(amt_acc):,.2f}); they are treated as correct and are not part of the claim.")
+        if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
 def first_report(main, label="First / EverDriven"):
@@ -289,12 +297,12 @@ def states_financial_report(rec):
     R_ = Report("State Financial Report", _period(rec)); _add_states(R_, rec); return R_.build()
 
 
-def discrepancy_report(rec):
-    R_ = Report("Price Discrepancy Report", _period(rec)); _add_disc(R_, rec); return R_.build()
+def discrepancy_report(rec, rate=45.0):
+    R_ = Report("Price Discrepancy Report", _period(rec)); _add_disc(R_, rec, rate); return R_.build()
 
 
-def combined_report(main, rec, label="First / EverDriven"):
+def combined_report(main, rec, label="First / EverDriven", rate=45.0):
     R_ = Report("Combined Report", _period(main)); _add_first(R_, main, label)
     if (rec.state_source != "").any():
-        R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec)
+        R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec, rate)
     return R_.build()

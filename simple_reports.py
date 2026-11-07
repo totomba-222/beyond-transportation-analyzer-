@@ -116,3 +116,75 @@ def discrepancy_sections(rec, code):
     return (_with_total(a, "Driver", ["Miles", "First Revenue", "State Revenue", "Difference (First - State)"]),
             _with_total(s, "Driver", ["Miles", "State Revenue", "Driver Payment"]),
             _with_total(f, "Driver", ["Miles", "First Revenue"]))
+
+
+def price_diff_grouped(rec, code):
+    """One row per (official state price, price First paid): trips, difference per trip, total difference."""
+    g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
+    if g.empty: return pd.DataFrame()
+    t = g.groupby(["state_revenue", "main_revenue"]).agg(Trips=("revenue_difference", "size"), Total=("revenue_difference", "sum")).reset_index()
+    t["Diff"] = t.main_revenue - t.state_revenue
+    t = t.rename(columns={"state_revenue": "Official price (state report)", "main_revenue": "Price paid by First", "Diff": "Difference per trip", "Total": "Total difference"})
+    t = t[["Trips", "Official price (state report)", "Price paid by First", "Difference per trip", "Total difference"]]
+    return _with_total(t, "Trips", ["Total difference"]).assign(Trips=lambda d: d.Trips).pipe(lambda d: d.assign(Trips=d.Trips.where(d.Trips != "TOTAL", int(t.Trips.sum()))))
+
+
+def price_diff_by_driver(rec, code):
+    g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
+    if g.empty: return pd.DataFrame()
+    t = g.groupby("driver").agg(Trips=("revenue_difference", "size"), Miles=("main_miles", "sum"), Total=("revenue_difference", "sum")).reset_index()
+    t.columns = ["Driver", "Trips", "Miles", "Total difference"]
+    return _with_total(t, "Driver", ["Trips", "Miles", "Total difference"])
+
+
+def state_only_by_driver(rec, code):
+    g = rec[(rec.state == code) & rec.audit_status.isin(["MISSING FROM MAIN REPORT", "UNMATCHED DRIVER"])]
+    if g.empty: return pd.DataFrame()
+    t = g.groupby("driver").agg(Trips=("driver_payment", "size"), Miles=("state_miles", lambda x: x.sum(min_count=1)),
+                                **{"State Revenue": ("state_revenue", lambda x: x.sum(min_count=1)), "Driver Payment": ("driver_payment", lambda x: x.sum(min_count=1))}).reset_index()
+    t.columns = ["Driver", "Trips", "Miles", "State Revenue", "Driver Payment"]
+    return _with_total(t, "Driver", ["Trips", "Miles", "State Revenue", "Driver Payment"])
+
+
+def _tot(df, trips_col="Trips", sum_cols=()):
+    row = {c: "" for c in df.columns}; row[trips_col] = int(df[trips_col].sum())
+    for c in sum_cols: row[c] = df[c].sum()
+    return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+
+def claim_split(rec, code, rate=45.0):
+    """(claim, other): claim = trips whose OFFICIAL price equals the agreed rate (Alaska) but First paid less
+    -> amount owed by First; other = every remaining price difference (needs review)."""
+    g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
+    if g.empty: return pd.DataFrame(), pd.DataFrame()
+    t = g.groupby(["state_revenue", "main_revenue"]).agg(Trips=("revenue_difference", "size"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
+    t["Shortfall per trip"] = t.state_revenue - t.main_revenue
+    t = t.rename(columns={"state_revenue": "Official price", "main_revenue": "Price paid by First", "Owed": "Total owed"})[["Trips", "Official price", "Price paid by First", "Shortfall per trip", "Total owed"]]
+    is_claim = (t["Official price"].round(2) == round(rate, 2)) if code == "AK" else pd.Series(False, index=t.index)
+    c, o = t[is_claim], t[~is_claim]
+    return (_tot(c, sum_cols=["Total owed"]) if len(c) else c), (_tot(o, sum_cols=["Total owed"]) if len(o) else o)
+
+
+def claim_by_driver(rec, code, rate=45.0):
+    g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
+    if code == "AK": g = g[g.state_revenue.round(2) == round(rate, 2)]
+    else: return pd.DataFrame()
+    if g.empty: return pd.DataFrame()
+    t = g.groupby("driver").agg(Trips=("revenue_difference", "size"), Miles=("main_miles", "sum"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
+    t.columns = ["Driver", "Trips", "Miles", "Total owed"]
+    return _with_total(t, "Driver", ["Trips", "Miles", "Total owed"])
+
+
+def apply_rate_rule(rec, rate=45.0):
+    """Management rule: in Alaska only trips whose official price equals the agreed rate (45) are errors.
+    Other Alaska price differences are ACCEPTED (relabelled MATCHED, note kept). The original rec is untouched."""
+    r = rec.copy()
+    m = (r.state == "AK") & (r.audit_status == "REVENUE MISMATCH") & (r.state_revenue.round(2) != round(rate, 2))
+    r.loc[m, "notes"] = "ACCEPTED: price differs from state report, treated as correct (management decision)"
+    r.loc[m, "audit_status"] = "MATCHED"
+    return r
+
+
+def accepted_summary(rec):
+    a = rec[rec.notes.astype(str).str.startswith("ACCEPTED")]
+    return len(a), (a.main_revenue - a.state_revenue).sum() if len(a) else 0.0

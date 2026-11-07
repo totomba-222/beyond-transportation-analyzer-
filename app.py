@@ -50,6 +50,7 @@ with st.sidebar:
     mfiles = st.file_uploader("Upload First or EverDriven reports", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="m")
     st.subheader("2) State reports")
     sfiles = st.file_uploader("Upload state reports (optional)", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="s")
+    ak_rate = st.number_input("Official Alaska rate ($) used for the claim", value=45.0, step=0.5)
 if not mfiles:
     st.info("Upload a First or EverDriven report to begin."); st.stop()
 
@@ -76,7 +77,7 @@ if n_un: st.warning(f"{n_un:,} trips have no state assigned - shown under 'Unass
 page = st.sidebar.radio("Report", ["1) First / EverDriven report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
 if has_state:
     with st.sidebar:
-        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec))
+        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
@@ -111,6 +112,9 @@ elif page.startswith("2"):
 else:
     st.header("Differences between First and the state reports")
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
+    rec = SR.apply_rate_rule(rec, ak_rate)
+    n_acc, amt_acc = SR.accepted_summary(rec)
+    if n_acc: st.caption(f"{n_acc} Alaska trips paid at other rates (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim.")
     t = SR.discrepancy_summary(rec); show(t)
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
     sheets = {"Summary": t}
@@ -118,7 +122,9 @@ else:
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue
         with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
+            cl, ot = SR.claim_split(rec, code, ak_rate)
+            if len(cl): st.markdown(f"**Claim to First: trips paid below the official ${ak_rate:,.2f} rate**"); show(cl)
             for ttl, df, sh in (("Trips with a different price", a, "price"), ("In the state report but not in First", s, "state-only"), ("In First but not in the state report", f, "First-only")):
                 if len(df): st.markdown(f"**{ttl}**"); show(df); sheets[f"{code} {sh}"[:31]] = df
     st.download_button("⬇️ Excel (discrepancies)", EG.build_workbook(sheets), "Discrepancies.xlsx", XLSX)
-    pdf_button("Discrepancy report", "disc", lambda: PG.discrepancy_report(rec))
+    pdf_button("Discrepancy report", "disc", lambda: PG.discrepancy_report(rec, ak_rate))
