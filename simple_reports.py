@@ -234,3 +234,27 @@ def state_provider_table(main):
     t = pd.DataFrame(rows).sort_values("Total Revenue", ascending=False)
     tot = {c: t[c].sum() for c in t.columns if c != "State"}; tot["State"] = "TOTAL"
     return pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
+
+
+def revenue_bridge(rec, rate=45.0):
+    """Per state: First/EverDriven revenue -> state-report revenue, explaining every dollar of the difference.
+    Check must be 0.00. Works on raw or rate-rule-adjusted rec (differences are recomputed from the amounts)."""
+    rows = []
+    for code, g in rec[rec.audit_status != "STATE REPORT NOT UPLOADED"].groupby("state"):
+        if not (g.state_source != "").any(): continue
+        first_total = g.main_revenue.sum()
+        first_only = g[(g.audit_status == "MISSING FROM STATE REPORT")].main_revenue.sum()
+        both = g[g.main_revenue.notna() & g.state_revenue.notna()]
+        diff = (both.state_revenue - both.main_revenue).round(2); nz = diff.abs() > 0.005
+        claim_m = nz & (code == "AK") & (both.state_revenue.round(2) == round(rate, 2))
+        claim, other = diff[claim_m].sum(), diff[nz & ~claim_m].sum()
+        state_only = g[g.main_revenue.isna() & g.state_revenue.notna()].state_revenue.sum()
+        state_total = g.state_revenue.sum()
+        rows.append({"State": _nm(code), "First/EverDriven revenue": first_total, "Less: First revenue not in state report": 0.0 - first_only + 0.0,
+                     "Plus: price differences claimed": claim, "Plus: other price differences (accepted)": other,
+                     "Plus: state-only revenue": state_only, "State report revenue": state_total,
+                     "Check difference (must be 0)": round(first_total - first_only + claim + other + state_only - state_total, 2)})
+    t = pd.DataFrame(rows)
+    if len(t):
+        tot = {c: t[c].sum() for c in t.columns if c != "State"}; tot["State"] = "TOTAL"; t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
+    return t

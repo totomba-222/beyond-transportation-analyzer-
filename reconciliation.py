@@ -3,6 +3,7 @@ Match tiers (each main row and state row used at most once):
  T1 trip id | T2 driver+date+trip | T3 driver+date+miles | T4 driver+trip (order) | T5 driver+miles (order)
  T6 driver+revenue (order) | T7 driver only (order, LOW -> manual review).
 Fuzzy driver names are used only for rows left over and are always NEEDS MANUAL REVIEW."""
+import re
 import numpy as np
 import pandas as pd
 from config import DEFAULT_SETTINGS
@@ -89,6 +90,11 @@ def reconcile(main: pd.DataFrame, state: pd.DataFrame, settings=None) -> pd.Data
     # leftovers
     for j in si:
         s = st.loc[j]; r = base(None, s); r["match_tier"], r["confidence"] = "", ""
+        if re.search(r"\(\s*mo\s*\)", str(s.driver_disp), re.I):
+            # (MO) = monitor sitting next to the driver: a cost with no trip revenue of its own (the trip's revenue is on the driver's row)
+            r["audit_status"], r["notes"] = "MONITOR PAYMENT", "Monitor (MO) paid next to the driver - no separate trip revenue"
+            r["profit"] = -s.driver_pay if pd.notna(s.driver_pay) else np.nan
+            r["revenue_difference"] = np.nan; r["margin_pct"] = np.nan; rows.append(r); continue
         if s.driver not in main_drivers:
             cand = max(((name_similarity(s.driver, d), d) for d in main_drivers), default=(0, ""))
             r["audit_status"] = "NEEDS MANUAL REVIEW" if cand[0] >= S["fuzzy_name_cutoff"] else "UNMATCHED DRIVER"

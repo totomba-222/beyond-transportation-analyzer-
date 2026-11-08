@@ -265,6 +265,9 @@ def _add_first(R_, main, label, adjustments=None):
         R_.table(SR.state_provider_table(main), "Totals by state and provider")
     t = SR.first_state_table(main); R_.table(t, "Totals by state (all providers combined)")
     R_.land(); R_.story.append(_fig_img(SR.share_figure(t, ("Trips", "Revenue"))))
+    un = main[main.state == "Unassigned"]
+    if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
+                     "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
 
 
 def _add_states(R_, rec):
@@ -281,6 +284,7 @@ def _add_disc(R_, rec, rate=45.0):
     R_.h1("Differences between First and the state reports")
     t = SR.discrepancy_summary(rec)
     if t.empty: R_.p("No state reports uploaded."); return
+    R_.table(SR.revenue_bridge(rec, rate), "Revenue bridge: First/EverDriven revenue to state-report revenue (every dollar explained)", font=7)
     R_.table(t, "Summary by state (difference = First revenue - state revenue)", font=6.5)
     for code in rec[rec.state_source != ""].state.unique():
         nm = STATE_NAMES.get(code, code); a, s, f = SR.discrepancy_sections(rec, code)

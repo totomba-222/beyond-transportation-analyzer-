@@ -18,12 +18,17 @@ def kpis(rec: pd.DataFrame, verified=True) -> dict:
            "Miles": mainrows.main_miles.sum(min_count=1), "Revenue": mainrows.main_revenue.sum(min_count=1),
            "State Revenue": rec.state_revenue.sum(min_count=1),
            "Driver Payments": rec.driver_payment.sum(min_count=1)}
-    if verified and len(both):
+    if verified and "profit" in rec.columns and rec.profit.notna().any():
+        pr = rec[rec.profit.notna()]                      # includes monitor costs (profit = -payment)
+        out["Profit"] = pr.profit.sum(); out["Margin %"] = _pct(out["Profit"], pr.state_revenue.sum(min_count=1))
+    elif verified and len(both):
         out["Profit"] = (both.state_revenue - both.driver_payment).sum()
         out["Margin %"] = _pct(out["Profit"], both.state_revenue.sum())
     else:
         out["Profit"] = out["Margin %"] = np.nan
-    out["Rows missing revenue/payment"] = int((rec.state_revenue.isna() & rec.driver_payment.notna()).sum())
+    miss = rec.state_revenue.isna() & rec.driver_payment.notna()
+    if "audit_status" in rec.columns: miss &= rec.audit_status != "MONITOR PAYMENT"
+    out["Rows missing revenue/payment"] = int(miss.sum())
     return out
 
 

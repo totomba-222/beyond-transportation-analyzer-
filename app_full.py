@@ -51,7 +51,7 @@ def process(main_t, state_t, settings_j, overrides_j, map_j, colmap_j):
 @st.cache_data(show_spinner=False)
 def workbook(rec, main, excluded, control, rate):
     a, b, by_rate, under = F.alaska_audit(rec, main, rate)
-    ex = rec[~rec.audit_status.isin(["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED"])]
+    ex = rec[~rec.audit_status.isin(["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED", "MONITOR PAYMENT"])]
     return EG.build_workbook({"State Summary": F.state_table(rec), "Drivers": F.driver_table(rec), "Reconciliation": rec,
                               "Exceptions": ex, "Alaska Shortfall": under, "Excluded Rows": excluded, "Control Totals": control,
                               "Monthly": M.monthly_table(rec)})
