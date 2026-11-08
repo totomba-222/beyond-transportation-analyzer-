@@ -258,3 +258,27 @@ def revenue_bridge(rec, rate=45.0):
     if len(t):
         tot = {c: t[c].sum() for c in t.columns if c != "State"}; tot["State"] = "TOTAL"; t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
     return t
+
+
+# ---------------------------------------------------------------- rate check from the main report ALONE (no state report needed)
+OFFICIAL_RATES = {"AK": 45.0}        # state -> official per-trip price; extend when the full rate list is available
+
+
+def first_rate_audit(main, rate=45.0, state="AK"):
+    """Trips of `state` that First/EverDriven paid BELOW the official rate (Alaska: $42.50 vs $45.00).
+    Returns (summary dict, grouped table, by-driver table, trip detail)."""
+    g = main[(main.state == state) & main.main_amount.notna() & (main.main_amount < rate - 0.005)].copy()
+    empty = pd.DataFrame()
+    if g.empty: return {"Trips below official rate": 0, "Total owed": 0.0}, empty, empty, empty
+    g["short"] = rate - g.main_amount
+    grp = g.groupby("main_amount").agg(Trips=("short", "size"), Owed=("short", "sum")).reset_index()
+    grp["Official price"] = rate; grp["Shortfall per trip"] = rate - grp.main_amount
+    grp = grp.rename(columns={"main_amount": "Price paid", "Owed": "Total owed"})[["Trips", "Official price", "Price paid", "Shortfall per trip", "Total owed"]]
+    drv = g.groupby("driver_disp").agg(Trips=("short", "size"), Miles=("miles", "sum"), Owed=("short", "sum")).reset_index()
+    drv.columns = ["Driver", "Trips", "Miles", "Total owed"]
+    det = g.sort_values(["driver", "date"])[["date", "driver_disp", "trip_id", "trip_name", "miles", "main_amount", "short", "src_file", "src_row"]].copy()
+    det.insert(5, "Official price", rate)
+    det.columns = ["Date", "Driver", "Trip ID", "Trip Name", "Miles", "Official price", "Price paid", "Shortfall", "Source file", "Source row"]
+    summary = {"Trips below official rate": len(g), "Official price": rate, "Total owed": g.short.sum(), "Drivers affected": g.driver.nunique(),
+               "Alaska trips in report": int(((main.state == state)).sum())}
+    return summary, _tot(grp, sum_cols=["Total owed"]), _with_total(drv, "Driver", ["Trips", "Miles", "Total owed"]), det

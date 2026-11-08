@@ -255,7 +255,7 @@ def _fig_img(fig, w=250):
     return Image(b, width=w * mm, height=w * mm * 0.33)
 
 
-def _add_first(R_, main, label, adjustments=None):
+def _add_first(R_, main, label, adjustments=None, rate=None):
     R_.h1(f"{label}: overall and by state")
     o = SR.first_overview(main, adjustments); k = {"Total trips": o["Trips"], "Total revenue (trip price paid)": o["Revenue"], "Drivers": o["Drivers"], "Miles": o["Miles"]}
     if "Adjustments" in o: k.update({"Adjustments (non-trip, e.g. drug test)": o["Adjustments"], "Net revenue received": o["Net revenue"]})
@@ -265,6 +265,13 @@ def _add_first(R_, main, label, adjustments=None):
         R_.table(SR.state_provider_table(main), "Totals by state and provider")
     t = SR.first_state_table(main); R_.table(t, "Totals by state (all providers combined)")
     R_.land(); R_.story.append(_fig_img(SR.share_figure(t, ("Trips", "Revenue"))))
+    if rate:
+        s, grp, drv, _ = SR.first_rate_audit(main, rate)
+        if s["Trips below official rate"]:
+            R_.section("L"); R_.h1(f"Alaska rate check ({label} report only)")
+            R_.p(f"{s['Trips below official rate']} Alaska trips of {s['Alaska trips in report']} were paid below the official ${rate:,.2f} rate. "
+                 f"Total owed by the provider: <b>{usd(s['Total owed'])}</b>. Trip-by-trip detail is in the Excel file.")
+            R_.table(grp, f"Claim: trips paid below the official ${rate:,.2f} rate", font=8); R_.table(drv, "Claim by driver", font=7)
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -302,9 +309,9 @@ def _add_disc(R_, rec, rate=45.0):
         if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
-def first_report(main, label=None, adjustments=None):
+def first_report(main, label=None, adjustments=None, rate=None):
     label = label or SR.provider_label(main)
-    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments); return R_.build()
+    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments, rate); return R_.build()
 
 
 def states_financial_report(rec):

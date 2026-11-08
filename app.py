@@ -125,13 +125,20 @@ if page.startswith("1"):
         st.subheader("Totals by state and provider"); show(SR.state_provider_table(main))
     t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t)
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
+    rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate)
+    if rs["Trips below official rate"]:
+        st.subheader(f"Alaska rate check - trips paid below the official ${ak_rate:,.2f} rate")
+        c2 = st.columns(3); c2[0].metric("Trips paid below official rate", f"{rs['Trips below official rate']:,}"); c2[1].metric("Total owed by the provider", money(rs["Total owed"])); c2[2].metric("Drivers affected", f"{rs['Drivers affected']:,}")
+        show(rgrp); 
+        with st.expander("Claim by driver"): show(rdrv)
+        with st.expander("Claim - trip by trip"): show(rdet, 400)
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Adjustments": res.adjustments}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments))
+    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):
