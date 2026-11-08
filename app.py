@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 import app_logic as AL
+import classification as C
 import excel_generator as EG
 import pdf_generator as PG
 import simple_reports as SR
@@ -32,8 +33,8 @@ def money(v): return "n/a" if pd.isna(v) else f"${v:,.2f}"
 
 
 @st.cache_data(show_spinner="Reading files...")
-def process(main_t, state_t, overrides_j, colmap_j):
-    return AL.process_uploads(list(main_t), list(state_t), json.loads(json.dumps(DEFAULT_SETTINGS)), json.loads(overrides_j), None, json.loads(colmap_j))
+def process(main_t, state_t, overrides_j, colmap_j, map_j):
+    return AL.process_uploads(list(main_t), list(state_t), json.loads(json.dumps(DEFAULT_SETTINGS)), json.loads(overrides_j), json.loads(map_j), json.loads(colmap_j))
 
 
 def pdf_button(label, key, fn):
@@ -44,18 +45,27 @@ def pdf_button(label, key, fn):
 
 
 st.title("Hatem's B.T. Analyzer")
-ss = st.session_state; ss.setdefault("overrides", {}); ss.setdefault("colmap", {})
+ss = st.session_state; ss.setdefault("overrides", {}); ss.setdefault("colmap", {}); ss.setdefault("editable_map", {})
 with st.sidebar:
     st.subheader("1) First / EverDriven reports")
     mfiles = st.file_uploader("Upload First or EverDriven reports", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="m")
     st.subheader("2) State reports")
     sfiles = st.file_uploader("Upload state reports (optional)", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="s")
     ak_rate = st.number_input("Official Alaska rate ($) used for the claim", value=45.0, step=0.5)
+    st.subheader("3) Saved driver map (optional)")
+    mapfile = st.file_uploader("CSV with columns driver,state", type=["csv"], key="map")
 if not mfiles:
     st.info("Upload a First or EverDriven report to begin."); st.stop()
 
 mt = tuple((f.name, f.getvalue()) for f in mfiles); stt = tuple((f.name, f.getvalue()) for f in (sfiles or []))
-res = process(mt, stt, json.dumps(ss["overrides"]), json.dumps(ss["colmap"]))
+csv_map = {}
+if mapfile:
+    try:
+        _m = pd.read_csv(mapfile); csv_map = {str(r.driver): str(r.state) for r in _m.itertuples() if str(r.state) in STATE_NAMES}
+    except Exception as e:
+        st.warning(f"Driver map CSV could not be read: {e}")
+full_map = {**csv_map, **ss["editable_map"]}            # assignments made in this session win over the saved CSV
+res = process(mt, stt, json.dumps(ss["overrides"]), json.dumps(ss["colmap"]), json.dumps(full_map))
 for fname, sugg in res.unresolved_state_files:
     st.warning(f"The state of '{fname}' could not be detected (suggestion: {sugg or 'none'}). Choose it:")
     opts = [c for c in STATE_NAMES if c != "Unassigned"]
@@ -72,7 +82,28 @@ if res.main is None or res.main.empty:
 main, rec = res.main, res.rec
 has_state = bool(len(res.st))
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
-if n_un: st.warning(f"{n_un:,} trips have no state assigned - shown under 'Unassigned'.")
+if n_un:
+    sug = C.suggest_states(main, res.st)
+    st.warning(f"{n_un:,} trips have no state yet. These drivers are not in any state report or in the saved driver map. "
+               "Uploading the state reports assigns them automatically; or assign them below.")
+    with st.expander(f"Assign {len(sug)} drivers without a state", expanded=True):
+        show(sug.drop(columns="driver_key"))
+        opts = ["(leave unassigned)"] + [c for c in STATE_NAMES if c != "Unassigned"]; picks = {}
+        for r_ in sug.to_dict("records"):
+            dflt = r_["Suggested state"] if r_["Suggested state"] in opts else opts[0]       # suggestion pre-selected, never applied without your click
+            picks[r_["driver_key"]] = st.selectbox(f"{r_['Driver']} ({r_['Trips']} trips)", opts, index=opts.index(dflt), key=f"asg_{r_['driver_key']}")
+        if st.button("Apply assignments"):
+            for k_, v_ in picks.items():
+                if v_ != opts[0]: ss["editable_map"][k_] = v_
+            st.rerun()
+_auto = main[main.state_source.str.startswith("trip route")]
+if len(_auto):
+    with st.expander(f"{_auto.driver.nunique()} new drivers were assigned automatically from the schools on their routes - please verify"):
+        _t = _auto.groupby(["driver_disp", "state", "state_source"]).agg(Trips=("main_amount", "size"), Revenue=("main_amount", "sum")).reset_index()
+        show(_t.rename(columns={"driver_disp": "Driver", "state": "State", "state_source": "Evidence"}))
+        st.caption("Wrong? Assign the driver in the panel above (your assignment overrides this) or upload the state report, which always wins.")
+if full_map:
+    st.sidebar.download_button("⬇️ Save driver map (CSV)", pd.DataFrame(sorted(full_map.items()), columns=["driver", "state"]).to_csv(index=False), "driver_map.csv", "text/csv")
 
 page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
 if has_state:
@@ -123,9 +154,10 @@ else:
     rec = SR.apply_rate_rule(rec, ak_rate)
     n_acc, amt_acc = SR.accepted_summary(rec)
     if n_acc: st.caption(f"{n_acc} Alaska trips paid at other rates (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim.")
+    st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate))
     t = SR.discrepancy_summary(rec); show(t)
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
-    sheets = {"Summary": t}
+    sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate), "Summary": t}
     for code in rec[rec.state_source != ""].state.unique():
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue
