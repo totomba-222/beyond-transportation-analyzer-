@@ -51,7 +51,8 @@ with st.sidebar:
     mfiles = st.file_uploader("Upload First or EverDriven reports", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="m")
     st.subheader("2) State reports")
     sfiles = st.file_uploader("Upload state reports (optional)", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="s")
-    ak_rate = st.number_input("Official Alaska rate ($) used for the claim", value=45.0, step=0.5)
+    ak_rate = st.number_input("Official Alaska rate ($)", value=45.0, step=0.5)
+    err_price = st.number_input("Price paid in error ($) - only these trips are claimed", value=42.5, step=0.5)
     st.subheader("3) Saved driver map (optional)")
     mapfile = st.file_uploader("CSV with columns driver,state", type=["csv"], key="map")
 if not mfiles:
@@ -79,7 +80,7 @@ for fname, fields in res.needs_mapping:
 for a, b in res.duplicate_uploads: st.warning(f"Duplicate file ignored: '{a}' is identical to '{b}'")
 if res.main is None or res.main.empty:
     st.error("No trips found in the First/EverDriven files."); [st.write(w) for w in res.warnings]; st.stop()
-main, rec = res.main, res.rec
+main, rec = res.main, SR.apply_rate_rule(res.rec, ak_rate, err_price)     # rule applied everywhere: only the error-price trips stay REVENUE MISMATCH
 has_state = bool(len(res.st))
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
 if n_un:
@@ -108,7 +109,7 @@ if full_map:
 page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
 if has_state:
     with st.sidebar:
-        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments))
+        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
@@ -125,11 +126,13 @@ if page.startswith("1"):
         st.subheader("Totals by state and provider"); show(SR.state_provider_table(main))
     t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t)
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
-    rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate)
+    rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate, err=err_price)
     if rs["Trips below official rate"]:
-        st.subheader(f"Alaska rate check - trips paid below the official ${ak_rate:,.2f} rate")
-        c2 = st.columns(3); c2[0].metric("Trips paid below official rate", f"{rs['Trips below official rate']:,}"); c2[1].metric("Total owed by the provider", money(rs["Total owed"])); c2[2].metric("Drivers affected", f"{rs['Drivers affected']:,}")
-        show(rgrp); 
+        st.subheader(f"Alaska rate check - trips paid ${err_price:,.2f} instead of the official ${ak_rate:,.2f}")
+        c2 = st.columns(3); c2[0].metric(f"Trips paid ${err_price:,.2f}", f"{rs['Trips below official rate']:,}"); c2[1].metric("Total owed by the provider", money(rs["Total owed"])); c2[2].metric("Drivers affected", f"{rs['Drivers affected']:,}")
+        show(rgrp)
+        if rs["Other trips below the rate (not claimed)"]:
+            st.info(f"{rs['Other trips below the rate (not claimed)']} other Alaska trips were paid below the rate at a different price ({rs['Other prices (not claimed)']}) - NOT part of this claim (shortfall {money(rs['Their shortfall (not claimed)'])}).")
         with st.expander("Claim by driver"): show(rdrv)
         with st.expander("Claim - trip by trip"): show(rdet, 400)
     st.subheader("Trip-by-trip detail")
@@ -138,7 +141,7 @@ if page.startswith("1"):
     sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate))
+    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):
@@ -158,22 +161,21 @@ elif page.startswith("2"):
 else:
     st.header("Differences between First and the state reports")
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
-    rec = SR.apply_rate_rule(rec, ak_rate)
     n_acc, amt_acc = SR.accepted_summary(rec)
-    if n_acc: st.caption(f"{n_acc} Alaska trips paid at other rates (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim.")
-    st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate))
+    if n_acc: st.caption(f"{n_acc} Alaska trips with other price differences (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim; only trips paid ${err_price:,.2f} are claimed.")
+    st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate, err_price))
     t = SR.discrepancy_summary(rec); show(t)
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
-    sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate), "Summary": t}
+    sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
     for code in rec[rec.state_source != ""].state.unique():
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue
         with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
-            cl, ot = SR.claim_split(rec, code, ak_rate)
-            if len(cl): st.markdown(f"**Claim to First: trips paid below the official ${ak_rate:,.2f} rate**"); show(cl)
+            cl, ot = SR.claim_split(rec, code, ak_rate, err_price)
+            if len(cl): st.markdown(f"**Claim to First: trips paid ${err_price:,.2f} instead of the official ${ak_rate:,.2f}**"); show(cl)
             mo = SR.monitor_by_driver(rec, code)
             if len(mo): st.markdown("**Monitor (MO) payments - costs with no trip revenue (information only)**"); show(mo); sheets[f"{code} monitors"[:31]] = mo
             for ttl, df, sh in (("Trips with a different price", a, "price"), ("In the state report but not in First", s, "state-only"), ("In First but not in the state report", f, "First-only")):
                 if len(df): st.markdown(f"**{ttl}**"); show(df); sheets[f"{code} {sh}"[:31]] = df
     st.download_button("⬇️ Excel (discrepancies)", EG.build_workbook(sheets), "Discrepancies.xlsx", XLSX)
-    pdf_button("Discrepancy report", "disc", lambda: PG.discrepancy_report(rec, ak_rate))
+    pdf_button("Discrepancy report", "disc", lambda: PG.discrepancy_report(rec, ak_rate, err_price))

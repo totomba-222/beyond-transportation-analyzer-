@@ -153,7 +153,7 @@ def _tot(df, trips_col="Trips", sum_cols=()):
     return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
 
 
-def claim_split(rec, code, rate=45.0):
+def claim_split(rec, code, rate=45.0, err=None):
     """(claim, other): claim = trips whose OFFICIAL price equals the agreed rate (Alaska) but First paid less
     -> amount owed by First; other = every remaining price difference (needs review)."""
     g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
@@ -161,14 +161,14 @@ def claim_split(rec, code, rate=45.0):
     t = g.groupby(["state_revenue", "main_revenue"]).agg(Trips=("revenue_difference", "size"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
     t["Shortfall per trip"] = t.state_revenue - t.main_revenue
     t = t.rename(columns={"state_revenue": "Official price", "main_revenue": "Price paid by First", "Owed": "Total owed"})[["Trips", "Official price", "Price paid by First", "Shortfall per trip", "Total owed"]]
-    is_claim = (t["Official price"].round(2) == round(rate, 2)) if code == "AK" else pd.Series(False, index=t.index)
+    is_claim = ((t["Official price"].round(2) == round(rate, 2)) & (t["Price paid by First"].round(2) == round(_err(err), 2))) if code == "AK" else pd.Series(False, index=t.index)
     c, o = t[is_claim], t[~is_claim]
     return (_tot(c, sum_cols=["Total owed"]) if len(c) else c), (_tot(o, sum_cols=["Total owed"]) if len(o) else o)
 
 
-def claim_by_driver(rec, code, rate=45.0):
+def claim_by_driver(rec, code, rate=45.0, err=None):
     g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
-    if code == "AK": g = g[g.state_revenue.round(2) == round(rate, 2)]
+    if code == "AK": g = g[(g.state_revenue.round(2) == round(rate, 2)) & (g.main_revenue.round(2) == round(_err(err), 2))]
     else: return pd.DataFrame()
     if g.empty: return pd.DataFrame()
     t = g.groupby("driver").agg(Trips=("revenue_difference", "size"), Miles=("main_miles", "sum"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
@@ -176,11 +176,12 @@ def claim_by_driver(rec, code, rate=45.0):
     return _with_total(t, "Driver", ["Trips", "Miles", "Total owed"])
 
 
-def apply_rate_rule(rec, rate=45.0):
+def apply_rate_rule(rec, rate=45.0, err=None):
     """Management rule: in Alaska only trips whose official price equals the agreed rate (45) are errors.
     Other Alaska price differences are ACCEPTED (relabelled MATCHED, note kept). The original rec is untouched."""
     r = rec.copy()
-    m = (r.state == "AK") & (r.audit_status == "REVENUE MISMATCH") & (r.state_revenue.round(2) != round(rate, 2))
+    claim = (r.state_revenue.round(2) == round(rate, 2)) & (r.main_revenue.round(2) == round(_err(err), 2))
+    m = (r.state == "AK") & (r.audit_status == "REVENUE MISMATCH") & ~claim
     r.loc[m, "notes"] = "ACCEPTED: price differs from state report, treated as correct (management decision)"
     r.loc[m, "audit_status"] = "MATCHED"
     return r
@@ -236,7 +237,7 @@ def state_provider_table(main):
     return pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
 
 
-def revenue_bridge(rec, rate=45.0):
+def revenue_bridge(rec, rate=45.0, err=None):
     """Per state: First/EverDriven revenue -> state-report revenue, explaining every dollar of the difference.
     Check must be 0.00. Works on raw or rate-rule-adjusted rec (differences are recomputed from the amounts)."""
     rows = []
@@ -246,7 +247,7 @@ def revenue_bridge(rec, rate=45.0):
         first_only = g[(g.audit_status == "MISSING FROM STATE REPORT")].main_revenue.sum()
         both = g[g.main_revenue.notna() & g.state_revenue.notna()]
         diff = (both.state_revenue - both.main_revenue).round(2); nz = diff.abs() > 0.005
-        claim_m = nz & (code == "AK") & (both.state_revenue.round(2) == round(rate, 2))
+        claim_m = nz & (code == "AK") & (both.state_revenue.round(2) == round(rate, 2)) & (both.main_revenue.round(2) == round(_err(err), 2))
         claim, other = diff[claim_m].sum(), diff[nz & ~claim_m].sum()
         state_only = g[g.main_revenue.isna() & g.state_revenue.notna()].state_revenue.sum()
         state_total = g.state_revenue.sum()
@@ -261,15 +262,21 @@ def revenue_bridge(rec, rate=45.0):
 
 
 # ---------------------------------------------------------------- rate check from the main report ALONE (no state report needed)
+ERROR_PRICE = 42.5          # the price First paid in error (official 45.00); only trips paid exactly this are claimed
 OFFICIAL_RATES = {"AK": 45.0}        # state -> official per-trip price; extend when the full rate list is available
 
 
-def first_rate_audit(main, rate=45.0, state="AK"):
-    """Trips of `state` that First/EverDriven paid BELOW the official rate (Alaska: $42.50 vs $45.00).
-    Returns (summary dict, grouped table, by-driver table, trip detail)."""
-    g = main[(main.state == state) & main.main_amount.notna() & (main.main_amount < rate - 0.005)].copy()
+def first_rate_audit(main, rate=45.0, state="AK", err=None):
+    """Claim = `state` trips paid EXACTLY `paid` ($42.50) where the official rate is `rate` ($45.00). Other trips paid below
+    the rate are NOT part of the claim; they are only reported in the summary. Returns (summary, grouped, by driver, detail)."""
+    paid = _err(err)
+    s_all = main[(main.state == state) & main.main_amount.notna()]
+    g = s_all[(s_all.main_amount - paid).abs() < 0.005].copy()
+    oth = s_all[(s_all.main_amount < rate - 0.005) & ((s_all.main_amount - paid).abs() >= 0.005)]
     empty = pd.DataFrame()
-    if g.empty: return {"Trips below official rate": 0, "Total owed": 0.0}, empty, empty, empty
+    other = {"Other trips below the rate (not claimed)": len(oth), "Their shortfall (not claimed)": (rate - oth.main_amount).sum() if len(oth) else 0.0,
+             "Other prices (not claimed)": ", ".join(f"${p:,.2f} x{n}" for p, n in oth.main_amount.value_counts().sort_index().items())}
+    if g.empty: return {"Trips below official rate": 0, "Total owed": 0.0, "Alaska trips in report": len(s_all), **other}, empty, empty, empty
     g["short"] = rate - g.main_amount
     grp = g.groupby("main_amount").agg(Trips=("short", "size"), Owed=("short", "sum")).reset_index()
     grp["Official price"] = rate; grp["Shortfall per trip"] = rate - grp.main_amount
@@ -280,5 +287,8 @@ def first_rate_audit(main, rate=45.0, state="AK"):
     det.insert(5, "Official price", rate)
     det.columns = ["Date", "Driver", "Trip ID", "Trip Name", "Miles", "Official price", "Price paid", "Shortfall", "Source file", "Source row"]
     summary = {"Trips below official rate": len(g), "Official price": rate, "Total owed": g.short.sum(), "Drivers affected": g.driver.nunique(),
-               "Alaska trips in report": int(((main.state == state)).sum())}
+               "Alaska trips in report": len(s_all), **other}
     return summary, _tot(grp, sum_cols=["Total owed"]), _with_total(drv, "Driver", ["Trips", "Miles", "Total owed"]), det
+
+
+def _err(err): return ERROR_PRICE if err is None else err
