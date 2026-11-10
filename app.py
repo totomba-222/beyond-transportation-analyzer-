@@ -143,10 +143,17 @@ if page.startswith("1"):
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs)
     with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400)
+    _e = SR.estimate_financials(main, book, ())
+    if len(_e):
+        st.subheader("Financial performance - ESTIMATE (revenue, driver payments, profit, margin)")
+        st.caption("Revenue is actual (First/EverDriven). Driver payments are ESTIMATED from the rate book until the state report arrives; trips without a known pay are excluded and shown in the coverage column.")
+        show(_e)
+        with st.expander("Estimate by driver"):
+            _ed = SR.estimate_by_driver(main, book); show(_ed, 400)
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Estimate by state": _e, "Estimate by driver": _ed if len(_e) else pd.DataFrame(), "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
     pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state)))
@@ -181,6 +188,14 @@ else:
     t = SR.discrepancy_summary(rec); show(t)
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
     sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
+    _pp, _ppd, _ppv, _nc = SR.pay_policy_check(rec, RB.load())
+    if len(_pp):
+        st.subheader("Driver pay vs usual pay for the same route (rate book)")
+        st.caption(f"Trips where the state report paid the driver MORE than the usual pay for that route. {_nc:,} trips have no usual pay in the rate book: not checkable (not counted as OK).")
+        show(_pp)
+        with st.expander("Extra paid - by driver"): show(_ppv, 400)
+        with st.expander(f"Extra paid - trip by trip ({len(_ppd):,})"): show(_ppd, 500)
+        sheets.update({"Pay policy summary": _pp, "Pay policy by driver": _ppv, "Pay policy trips": _ppd})
     for code in rec[rec.state_source != ""].state.unique():
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue

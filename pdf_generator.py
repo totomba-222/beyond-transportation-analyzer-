@@ -288,6 +288,8 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
             R_.section("L"); R_.h1("ESTIMATED financial performance (no state report uploaded yet)")
             R_.p("<b>Estimate, not actual:</b> driver payments are estimated from earlier weeks' pay rates; replace with the state report when it arrives.")
             R_.table(est, "Estimated profit by state", font=7)
+            ed = SR.estimate_by_driver(main, book)
+            if len(ed): R_.table(ed, "Estimated profit by driver", font=7)
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -309,6 +311,12 @@ def _add_disc(R_, rec, rate=45.0, err=None):
     if t.empty: R_.p("No state reports uploaded."); return
     R_.table(SR.revenue_bridge(rec, rate, err), "Revenue bridge: First/EverDriven revenue to state-report revenue (every dollar explained)", font=7)
     R_.table(t, "Summary by state (difference = First revenue - state revenue)", font=6.5)
+    import ratebook as RB
+    pp, ppd, ppv, nc = SR.pay_policy_check(rec, RB.load())
+    if len(pp):
+        R_.p(f"<b>Driver pay vs usual pay for the same route (rate book).</b> {nc:,} trips have no usual pay: not checkable. Trip-by-trip detail is in the Excel file.")
+        R_.table(pp, "Trips where drivers were paid MORE than the usual pay", font=7)
+        if len(ppv): R_.table(ppv, "Extra paid by driver", font=7)
     for code in rec[rec.state_source != ""].state.unique():
         nm = STATE_NAMES.get(code, code); a, s, f = SR.discrepancy_sections(rec, code)
         claim, other = SR.claim_split(rec, code, rate, err)

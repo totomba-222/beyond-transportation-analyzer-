@@ -304,10 +304,13 @@ def price_check(main, book, err=42.5, rate=45.0):
     zero = a.main_amount.fillna(0).abs() < 0.005
     if "cancelled" in a.columns: zero = zero | a.cancelled.fillna(False).astype(bool)
     a = a[~zero]                                                  # cancelled / $0 trips are not price errors
+    a.loc[(a.state == "AK") & ((a.main_amount - err).abs() < 0.005), ["exp_revenue", "exp_rev_src", "diff"]] = [rate, "management rule", round(err - rate, 2)]
     known = a[a.exp_revenue.notna() & a.main_amount.notna()]
     under = known[known["diff"] < -0.005]; over = known[known["diff"] > 0.005]
-    ak_ok = ~(under.state == "AK") | (((under.main_amount - err).abs() < 0.005) & ((under.exp_revenue - rate).abs() < 0.005))
-    claim, accepted = under[ak_ok], under[~ak_ok]
+    ak_ok = ~(under.state == "AK") | ((under.main_amount - err).abs() < 0.005)       # management rule: ANY Alaska trip paid the error price was really $rate
+    claim, accepted = under[ak_ok].copy(), under[~ak_ok]
+    ak_fix = (claim.state == "AK") & ((claim.main_amount - err).abs() < 0.005)
+    claim.loc[ak_fix, "exp_revenue"] = rate; claim.loc[ak_fix, "exp_rev_src"] = "management rule"; claim.loc[ak_fix, "diff"] = (claim.main_amount - rate).round(2)
     rows = []
     for code, g in a.groupby("state"):
         k = known[known.state == code]; u = claim[claim.state == code]; o = over[over.state == code]
@@ -341,3 +344,46 @@ def estimate_financials(main, book, states_with_report=()):
         tot["Est. margin %"] = tot["Est. profit"] / (a[a.exp_pay.notna()].main_amount.sum()) * 100 if a.exp_pay.notna().any() else np.nan
         t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
     return t
+
+
+# ---------------------------------------------------------------- estimate by driver (First/EverDriven report only)
+def estimate_by_driver(main, book, state=None):
+    """ESTIMATE per driver: First/EverDriven revenue (actual) minus driver pay estimated from the rate book. Labelled estimate, never actual."""
+    import ratebook as RB
+    a = RB.annotate(main, book); a = a[~a.state.isin(["Unassigned", "NEEDS REVIEW"])]
+    if state: a = a[a.state == state]
+    rows = []
+    for d, g in a.groupby("driver_disp"):
+        c = g[g.exp_pay.notna() & g.main_amount.notna()]; rev, pay = c.main_amount.sum(), c.exp_pay.sum()
+        rows.append({"Driver": d, "State": _nm(g.state.iloc[0]), "Trips": len(g), "Miles": g.miles.sum(min_count=1), "Revenue": g.main_amount.sum(min_count=1),
+                     "Trips with a pay estimate": len(c), "Est. driver payments": pay if len(c) else np.nan, "Est. profit": rev - pay if len(c) else np.nan,
+                     "Est. margin %": (rev - pay) / rev * 100 if len(c) and rev else np.nan})
+    return pd.DataFrame(rows).sort_values("Revenue", ascending=False, ignore_index=True) if rows else pd.DataFrame()
+
+
+# ---------------------------------------------------------------- pay policy: trips where the state report paid the driver MORE than the rate-book pay
+def pay_policy_check(rec, book, tol=0.005):
+    """For every state-report trip with a driver payment, compare it with the usual pay for the SAME ROUTE in the rate book (route pay only,
+    else same state+miles). Returns (summary by state, detail of overpaid trips, by driver, not-checkable count). Trips with no usual pay are
+    counted as 'not checkable' - never treated as OK or as zero."""
+    import ratebook as RB
+    r = rec[(rec.state_source != "") & (rec.audit_status != "MONITOR PAYMENT") & rec.driver_payment.notna()].copy()
+    if not len(r): return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0
+    ex = [RB.expected(book, s, t, mi, None) for s, t, mi in zip(r.state, r.trip_name, r.main_miles.fillna(r.state_miles))]
+    e = pd.DataFrame(ex, index=r.index); r["usual_pay"], r["pay_src"] = e.pay, e.pay_src
+    r["extra"] = (r.driver_payment - r.usual_pay).round(2)
+    chk = r[r.usual_pay.notna()]; over = chk[chk.extra > tol]; under = chk[chk.extra < -tol]
+    rows = []
+    for code, g in r.groupby("state"):
+        k = chk[chk.state == code]; o = over[over.state == code]; u = under[under.state == code]
+        rows.append({"State": _nm(code), "Trips paid": len(g), "Trips with a usual pay": len(k), "Trips paid MORE than usual": len(o), "Total extra paid": o.extra.sum() if len(o) else 0.0,
+                     "Trips paid less than usual": len(u), "Total less": u.extra.sum() if len(u) else 0.0, "Not checkable (no usual pay)": len(g) - len(k)})
+    t = pd.DataFrame(rows).sort_values("Total extra paid", ascending=False)
+    tot = {c: t[c].sum() for c in t.columns if c != "State"}; tot["State"] = "TOTAL"; t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
+    det = over.sort_values(["state", "driver", "date"])[["state", "date", "driver", "trip_id" if "trip_id" in over.columns else "state_trip_id", "trip_name", "main_miles", "usual_pay", "pay_src", "driver_payment", "extra", "state_revenue", "profit", "state_source"]].copy()
+    det["state"] = det.state.map(_nm)
+    det.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Usual pay (rate book)", "Pay source", "Paid to driver", "Extra paid", "State revenue", "Profit", "State source"]
+    drv = over.groupby(["state", "driver"]).agg(Trips=("extra", "size"), **{"Total extra paid": ("extra", "sum")}).reset_index()
+    drv["state"] = drv.state.map(_nm); drv.columns = ["State", "Driver", "Trips paid more", "Total extra paid"]
+    drv = drv.sort_values("Total extra paid", ascending=False, ignore_index=True)
+    return t, det, drv, int(len(r) - len(chk))
