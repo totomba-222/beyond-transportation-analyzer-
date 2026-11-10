@@ -44,7 +44,8 @@ WEEKS = [
      "state": ["4__AK__24-30_OCT_.xlsx", "ABQ_Payments__Oct_26th_to_Oct_30th_.xlsx", "IL_Report.xlsx", "North_CA__26th_-_30th_October_2026.xlsx",
                "Oregon_26th_-_30th_Oct_2026.xlsx", "S_CA.xlsx", "NE_Report-Nov_3rd.xlsx"]},
     {"main": ["Frist_All_States.xlsx"],
-     "state": ["North_CA__2nd_-_6th_Novemeber_2026.xlsx", "RS___AZ_Nov_2_-_6.xlsx", "Kansas_Report-Nov_3rd.xlsx"]},
+     "state": ["North_CA__2nd_-_6th_Novemeber_2026.xlsx", "RS___AZ_Nov_2_-_6.xlsx", "Kansas_Report-Nov_3rd.xlsx",
+               "ABQ_Payments__Nov_2nd_to_Nov_6th_.xlsx", "Oregon_02ND_-_06TH_Nov_2026.xlsx"]},
 ]
 
 if __name__ == "__main__":

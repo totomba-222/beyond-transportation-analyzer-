@@ -288,8 +288,6 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
             R_.section("L"); R_.h1("ESTIMATED financial performance (no state report uploaded yet)")
             R_.p("<b>Estimate, not actual:</b> driver payments are estimated from earlier weeks' pay rates; replace with the state report when it arrives.")
             R_.table(est, "Estimated profit by state", font=7)
-            ed = SR.estimate_by_driver(main, book)
-            if len(ed): R_.table(ed, "Estimated profit by driver", font=7)
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -311,12 +309,6 @@ def _add_disc(R_, rec, rate=45.0, err=None):
     if t.empty: R_.p("No state reports uploaded."); return
     R_.table(SR.revenue_bridge(rec, rate, err), "Revenue bridge: First/EverDriven revenue to state-report revenue (every dollar explained)", font=7)
     R_.table(t, "Summary by state (difference = First revenue - state revenue)", font=6.5)
-    import ratebook as RB
-    pp, ppd, ppv, nc = SR.pay_policy_check(rec, RB.load())
-    if len(pp):
-        R_.p(f"<b>Driver pay vs usual pay for the same route (rate book).</b> {nc:,} trips have no usual pay: not checkable. Trip-by-trip detail is in the Excel file.")
-        R_.table(pp, "Trips where drivers were paid MORE than the usual pay", font=7)
-        if len(ppv): R_.table(ppv, "Extra paid by driver", font=7)
     for code in rec[rec.state_source != ""].state.unique():
         nm = STATE_NAMES.get(code, code); a, s, f = SR.discrepancy_sections(rec, code)
         claim, other = SR.claim_split(rec, code, rate, err)
@@ -351,4 +343,80 @@ def combined_report(main, rec, label=None, rate=45.0, adjustments=None, err=None
     R_ = Report("Combined Report", _period(main)); _add_first(R_, main, label, adjustments)
     if (rec.state_source != "").any():
         R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec, rate, err)
+    return R_.build()
+
+
+# ---------------------------------------------------------------- weekly / monthly reports (from the history)
+import history as HI
+
+
+def _kpi_pdf(R_, t, vcols, title, font=8):
+    R_.table(HI.fmt_table(t, vcols), title, wide=False, font=font)
+
+
+def _chart2(R_, df, x, ys, title):
+    d = df[df[x] != "TOTAL"].copy()
+    if len(d): R_.chart(d, x, ys, title)
+
+
+def weekly_comparison_report(h, week=None):
+    ws = HI.weeks(h)
+    if not ws: R_ = Report("Weekly Comparison Report", "n/a"); R_.h1("Weekly comparison"); R_.p("No dated trips in the history."); return R_.build()
+    wk = pd.Timestamp(week) if week is not None else ws[-1]
+    t, ci, pi, warns = HI.weekly_compare(h, wk)
+    R_ = Report("Weekly Comparison Report", f"{ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d}")
+    R_.h1("Weekly performance comparison")
+    R_.p(f"Current week: {ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d} (trips dated {ci['first']:%Y-%m-%d} to {ci['last']:%Y-%m-%d}). "
+         f"Previous week: {pi['start']:%Y-%m-%d} to {pi['end']:%Y-%m-%d}." if ci["first"] is not None else "No trips in the selected week.")
+    for w in warns: R_.p(f"<b>Warning:</b> {w}")
+    R_.p("Revenue = amount paid by First / EverDriven. Driver payments, profit and margin exist only for states with an uploaded state report.")
+    _kpi_pdf(R_, t, ["Current week", "Previous week", "Difference"], "Company - all states")
+    lf, both = HI.weekly_like_for_like(h, wk)
+    if lf is not None: _kpi_pdf(R_, lf, ["Current week", "Previous week", "Difference"], f"Like-for-like: states with a state report in both weeks ({', '.join(STATE_NAMES.get(s, s) for s in both)})")
+    s = HI.weekly_state_summary(h, wk); R_.table(s, "By state"); 
+    rv = s[["State", "Revenue current", "Revenue previous"]].rename(columns={"Revenue current": "Current week", "Revenue previous": "Previous week"}); rv["State"] = rv.State.map(lambda c: STATE_NAMES.get(c, c))
+    R_.chart(rv, "State", ["Current week", "Previous week"], "Revenue by state: current vs previous week")
+    return R_.build()
+
+
+def monthly_report_pdf(h):
+    R_ = Report("Monthly Financial Report", "all months in the history"); R_.h1("Monthly financial report")
+    t = HI.monthly_table(h)
+    if t.empty: R_.p("No dated trips in the history."); return R_.build()
+    for m, w in zip(t.Month, t.Weeks):
+        if w < 4: R_.p(f"<b>Note:</b> {m} has {w} week(s) of data - partial month.")
+    R_.p("Revenue = paid by First / EverDriven. Payments, profit and margin cover only states with an uploaded state report. Drivers = average of the weekly driver counts.")
+    R_.table(t.drop(columns=[c for c in t.columns if c.endswith("MoM %") and t[c].isna().all()]), "Company by month")
+    R_.chart(t, "Month", ["Revenue", "Driver Payments", "Profit"], "Monthly revenue, driver payments and profit")
+    s = HI.monthly_table(h, by="state"); s["State"] = s.state.map(lambda c: STATE_NAMES.get(c, c))
+    R_.table(s[["Month", "State", "Weeks", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %", "Avg revenue/trip"]], "State by month")
+    last = s[s.Month == s.Month.max()].sort_values("Revenue", ascending=False)[["State", "Trips", "Revenue", "Profit", "Margin %"]].reset_index(drop=True)
+    last.insert(0, "Rank", range(1, len(last) + 1)); R_.table(last, f"State ranking by revenue - {s.Month.max()}", wide=False)
+    return R_.build()
+
+
+def monthly_comparison_report(h, m1, m2):
+    R_ = Report("Monthly Comparison Report", f"{m1} vs {m2}"); R_.h1(f"Monthly comparison: {m2} vs {m1}")
+    t, warns = HI.monthly_compare(h, m1, m2)
+    for w in warns: R_.p(f"<b>Warning:</b> {w}")
+    R_.p("Difference = " + f"{m2} minus {m1}. Payments, profit and margin cover only states with an uploaded state report.")
+    _kpi_pdf(R_, t, [m1, m2, "Difference"], "Company - all states")
+    lf, both = HI.like_for_like(h[h.month == m2], h[h.month == m1], m2, m1)
+    if lf is not None:
+        lf = lf[["KPI", m1, m2, "Difference", "Change %"]]; _kpi_pdf(R_, lf, [m1, m2, "Difference"], f"Like-for-like: states with a state report in both months ({', '.join(STATE_NAMES.get(s, s) for s in both)})")
+    s = HI.monthly_state_summary(h, m1, m2); R_.table(s, "By state")
+    return R_.build()
+
+
+# ---------------------------------------------------------------- pay policy
+def pay_policy_report(rec, book):
+    R_ = Report("Driver Pay Policy Review", _period(rec)); R_.h1("Driver pay policy review: payments above the usual pay for the same route")
+    s, over, loss = SR.pay_check(rec, book)
+    if s.empty: R_.p("No state reports with driver payments uploaded."); return R_.build()
+    R_.p("Policy = the pay that was paid for the same route in at least 80% of earlier trips (minimum 3). The route of each trip comes from the First / EverDriven report. "
+         "Trips whose route has no stable policy yet are not judged.")
+    R_.table(s, "Summary by state", font=7)
+    for code in over.State.unique():
+        d = over[over.State == code].drop(columns=["State", "State source"]); R_.table(d, f"{code} - trips paid above the pay policy ({len(d)} trips, excess {usd(d['Excess pay'].sum())})", font=6.5)
+    if len(loss): R_.table(loss.drop(columns=["State source", "Pay policy"]).rename(columns={"Excess pay": "Pay above revenue"}), "Trips where the driver was paid more than the trip revenue", font=6.5)
     return R_.build()

@@ -5,6 +5,8 @@ import pandas as pd
 import streamlit as st
 
 import app_logic as AL
+import history as HI
+import weekly_reports as W
 import classification as C
 import excel_generator as EG
 import pdf_generator as PG
@@ -56,6 +58,8 @@ with st.sidebar:
     err_price = st.number_input("Price paid in error ($) - only these trips are claimed", value=42.5, step=0.5)
     st.subheader("3) Saved driver map (optional)")
     mapfile = st.file_uploader("CSV with columns driver,state", type=["csv"], key="map")
+    st.subheader("4) Previous weeks history (optional)")
+    histfile = st.file_uploader("weekly_history.csv saved last time", type=["csv"], key="hist")
 if not mfiles:
     st.info("Upload a First or EverDriven report to begin."); st.stop()
 
@@ -109,7 +113,13 @@ if len(_auto):
 if full_map:
     st.sidebar.download_button("⬇️ Save driver map (CSV)", pd.DataFrame(sorted(full_map.items()), columns=["driver", "state"]).to_csv(index=False), "driver_map.csv", "text/csv")
 
-page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report"])
+_prev = None
+if histfile:
+    try: _prev = HI.from_csv(histfile)
+    except Exception as e: st.warning(f"History CSV could not be read: {e}")
+hist = HI.merge(_prev, HI.weekly_rows(rec)) if len(rec) else HI.merge(_prev, pd.DataFrame(columns=HI.COLS))
+st.sidebar.download_button("⬇️ Save weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
+page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review"])
 if has_state:
     with st.sidebar:
         st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
@@ -143,17 +153,10 @@ if page.startswith("1"):
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs)
     with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400)
-    _e = SR.estimate_financials(main, book, ())
-    if len(_e):
-        st.subheader("Financial performance - ESTIMATE (revenue, driver payments, profit, margin)")
-        st.caption("Revenue is actual (First/EverDriven). Driver payments are ESTIMATED from the rate book until the state report arrives; trips without a known pay are excluded and shown in the coverage column.")
-        show(_e)
-        with st.expander("Estimate by driver"):
-            _ed = SR.estimate_by_driver(main, book); show(_ed, 400)
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Estimate by state": _e, "Estimate by driver": _ed if len(_e) else pd.DataFrame(), "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
     pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state)))
@@ -179,7 +182,7 @@ elif page.startswith("2"):
     pdf_button("State report", "states", lambda: PG.states_financial_report(rec))
 
 # ------------------------------------------------------------------ page 3
-else:
+elif page.startswith("3"):
     st.header("Differences between First and the state reports")
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
     n_acc, amt_acc = SR.accepted_summary(rec)
@@ -188,14 +191,6 @@ else:
     t = SR.discrepancy_summary(rec); show(t)
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
     sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
-    _pp, _ppd, _ppv, _nc = SR.pay_policy_check(rec, RB.load())
-    if len(_pp):
-        st.subheader("Driver pay vs usual pay for the same route (rate book)")
-        st.caption(f"Trips where the state report paid the driver MORE than the usual pay for that route. {_nc:,} trips have no usual pay in the rate book: not checkable (not counted as OK).")
-        show(_pp)
-        with st.expander("Extra paid - by driver"): show(_ppv, 400)
-        with st.expander(f"Extra paid - trip by trip ({len(_ppd):,})"): show(_ppd, 500)
-        sheets.update({"Pay policy summary": _pp, "Pay policy by driver": _ppv, "Pay policy trips": _ppd})
     for code in rec[rec.state_source != ""].state.unique():
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue
@@ -208,3 +203,68 @@ else:
                 if len(df): st.markdown(f"**{ttl}**"); show(df); sheets[f"{code} {sh}"[:31]] = df
     st.download_button("⬇️ Excel (discrepancies)", EG.build_workbook(sheets), "Discrepancies.xlsx", XLSX)
     pdf_button("Discrepancy report", "disc", lambda: PG.discrepancy_report(rec, ak_rate, err_price))
+
+
+# ------------------------------------------------------------------ page 4: weekly comparison
+elif page.startswith("4"):
+    st.header("Weekly comparison")
+    st.caption("Previous weeks come from the history CSV you upload in the sidebar plus this session. Revenue = paid by First / EverDriven; payments, profit and margin exist only for states with a state report.")
+    ws = HI.weeks(hist)
+    if not ws: st.info("No dated trips."); st.stop()
+    wk = pd.Timestamp(st.selectbox("Reporting week (Mon-Sun)", ws[::-1], format_func=lambda d: f"{pd.Timestamp(d):%Y-%m-%d} to {pd.Timestamp(d) + pd.Timedelta(days=6):%Y-%m-%d}"))
+    t, ci, pi, warns = HI.weekly_compare(hist, wk)
+    for w_ in warns: st.warning(w_)
+    show(HI.fmt_table(t, ["Current week", "Previous week", "Difference"]))
+    lf, both = HI.weekly_like_for_like(hist, wk)
+    if lf is not None:
+        st.subheader("Like-for-like: states with a state report in both weeks (" + ", ".join(STATE_NAMES.get(s, s) for s in both) + ")"); show(HI.fmt_table(lf, ["Current week", "Previous week", "Difference"]))
+    ss_ = HI.weekly_state_summary(hist, wk); st.subheader("By state"); show(ss_)
+    st.bar_chart(ss_.set_index("State")[["Revenue current", "Revenue previous"]])
+    with st.expander("By driver (needs both weeks in this session)"):
+        try:
+            dt_, _, _, dw_ = W.weekly_report(rec, wk, by="driver"); show(dt_) if dt_ is not None and len(dt_) else st.caption("Upload both weeks together to compare drivers.")
+        except Exception as e: st.caption(f"Driver comparison not available: {e}")
+    pdf_button("Weekly comparison report", "weekly_cmp", lambda: PG.weekly_comparison_report(hist, wk))
+
+# ------------------------------------------------------------------ page 5: monthly report
+elif page.startswith("5"):
+    st.header("Monthly report")
+    mt_ = HI.monthly_table(hist)
+    if mt_.empty: st.info("No dated trips."); st.stop()
+    for m_, w_ in zip(mt_.Month, mt_.Weeks):
+        if w_ < 4: st.warning(f"{m_} has {w_} week(s) of data - partial month.")
+    show(mt_); st.bar_chart(mt_.set_index("Month")[["Revenue", "Driver Payments", "Profit"]])
+    sm_ = HI.monthly_table(hist, by="state"); sm_["State"] = sm_.state.map(lambda c: STATE_NAMES.get(c, c)); st.subheader("State by month")
+    show(sm_[["Month", "State", "Weeks", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %", "Avg revenue/trip"]])
+    pdf_button("Monthly report", "monthly", lambda: PG.monthly_report_pdf(hist))
+
+# ------------------------------------------------------------------ page 6: monthly comparison
+elif page.startswith("6"):
+    st.header("Monthly comparison")
+    months = sorted(hist.month.dropna().unique())
+    if len(months) < 2: st.info("Needs two months in the history (upload the saved history CSV)."); st.stop()
+    m1 = st.selectbox("Month A", months, index=len(months) - 2); m2 = st.selectbox("Month B", months, index=len(months) - 1)
+    t, warns = HI.monthly_compare(hist, m1, m2)
+    for w_ in warns: st.warning(w_)
+    show(HI.fmt_table(t, [m1, m2, "Difference"]))
+    lf, both = HI.like_for_like(hist[hist.month == m2], hist[hist.month == m1], m2, m1)
+    if lf is not None: st.subheader("Like-for-like: states with a state report in both months (" + ", ".join(STATE_NAMES.get(s, s) for s in both) + ")"); show(HI.fmt_table(lf[["KPI", m1, m2, "Difference", "Change %"]], [m1, m2, "Difference"]))
+    st.subheader("By state"); show(HI.monthly_state_summary(hist, m1, m2))
+    pdf_button("Monthly comparison", "monthly_cmp", lambda: PG.monthly_comparison_report(hist, m1, m2))
+
+# ------------------------------------------------------------------ page 7: driver pay policy review
+else:
+    st.header("Driver pay policy review")
+    if not has_state: st.info("Upload the state reports to review driver payments."); st.stop()
+    _book = RB.load(); ps, pover, ploss = SR.pay_check(rec, _book)
+    st.caption("Policy = the pay paid for the same route in >=80% of earlier trips (minimum 3). The route of each trip comes from the First / EverDriven report.")
+    show(ps)
+    if len(ps): st.metric("Total excess pay above policy", money(ps.iloc[-1]["Total excess pay"]))
+    for code in pover.State.unique():
+        d_ = pover[pover.State == code]
+        with st.expander(f"{code}: {len(d_)} trips paid above the pay policy (excess {money(d_['Excess pay'].sum())})"): show(d_.drop(columns=["State"]))
+    if len(ploss):
+        with st.expander(f"Trips where the driver was paid more than the trip revenue ({len(ploss)})"): show(ploss.drop(columns=["State source"]))
+    with st.expander("Pay policy table (every route with a stable policy)"): show(SR.pay_policy_table(_book), 400)
+    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book)}), "Pay_Policy_Review.xlsx", XLSX)
+    pdf_button("Driver pay policy review", "paypol", lambda: PG.pay_policy_report(rec, _book))
