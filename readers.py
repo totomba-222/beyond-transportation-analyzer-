@@ -112,8 +112,18 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
     used_map, provider = {}, "UNKNOWN"
     ocr_used = any("OCR" in w for w in pdf_warn)
 
-    names = [str(n).lower() for n, _ in sheets]
-    skip_summary = role == "state" and len(sheets) > 1 and any("detail" in n for n in names)
+    if role == "state" and len(sheets) > 1:
+        # state workbooks often carry a Summary and/or copies of the same rows: import ONE trip-level sheet only
+        def _score(item):
+            n = str(item[0]).lower(); sc = len(item[1]) / 1000
+            if any(k in n for k in ("itemized", "detail", "trip-wise", "tripwise", "trip wise")): sc += 100
+            if "summary" in n: sc -= 100
+            return sc
+        best = max(sheets, key=_score)
+        for nm, _ in sheets:
+            if nm != best[0]: warns.append(f"Sheet '{nm}': not imported (the trip-level sheet '{best[0]}' is used, so nothing is counted twice).")
+        sheets = [best]
+    skip_summary = False
     for sheet, raw in sheets:
         if skip_summary and "summary" in str(sheet).lower():
             warns.append(f"Sheet '{sheet}': summary sheet not imported as trips (the Details sheet is used)."); continue
@@ -241,6 +251,10 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
             ded = num("deduction").loc[det.index].fillna(0); sp = num("spiff").loc[det.index].fillna(0)
             diff = (out["gross_pay"] - ded + sp - out["main_amount"]).abs() > 0.005
             add(diff.fillna(False), "NET != GROSS-DEDUCTION+SPIFF")
+        if role == "main" and out["date"].notna().sum() > 5:       # a date far from the rest of the report is a typo in the source (e.g. 2029)
+            _dev = ((out["date"] - out["date"].median()).abs() > pd.Timedelta(days=45)).fillna(False)
+            add(_dev, "DATE OUTLIER (check source)")
+            if _dev.any(): warns.append(f"'{filename}': {int(_dev.sum())} trips have a date far from the reporting week (e.g. {out.loc[_dev, 'date'].iloc[0]:%Y-%m-%d}) - check the source file.")
         if ocr_used:
             add(pd.Series(True, index=det.index), "OCR SOURCE - VERIFY")
         out["flags"] = fl.str.strip("; ")

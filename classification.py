@@ -66,7 +66,7 @@ def classify(main: pd.DataFrame, state_records: pd.DataFrame, editable_map=None)
             st.append(hint); src.append("main file hint")
         elif d in base:
             st.append(base[d]); src.append("driver map")
-        elif or_hit(trip):
+        elif or_hit(trip) and not _multi_state(trip):
             st.append("OR"); src.append("Oregon school")
         elif region_hit(trip):
             st.append(region_hit(trip)); src.append("region keyword")
@@ -81,6 +81,12 @@ def region_label(state, trip):
     if state == "S.CA" and _phrase_hit(norm_trip(trip), ARIZONA_CITIES):
         return "Arizona (S.CA)"
     return STATE_NAMES.get(state, state)
+
+
+def _multi_state(trip):
+    """True when the school is known to be served in more than one state (e.g. 'Phillips ACDY' is in OR and N.CA)."""
+    from school_routes import SCHOOL_STATE
+    return len(SCHOOL_STATE.get(_school_stem(norm_trip(trip)), {})) > 1
 
 
 def _school_stem(trip_key):

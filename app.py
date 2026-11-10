@@ -8,6 +8,7 @@ import app_logic as AL
 import classification as C
 import excel_generator as EG
 import pdf_generator as PG
+import ratebook as RB
 import simple_reports as SR
 from config import DEFAULT_SETTINGS, STATE_NAMES
 
@@ -80,6 +81,8 @@ for fname, fields in res.needs_mapping:
 for a, b in res.duplicate_uploads: st.warning(f"Duplicate file ignored: '{a}' is identical to '{b}'")
 if res.main is None or res.main.empty:
     st.error("No trips found in the First/EverDriven files."); [st.write(w) for w in res.warnings]; st.stop()
+for _w in res.warnings:
+    if "date far" in _w or "other provider" in _w or "control" in _w.lower(): st.warning(_w)
 main, rec = res.main, SR.apply_rate_rule(res.rec, ak_rate, err_price)     # rule applied everywhere: only the error-price trips stay REVENUE MISMATCH
 has_state = bool(len(res.st))
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
@@ -135,19 +138,30 @@ if page.startswith("1"):
             st.info(f"{rs['Other trips below the rate (not claimed)']} other Alaska trips were paid below the rate at a different price ({rs['Other prices (not claimed)']}) - NOT part of this claim (shortfall {money(rs['Their shortfall (not claimed)'])}).")
         with st.expander("Claim by driver"): show(rdrv)
         with st.expander("Claim - trip by trip"): show(rdet, 400)
+    book = RB.load(); pcs, pcd, pca = SR.price_check(main, book, err_price, ak_rate)
+    st.subheader("Price check against contract prices (rate book)")
+    st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
+    show(pcs)
+    with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400)
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price))
+    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state)))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):
     st.header("State reports")
-    if not has_state: st.info("Upload the state reports in the sidebar to see revenue, payments and profit."); st.stop()
+    _book = RB.load(); _with = set(rec[rec.state_source != ""].state)
+    _est = SR.estimate_financials(main, _book, _with)
+    if not has_state:
+        st.info("Upload the state reports in the sidebar to see ACTUAL revenue, payments and profit.")
+        if len(_est): st.subheader("ESTIMATED financial performance (no state report yet)"); st.caption("Estimate, not actual: driver payments come from earlier weeks' pay rates."); show(_est)
+        st.stop()
     t = SR.state_financials(rec); show(t)
+    if len(_est): st.subheader("ESTIMATED performance for states without a state report"); st.caption("Estimate, not actual: not included in the table above."); show(_est)
     if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
     if (t["Trips missing revenue"] > 0).any(): st.warning("Some state-report trips have no revenue. They are kept, not counted as zero, and excluded from profit.")
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue", "Driver Payments", "Profit"]])

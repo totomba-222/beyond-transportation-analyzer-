@@ -70,6 +70,10 @@ def process_uploads(main_files, state_files, settings=None, state_overrides=None
         res.rec["region"] = [C.region_label(s, t) for s, t in zip(res.rec.state, res.rec.trip_name)]
     else:
         res.rec = pd.DataFrame()
+    if len(res.main):
+        from config import EVERDRIVEN_STATES as EV
+        bad = res.main[((res.main.provider == "EVERDRIVEN") & ~res.main.state.isin(EV | {"Unassigned", "NEEDS REVIEW"})) | ((res.main.provider == "FIRST") & res.main.state.isin(EV))]
+        if len(bad): res.warnings.append(f"{len(bad)} trips are in a state that belongs to the other provider (Nebraska and Kansas are EverDriven; all other states are First) - check the classification.")
     adjs = [p.adjustments for p in res.mains if len(p.adjustments)]
     res.adjustments = pd.concat(adjs, ignore_index=True) if adjs else pd.DataFrame(columns=["Date", "Type", "Comments", "Amount", "Source"])
     ps = res.mains + res.sts

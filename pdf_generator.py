@@ -143,6 +143,7 @@ EXC_OK = ["EXACT MATCH", "MATCHED", "STATE REPORT NOT UPLOADED", "MONITOR PAYMEN
 
 def _period(rec):
     d = rec.date.dropna() if "date" in rec else []
+    if len(d) > 5: d = d[(d - d.median()).abs() <= pd.Timedelta(days=45)]       # a typo'd date (e.g. 2029) must not stretch the period
     return "n/a" if len(d) == 0 else f"{d.min():%Y-%m-%d} to {d.max():%Y-%m-%d}"
 
 
@@ -255,7 +256,7 @@ def _fig_img(fig, w=250):
     return Image(b, width=w * mm, height=w * mm * 0.33)
 
 
-def _add_first(R_, main, label, adjustments=None, rate=None, err=None):
+def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book=False, states_with_report=()):
     R_.h1(f"{label}: overall and by state")
     o = SR.first_overview(main, adjustments); k = {"Total trips": o["Trips"], "Total revenue (trip price paid)": o["Revenue"], "Drivers": o["Drivers"], "Miles": o["Miles"]}
     if "Adjustments" in o: k.update({"Adjustments (non-trip, e.g. drug test)": o["Adjustments"], "Net revenue received": o["Net revenue"]})
@@ -275,6 +276,18 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None):
             if s["Other trips below the rate (not claimed)"]:
                 R_.p(f"Note: {s['Other trips below the rate (not claimed)']} other Alaska trips were paid below the rate at a different price ({s['Other prices (not claimed)']}); "
                      f"they are not part of this claim (shortfall {usd(s['Their shortfall (not claimed)'])}).")
+    if with_book:
+        import ratebook as RB
+        book = RB.load(); pc, _, acc = SR.price_check(main, book, SR._err(err), rate or 45.0)
+        if pc.iloc[-1]["Trips paid below contract price"] or pc.iloc[-1]["Trips paid above contract price"]:
+            R_.section("L"); R_.h1("Price check against contract prices (rate book)")
+            R_.p("Contract price per route learned from earlier state reports (same route, otherwise same state and miles). Alaska: only trips paid exactly the error price are claimed.")
+            R_.table(pc, "Paid price vs contract price, by state", font=7)
+        est = SR.estimate_financials(main, book, states_with_report)
+        if len(est):
+            R_.section("L"); R_.h1("ESTIMATED financial performance (no state report uploaded yet)")
+            R_.p("<b>Estimate, not actual:</b> driver payments are estimated from earlier weeks' pay rates; replace with the state report when it arrives.")
+            R_.table(est, "Estimated profit by state", font=7)
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -312,9 +325,9 @@ def _add_disc(R_, rec, rate=45.0, err=None):
         if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
-def first_report(main, label=None, adjustments=None, rate=None, err=None):
+def first_report(main, label=None, adjustments=None, rate=None, err=None, with_book=False, states_with_report=()):
     label = label or SR.provider_label(main)
-    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments, rate, err); return R_.build()
+    R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments, rate, err, with_book, states_with_report); return R_.build()
 
 
 def states_financial_report(rec):

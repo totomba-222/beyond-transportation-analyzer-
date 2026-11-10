@@ -292,3 +292,52 @@ def first_rate_audit(main, rate=45.0, state="AK", err=None):
 
 
 def _err(err): return ERROR_PRICE if err is None else err
+
+
+# ---------------------------------------------------------------- rate book: price check + estimated financials (before the state reports arrive)
+def price_check(main, book, err=42.5, rate=45.0):
+    """First/EverDriven price per trip vs the contract price learned from earlier state reports (same route, else same state+miles).
+    Returns (summary by state, detail of trips paid BELOW contract, accepted-info dict). Alaska keeps the management rule:
+    only trips paid exactly `err` against the official `rate` are claimed; other Alaska differences are listed as not claimed."""
+    import ratebook as RB
+    a = RB.annotate(main, book); a["diff"] = (a.main_amount - a.exp_revenue).round(2)
+    zero = a.main_amount.fillna(0).abs() < 0.005
+    if "cancelled" in a.columns: zero = zero | a.cancelled.fillna(False).astype(bool)
+    a = a[~zero]                                                  # cancelled / $0 trips are not price errors
+    known = a[a.exp_revenue.notna() & a.main_amount.notna()]
+    under = known[known["diff"] < -0.005]; over = known[known["diff"] > 0.005]
+    ak_ok = ~(under.state == "AK") | (((under.main_amount - err).abs() < 0.005) & ((under.exp_revenue - rate).abs() < 0.005))
+    claim, accepted = under[ak_ok], under[~ak_ok]
+    rows = []
+    for code, g in a.groupby("state"):
+        k = known[known.state == code]; u = claim[claim.state == code]; o = over[over.state == code]
+        rows.append({"State": _nm(code), "Trips": len(g), "Trips with a known contract price": len(k), "Coverage %": len(k) / len(g) * 100 if len(g) else np.nan,
+                     "Trips paid below contract price": len(u), "Total shortfall": -u["diff"].sum() if len(u) else 0.0,
+                     "Trips paid above contract price": len(o), "Total excess": o["diff"].sum() if len(o) else 0.0})
+    t = pd.DataFrame(rows).sort_values("Trips", ascending=False)
+    tot = {c: t[c].sum() for c in t.columns if c not in ("State", "Coverage %")}; tot["State"] = "TOTAL"; tot["Coverage %"] = tot["Trips with a known contract price"] / tot["Trips"] * 100 if tot["Trips"] else np.nan
+    det = claim.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()
+    det["state"] = det.state.map(_nm)
+    det.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Contract price", "Price source", "Paid", "Difference", "Source file", "Source row"]
+    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True), det, {"accepted_trips": len(accepted), "accepted_amount": -accepted["diff"].sum() if len(accepted) else 0.0}
+
+
+def estimate_financials(main, book, states_with_report=()):
+    """ESTIMATE for states WITHOUT an uploaded state report: First revenue (actual) minus driver pay estimated from the rate book,
+    on the trips where a pay estimate exists. Clearly labelled; never added to actual state-report totals."""
+    import ratebook as RB
+    a = RB.annotate(main, book); a = a[~a.state.isin(list(states_with_report)) & ~a.state.isin(["Unassigned", "NEEDS REVIEW"])]
+    rows = []
+    for code, g in a.groupby("state"):
+        c = g[g.exp_pay.notna() & g.main_amount.notna()]
+        rev, pay = c.main_amount.sum(), c.exp_pay.sum()
+        rows.append({"State": _nm(code), "Trips": len(g), "First/EverDriven revenue": g.main_amount.sum(min_count=1), "Trips with a pay estimate": len(c),
+                     "Coverage %": len(c) / len(g) * 100 if len(g) else np.nan, "Est. driver payments": pay, "Est. profit": rev - pay if len(c) else np.nan,
+                     "Est. margin %": (rev - pay) / rev * 100 if len(c) and rev else np.nan})
+    t = pd.DataFrame(rows)
+    if len(t):
+        tot = {c: t[c].sum() for c in t.columns if c not in ("State", "Coverage %", "Est. margin %")}; tot["State"] = "TOTAL"
+        tot["Coverage %"] = tot["Trips with a pay estimate"] / tot["Trips"] * 100
+        tot["Est. margin %"] = tot["Est. profit"] / (a[a.exp_pay.notna()].main_amount.sum()) * 100 if a.exp_pay.notna().any() else np.nan
+        t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)
+    return t
