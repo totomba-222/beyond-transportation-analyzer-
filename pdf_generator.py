@@ -22,8 +22,46 @@ NAVY, GREY = colors.HexColor("#1F3A5F"), colors.HexColor("#F2F5F9")
 SS = getSampleStyleSheet()
 H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName="Helvetica-Bold", fontSize=15, textColor=NAVY, spaceAfter=6)
 H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, spaceBefore=8, spaceAfter=4)
+EXP = ParagraphStyle("exp", fontName="Helvetica", fontSize=7.5, leading=9.5, textColor=colors.HexColor("#4B5563"))
 BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName="Helvetica", fontSize=8.5, leading=11)
 MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid", "adjust")
+
+EXPLAIN = [
+    ("=Summary by state", "One row per state for driver payments. 'Trips with a pay policy' = trips whose route has a stable usual pay; only those are judged. 'Trips paid above policy' and 'Total excess pay' show overpayment; 'above trip revenue' shows trips where the driver was paid more than the trip earns."),
+    ("Totals by state and provider", "The same numbers split by state, with First and EverDriven side by side. Each state normally belongs to one company (Nebraska and Kansas are EverDriven; the others are First)."),
+    ("Totals by provider", "How many trips and how much money each company (First or EverDriven) paid Beyond. Revenue/Trip = revenue divided by trips. Revenue % = that company's share of all revenue."),
+    ("Totals by state", "One row per state for everything uploaded. Drivers = different drivers, Miles = total miles, Revenue = money paid by First / EverDriven. Trips % and Revenue % = the state's share of the company total."),
+    ("Claim: trips paid", "Trips that the provider paid at the wrong (error) price instead of the official price. Shortfall per trip = official minus paid. Total owed = trips x shortfall: this is the amount to claim from the provider."),
+    ("CLAIM TO FIRST", "Trips that the provider paid at the wrong (error) price instead of the official price. Total owed = trips x shortfall per trip: this is the amount to claim."),
+    ("claim by driver", "The same claim split by driver, so every driver's trips and amount can be checked."),
+    ("Paid price vs contract price", "Compares what the provider paid for each trip with the contract price learned from earlier state reports for the same route. 'Below' = possible underpayment, 'above' = paid more than usual. Coverage = share of trips whose contract price is known."),
+    ("Trips paid below the contract price", "The individual trips behind the 'below contract price' count: the price paid, the contract price and the difference. Check them with the provider."),
+    ("Estimated profit by state", "ESTIMATE for states without a state report: provider revenue minus driver pay estimated from earlier weeks. It is not actual and is replaced by real numbers when the state report arrives."),
+    ("Financial performance", "Actual money for this state from its state report. Revenue = what Beyond earns. Driver Payments = paid to drivers. Monitor payments = cost of monitors (no trip revenue). Profit = revenue minus payments. Margin = profit divided by revenue."),
+    ("=All states", "Actual money per state from the state reports. Revenue = what Beyond earns, Driver Payments = paid to drivers, Monitor payments = cost of monitors who ride with drivers (no trip revenue). Profit = revenue minus payments; Margin % = profit divided by revenue. n/a = no state report uploaded yet."),
+    ("Driver performance", "One row per driver: trips, miles, revenue, payments, profit and margin. Use it to see which drivers earn more or less for the company."),
+    ("Revenue bridge", "Explains the gap between what the provider paid and what the state report says Beyond should receive, line by line. The last column must be $0.00; any other number means part of the gap is unexplained."),
+    ("Summary by state (difference", "Counts of differences per state: trips with a price difference, trips missing on one side, and monitor payments. Difference = provider revenue minus state revenue (negative = the provider paid less than the state report)."),
+    ("trips in the state report but NOT in First", "Trips that appear in the state report but have no matching trip in the provider report. Check whether they were really driven and whether Beyond should claim them or remove them."),
+    ("monitor (MO) payments", "Payments to monitors who ride beside the driver. They are costs with no trip revenue of their own, so they are information only, not a discrepancy."),
+    ("trips in First but NOT in the state report", "Trips the provider paid Beyond for that are missing from the state report. They may be unrecorded trips or a driver listed under another state."),
+    ("price differences by driver", "Price differences grouped by driver, with trips, miles and the amount."),
+    ("trips paid above the pay policy", "Trips where the driver was paid more than the usual pay for the same route. Excess pay = driver pay minus the policy. Review for mistakes or approved exceptions."),
+    ("paid more than the trip revenue", "Trips where the driver's pay is higher than the trip's own revenue, so Beyond loses money on that trip."),
+    ("=Company - all states", "Two periods for the whole company. Difference = current minus previous; Change % = difference divided by the previous value. Payments and profit only include states that have a state report, so also read the like-for-like table."),
+    ("Like-for-like", "The same comparison using only the states that have a state report in BOTH periods, so payments, profit and margin are truly comparable."),
+    ("State ranking", "States ranked by revenue for the latest month (1 = highest revenue)."),
+    ("=Company by month", "One row per month: trips, revenue, payments, profit, margin and averages. MoM % = change versus the previous month. Months with fewer than 4 weeks are partial."),
+    ("=State by month", "The same monthly figures for each state."),
+    ("=By state", "Each state's trips, revenue, profit and margin for the periods compared; the % columns show the change between them."),
+]
+
+
+def explain_for(title):
+    t = str(title or "").lower()
+    for key, text in EXPLAIN:
+        if (key[1:].lower() == t) if key.startswith("=") else (key.lower() in t): return text
+    return None
 
 
 def usd(v):
@@ -113,11 +151,13 @@ class Report:
         rows = [[k, fmt_cell(k, v)] for k, v in d.items()]
         t = df_table(pd.DataFrame(rows, columns=["KPI", "Value"]).astype(object), 90 * mm, 8)
         self.story += [t, Spacer(1, 6)]
-    def table(self, df, title=None, wide=True, font=None):
+    def table(self, df, title=None, wide=True, font=None, note=None):
         (self.land if wide else self.portrait)()
         if title: self.h2(title)
         if df is None or len(df) == 0: self.p("No records in this scope."); return
         self.story.append(df_table(df, self.width, font or (6.5 if len(df.columns) > 9 else 7.5)))
+        txt = note if note is not None else explain_for(title)
+        if txt: self.story += [Spacer(1, 2), Paragraph("<i>What this table shows:</i> " + txt, EXP), Spacer(1, 4)]
     def chart(self, df, x, ys, title):
         img = _chart(df, x, ys, title)
         if img is not None: self.story += [img, Spacer(1, 6)]
@@ -346,7 +386,8 @@ def combined_report(main, rec, label=None, rate=45.0, adjustments=None, err=None
     return R_.build()
 
 
-# ---------------------------------------------------------------- weekly / monthly reports (from the history)
+# ---------------------------------------------------------------- weekly / monthly / pay-policy sections (used standalone AND inside the master / per-state reports)
+import zipfile
 import history as HI
 
 
@@ -359,30 +400,35 @@ def _chart2(R_, df, x, ys, title):
     if len(d): R_.chart(d, x, ys, title)
 
 
-def weekly_comparison_report(h, week=None):
+def _add_weekly(R_, h, week=None):
+    R_.h1("Weekly performance comparison")
     ws = HI.weeks(h)
-    if not ws: R_ = Report("Weekly Comparison Report", "n/a"); R_.h1("Weekly comparison"); R_.p("No dated trips in the history."); return R_.build()
+    if not ws: R_.p("No dated trips in the history."); return
     wk = pd.Timestamp(week) if week is not None else ws[-1]
     t, ci, pi, warns = HI.weekly_compare(h, wk)
-    R_ = Report("Weekly Comparison Report", f"{ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d}")
-    R_.h1("Weekly performance comparison")
-    R_.p(f"Current week: {ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d} (trips dated {ci['first']:%Y-%m-%d} to {ci['last']:%Y-%m-%d}). "
-         f"Previous week: {pi['start']:%Y-%m-%d} to {pi['end']:%Y-%m-%d}." if ci["first"] is not None else "No trips in the selected week.")
+    R_.p((f"Current week: {ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d} (trips dated {ci['first']:%Y-%m-%d} to {ci['last']:%Y-%m-%d}). "
+          f"Previous week: {pi['start']:%Y-%m-%d} to {pi['end']:%Y-%m-%d}.") if ci["first"] is not None else "No trips in the selected week.")
     for w in warns: R_.p(f"<b>Warning:</b> {w}")
     R_.p("Revenue = amount paid by First / EverDriven. Driver payments, profit and margin exist only for states with an uploaded state report.")
     _kpi_pdf(R_, t, ["Current week", "Previous week", "Difference"], "Company - all states")
     lf, both = HI.weekly_like_for_like(h, wk)
     if lf is not None: _kpi_pdf(R_, lf, ["Current week", "Previous week", "Difference"], f"Like-for-like: states with a state report in both weeks ({', '.join(STATE_NAMES.get(s, s) for s in both)})")
-    s = HI.weekly_state_summary(h, wk); R_.table(s, "By state"); 
-    rv = s[["State", "Revenue current", "Revenue previous"]].rename(columns={"Revenue current": "Current week", "Revenue previous": "Previous week"}); rv["State"] = rv.State.map(lambda c: STATE_NAMES.get(c, c))
-    R_.chart(rv, "State", ["Current week", "Previous week"], "Revenue by state: current vs previous week")
-    return R_.build()
+    s = HI.weekly_state_summary(h, wk); R_.table(s, "By state")
+    if len(s) > 0:
+        rv = s[["State", "Revenue current", "Revenue previous"]].rename(columns={"Revenue current": "Current week", "Revenue previous": "Previous week"}); rv["State"] = rv.State.map(lambda c: STATE_NAMES.get(c, c))
+        R_.chart(rv, "State", ["Current week", "Previous week"], "Revenue by state: current vs previous week")
 
 
-def monthly_report_pdf(h):
-    R_ = Report("Monthly Financial Report", "all months in the history"); R_.h1("Monthly financial report")
+def weekly_comparison_report(h, week=None):
+    ws = HI.weeks(h); wk = pd.Timestamp(week) if week is not None else (ws[-1] if ws else None)
+    period = f"{pd.Timestamp(wk):%Y-%m-%d} to {pd.Timestamp(wk) + pd.Timedelta(days=6):%Y-%m-%d}" if wk is not None else "n/a"
+    R_ = Report("Weekly Comparison Report", period); _add_weekly(R_, h, week); return R_.build()
+
+
+def _add_monthly(R_, h):
+    R_.h1("Monthly financial report")
     t = HI.monthly_table(h)
-    if t.empty: R_.p("No dated trips in the history."); return R_.build()
+    if t.empty: R_.p("No dated trips in the history."); return
     for m, w in zip(t.Month, t.Weeks):
         if w < 4: R_.p(f"<b>Note:</b> {m} has {w} week(s) of data - partial month.")
     R_.p("Revenue = paid by First / EverDriven. Payments, profit and margin cover only states with an uploaded state report. Drivers = average of the weekly driver counts.")
@@ -390,33 +436,112 @@ def monthly_report_pdf(h):
     R_.chart(t, "Month", ["Revenue", "Driver Payments", "Profit"], "Monthly revenue, driver payments and profit")
     s = HI.monthly_table(h, by="state"); s["State"] = s.state.map(lambda c: STATE_NAMES.get(c, c))
     R_.table(s[["Month", "State", "Weeks", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %", "Avg revenue/trip"]], "State by month")
-    last = s[s.Month == s.Month.max()].sort_values("Revenue", ascending=False)[["State", "Trips", "Revenue", "Profit", "Margin %"]].reset_index(drop=True)
-    last.insert(0, "Rank", range(1, len(last) + 1)); R_.table(last, f"State ranking by revenue - {s.Month.max()}", wide=False)
-    return R_.build()
+    if s.State.nunique() > 1:
+        last = s[s.Month == s.Month.max()].sort_values("Revenue", ascending=False)[["State", "Trips", "Revenue", "Profit", "Margin %"]].reset_index(drop=True)
+        last.insert(0, "Rank", range(1, len(last) + 1)); R_.table(last, f"State ranking by revenue - {s.Month.max()}", wide=False)
 
 
-def monthly_comparison_report(h, m1, m2):
-    R_ = Report("Monthly Comparison Report", f"{m1} vs {m2}"); R_.h1(f"Monthly comparison: {m2} vs {m1}")
+def monthly_report_pdf(h):
+    R_ = Report("Monthly Financial Report", "all months in the history"); _add_monthly(R_, h); return R_.build()
+
+
+def _add_mcomp(R_, h, m1, m2):
+    R_.h1(f"Monthly comparison: {m2} vs {m1}")
     t, warns = HI.monthly_compare(h, m1, m2)
     for w in warns: R_.p(f"<b>Warning:</b> {w}")
-    R_.p("Difference = " + f"{m2} minus {m1}. Payments, profit and margin cover only states with an uploaded state report.")
+    R_.p(f"Difference = {m2} minus {m1}. Payments, profit and margin cover only states with an uploaded state report.")
     _kpi_pdf(R_, t, [m1, m2, "Difference"], "Company - all states")
     lf, both = HI.like_for_like(h[h.month == m2], h[h.month == m1], m2, m1)
     if lf is not None:
         lf = lf[["KPI", m1, m2, "Difference", "Change %"]]; _kpi_pdf(R_, lf, [m1, m2, "Difference"], f"Like-for-like: states with a state report in both months ({', '.join(STATE_NAMES.get(s, s) for s in both)})")
-    s = HI.monthly_state_summary(h, m1, m2); R_.table(s, "By state")
-    return R_.build()
+    R_.table(HI.monthly_state_summary(h, m1, m2), "By state")
 
 
-# ---------------------------------------------------------------- pay policy
-def pay_policy_report(rec, book):
-    R_ = Report("Driver Pay Policy Review", _period(rec)); R_.h1("Driver pay policy review: payments above the usual pay for the same route")
+def monthly_comparison_report(h, m1, m2):
+    R_ = Report("Monthly Comparison Report", f"{m1} vs {m2}"); _add_mcomp(R_, h, m1, m2); return R_.build()
+
+
+def _add_paypol(R_, rec, book):
+    R_.h1("Driver pay policy review: payments above the usual pay for the same route")
     s, over, loss = SR.pay_check(rec, book)
-    if s.empty: R_.p("No state reports with driver payments uploaded."); return R_.build()
+    if s.empty: R_.p("No state reports with driver payments uploaded."); return
     R_.p("Policy = the pay that was paid for the same route in at least 80% of earlier trips (minimum 3). The route of each trip comes from the First / EverDriven report. "
          "Trips whose route has no stable policy yet are not judged.")
     R_.table(s, "Summary by state", font=7)
     for code in over.State.unique():
         d = over[over.State == code].drop(columns=["State", "State source"]); R_.table(d, f"{code} - trips paid above the pay policy ({len(d)} trips, excess {usd(d['Excess pay'].sum())})", font=6.5)
     if len(loss): R_.table(loss.drop(columns=["State source", "Pay policy"]).rename(columns={"Excess pay": "Pay above revenue"}), "Trips where the driver was paid more than the trip revenue", font=6.5)
+
+
+def pay_policy_report(rec, book):
+    R_ = Report("Driver Pay Policy Review", _period(rec)); _add_paypol(R_, rec, book); return R_.build()
+
+
+# ---------------------------------------------------------------- full report of ONE state, master report, all-states zip
+def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=None):
+    """Everything about one state: financial performance, price check, price + trip differences, pay policy, weekly and monthly."""
+    import financial_calculations as FC
+    nm = STATE_NAMES.get(code, code); ms, rs = main[main.state == code], rec[rec.state == code]
+    hs = hist[hist.state == code] if hist is not None and len(hist) else None
+    has_rep = bool(len(rs)) and bool((rs.state_source != "").any())
+    R_ = Report(f"{nm} - Full State Report", _period(ms if len(ms) else rs)); R_.h1(f"{nm}: full report")
+    k = {"Trips (provider report)": len(ms), "Drivers": ms.driver.nunique(), "Miles": ms.miles.sum(min_count=1), "Provider revenue (paid)": ms.main_amount.sum(min_count=1)}
+    if has_rep:
+        f = SR.state_financials(rs); row = f[f.State == nm].iloc[0]; pt = rs[rs.driver_payment.notna() & (rs.audit_status != "MONITOR PAYMENT")]
+        k.update({"State-report revenue": row["Revenue"], "Driver payments": row["Driver Payments"], "Monitor payments": row["Monitor payments"], "Profit": row["Profit"], "Margin %": row["Margin %"],
+                  "Avg revenue/trip": k["Provider revenue (paid)"] / len(ms) if len(ms) else np.nan, "Avg driver payment/trip": pt.driver_payment.sum() / len(pt) if len(pt) else np.nan})
+    R_.kpis(k)
+    R_.p("This report has six parts: financial performance, price check, price and trip differences against the state report, driver pay policy, weekly comparison and monthly report."
+         if has_rep else "<b>No state report was uploaded for this state yet</b>, so driver payments, profit and the differences below cannot be calculated. The estimate and the price check use earlier weeks' rates.")
+    R_.section("L"); R_.h1("1. Financial performance")
+    if has_rep:
+        R_.table(f[f.State == nm], "Financial performance (state report)")
+        d = FC.driver_table(rs, code).drop(columns=["Rows missing revenue/payment"], errors="ignore"); R_.table(d, "Driver performance", font=7)
+    elif len(ms):
+        est = SR.estimate_financials(ms, book, ()); R_.table(est[est.State == nm] if len(est) else est, "Estimated profit by state")
+    else:
+        R_.p("No trips for this state in the uploaded reports.")
+    R_.section("L"); R_.h1("2. Price check against contract prices")
+    if len(ms):
+        pc, det, _ = SR.price_check(ms, book, SR._err(err), rate)
+        R_.table(pc[pc.State == nm] if (pc.State == nm).any() else pc.iloc[-1:], "Paid price vs contract price, by state")
+        if len(det): R_.table(det.drop(columns=["State", "Source file", "Source row"], errors="ignore").head(80), f"Trips paid below the contract price (trip by trip, first {min(len(det), 80)} of {len(det)}; full list in Excel)", font=6.5)
+        if code == "AK":
+            s, grp, drv, _ = SR.first_rate_audit(ms, rate, err=err)
+            if s["Trips below official rate"]:
+                R_.p(f"Alaska claim: {s['Trips below official rate']} trips of {s['Alaska trips in report']} were paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}. Total owed: <b>{usd(s['Total owed'])}</b>.")
+                R_.table(grp, f"Claim: trips paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}", font=8); R_.table(drv, "Claim by driver", font=7)
+    else:
+        R_.p("No trips for this state in the uploaded reports.")
+    R_.section("L")
+    if has_rep: _add_disc(R_, rs, rate, err)
+    else: R_.h1("3. Differences against the state report"); R_.p("No state report uploaded for this state.")
+    R_.section("L")
+    if has_rep: _add_paypol(R_, rs, book)
+    else: R_.h1("4. Driver pay policy review"); R_.p("Needs the state report (it holds the driver payments).")
+    if hs is not None and len(hs):
+        R_.section("P"); _add_weekly(R_, hs, week); R_.section("P"); _add_monthly(R_, hs)
     return R_.build()
+
+
+def master_report(main, rec, hist, book, label=None, rate=45.0, err=None, adjustments=None, week=None):
+    """All combined reports in ONE file: provider + state totals, price check, state financials, differences, pay policy, weekly, monthly."""
+    label = label or SR.provider_label(main); has = (rec.state_source != "").any()
+    R_ = Report("Master Report - all combined reports", _period(main))
+    _add_first(R_, main, label, adjustments, rate, err, True, set(rec[rec.state_source != ""].state))
+    if has:
+        R_.section("L"); _add_states(R_, rec); R_.section("L"); _add_disc(R_, rec, rate, err); R_.section("L"); _add_paypol(R_, rec, book)
+    if hist is not None and len(hist):
+        R_.section("P"); _add_weekly(R_, hist, week); R_.section("P"); _add_monthly(R_, hist)
+        ms = sorted(hist.month.dropna().unique())
+        if len(ms) >= 2: R_.section("P"); _add_mcomp(R_, hist, ms[-2], ms[-1])
+    return R_.build()
+
+
+def all_states_zip(main, rec, hist, book, rate=45.0, err=None, week=None):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for code in sorted(main.state.dropna().unique()):
+            if code in ("Unassigned", "NEEDS REVIEW"): continue
+            z.writestr(f"{STATE_NAMES.get(code, code).replace(' ', '_').replace('(', '').replace(')', '')}_full_report.pdf", state_full_report(code, main, rec, hist, book, rate, err, week))
+    return buf.getvalue()

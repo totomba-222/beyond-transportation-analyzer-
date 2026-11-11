@@ -375,7 +375,8 @@ def pay_check(rec, book, tol=0.005):
         rows.append({"State": _nm(code), "Trips with driver pay": len(g), "Trips with a pay policy": int(g.policy.notna().sum()), "Coverage %": g.policy.notna().mean() * 100,
                      "Trips paid above policy": len(o), "Total excess pay": o.excess.sum(), "Trips paid above trip revenue": len(l),
                      "Their loss": (l.driver_payment - l.state_revenue).sum()})
-    t = pd.DataFrame(rows).sort_values("Trips with driver pay", ascending=False)
+    t = pd.DataFrame(rows, columns=["State", "Trips with driver pay", "Trips with a pay policy", "Coverage %", "Trips paid above policy", "Total excess pay", "Trips paid above trip revenue", "Their loss"])
+    t = t.sort_values("Trips with driver pay", ascending=False)
     if len(t):
         tot = {c: t[c].sum() for c in t.columns if c not in ("State", "Coverage %")}; tot["State"] = "TOTAL"; tot["Coverage %"] = tot["Trips with a pay policy"] / tot["Trips with driver pay"] * 100
         t = pd.concat([t, pd.DataFrame([tot])], ignore_index=True)

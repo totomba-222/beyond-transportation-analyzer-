@@ -79,6 +79,8 @@ def expected(book, state, trip_name, miles, driver=None):
 
 
 def annotate(main, book):
+    if len(main) == 0:        # no trips: same columns, no rows
+        return main.assign(exp_revenue=pd.Series(dtype=float), exp_rev_src=pd.Series(dtype=object), exp_pay=pd.Series(dtype=float), exp_pay_src=pd.Series(dtype=object))
     ex = [expected(book, s, t, mi, d) for s, t, mi, d in zip(main.state, main.trip_name, main.miles, main.driver_disp)]
     e = pd.DataFrame(ex, index=main.index)
     return main.join(e.rename(columns={"rev": "exp_revenue", "rev_src": "exp_rev_src", "pay": "exp_pay", "pay_src": "exp_pay_src"}))

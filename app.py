@@ -119,10 +119,11 @@ if histfile:
     except Exception as e: st.warning(f"History CSV could not be read: {e}")
 hist = HI.merge(_prev, HI.weekly_rows(rec)) if len(rec) else HI.merge(_prev, pd.DataFrame(columns=HI.COLS))
 st.sidebar.download_button("⬇️ Save weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
-page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review"])
-if has_state:
-    with st.sidebar:
-        st.divider(); pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
+page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state"])
+with st.sidebar:
+    st.divider()
+    if has_state: pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
+    pdf_button("MASTER report (everything in one file)", "master", lambda: PG.master_report(main, rec, hist, RB.load(), rate=ak_rate, err=err_price, adjustments=res.adjustments))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
@@ -253,7 +254,7 @@ elif page.startswith("6"):
     pdf_button("Monthly comparison", "monthly_cmp", lambda: PG.monthly_comparison_report(hist, m1, m2))
 
 # ------------------------------------------------------------------ page 7: driver pay policy review
-else:
+elif page.startswith("7"):
     st.header("Driver pay policy review")
     if not has_state: st.info("Upload the state reports to review driver payments."); st.stop()
     _book = RB.load(); ps, pover, ploss = SR.pay_check(rec, _book)
@@ -268,3 +269,14 @@ else:
     with st.expander("Pay policy table (every route with a stable policy)"): show(SR.pay_policy_table(_book), 400)
     st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book)}), "Pay_Policy_Review.xlsx", XLSX)
     pdf_button("Driver pay policy review", "paypol", lambda: PG.pay_policy_report(rec, _book))
+
+
+# ------------------------------------------------------------------ page 8: full report per state
+else:
+    st.header("Full report per state")
+    st.caption("One PDF per state: financial performance, price check, price and trip differences, driver pay policy, weekly comparison and monthly report. States without a state report get the estimate and the price check only.")
+    codes_ = [c for c in sorted(main.state.dropna().unique()) if c not in ("Unassigned", "NEEDS REVIEW")]
+    pick_ = st.selectbox("State", codes_, format_func=lambda c: STATE_NAMES.get(c, c)); _b8 = RB.load()
+    pdf_button(f"{STATE_NAMES.get(pick_, pick_)} full report", f"state_{pick_}", lambda: PG.state_full_report(pick_, main, rec, hist, _b8, ak_rate, err_price))
+    if st.button("Generate ZIP with all states", key="gen_zip"): ss["zip_all"] = PG.all_states_zip(main, rec, hist, _b8, ak_rate, err_price)
+    if ss.get("zip_all"): st.download_button("⬇️ Download ZIP: all states", ss["zip_all"], "All_States_Full_Reports.zip", "application/zip", key="dl_zip")
