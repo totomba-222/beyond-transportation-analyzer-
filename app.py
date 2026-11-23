@@ -11,6 +11,7 @@ import classification as C
 import excel_generator as EG
 import pdf_generator as PG
 import ratebook as RB
+import pay_policy as PP
 import simple_reports as SR
 from config import DEFAULT_SETTINGS, STATE_NAMES
 
@@ -55,7 +56,7 @@ with st.sidebar:
     st.subheader("2) State reports")
     sfiles = st.file_uploader("Upload state reports (optional)", type=["xlsx", "xls", "csv", "pdf"], accept_multiple_files=True, key="s")
     ak_rate = st.number_input("Official Alaska rate ($)", value=45.0, step=0.5)
-    err_price = st.number_input("Price paid in error ($) - only these trips are claimed", value=42.5, step=0.5)
+    err_price = st.number_input("Lowest price paid in error ($) - trips at/above it ending in .50 are claimed", value=42.5, step=0.5)
     st.subheader("3) Saved driver map (optional)")
     mapfile = st.file_uploader("CSV with columns driver,state", type=["csv"], key="map")
     st.subheader("4) Previous weeks history (optional)")
@@ -140,9 +141,21 @@ if page.startswith("1"):
         st.subheader("Totals by state and provider"); show(SR.state_provider_table(main))
     t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t)
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
+    _wr = set(rec[rec.state_source != ""].state); _est1 = SR.estimate_financials(main, RB.load(), _wr)
+    if len(_est1):
+        st.subheader("Full state view right after the First upload: revenue, estimated payments, profit and margin")
+        st.caption("Revenue = what First / EverDriven paid (net). Payments, profit and margin are ESTIMATES from earlier weeks' pay rates until the state report is uploaded; then the real numbers replace them.")
+        show(_est1)
+    _pls, _pld = PP.price_list_check(main)
+    if len(_pls):
+        st.subheader("Price paid by First vs the price list (Northern California price PDFs, New Mexico / Kansas / Nebraska rules)")
+        st.caption("Price list = the 'Gross' column of the city price PDFs. A trip below the list price is a shortfall to raise with First.")
+        show(_pls)
+        if len(_pld):
+            with st.expander(f"Trips not at the list price ({len(_pld):,})"): show(_pld, 400)
     rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate, err=err_price)
     if rs["Trips below official rate"]:
-        st.subheader(f"Alaska rate check - trips paid ${err_price:,.2f} instead of the official ${ak_rate:,.2f}")
+        st.subheader(f"Alaska rate check - trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)")
         c2 = st.columns(3); c2[0].metric(f"Trips paid ${err_price:,.2f}", f"{rs['Trips below official rate']:,}"); c2[1].metric("Total owed by the provider", money(rs["Total owed"])); c2[2].metric("Drivers affected", f"{rs['Drivers affected']:,}")
         show(rgrp)
         if rs["Other trips below the rate (not claimed)"]:
@@ -197,7 +210,7 @@ elif page.startswith("3"):
         if not (len(a) or len(s) or len(f)): continue
         with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
             cl, ot = SR.claim_split(rec, code, ak_rate, err_price)
-            if len(cl): st.markdown(f"**Claim to First: trips paid ${err_price:,.2f} instead of the official ${ak_rate:,.2f}**"); show(cl)
+            if len(cl): st.markdown(f"**Claim to First: trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)**"); show(cl)
             mo = SR.monitor_by_driver(rec, code)
             if len(mo): st.markdown("**Monitor (MO) payments - costs with no trip revenue (information only)**"); show(mo); sheets[f"{code} monitors"[:31]] = mo
             for ttl, df, sh in (("Trips with a different price", a, "price"), ("In the state report but not in First", s, "state-only"), ("In First but not in the state report", f, "First-only")):
@@ -267,7 +280,15 @@ elif page.startswith("7"):
     if len(ploss):
         with st.expander(f"Trips where the driver was paid more than the trip revenue ({len(ploss)})"): show(ploss.drop(columns=["State source"]))
     with st.expander("Pay policy table (every route with a stable policy)"): show(SR.pay_policy_table(_book), 400)
-    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book)}), "Pay_Policy_Review.xlsx", XLSX)
+    _bs, _bd = PP.band_check(rec, _book)
+    if len(_bs):
+        st.subheader("Driver pay vs the official mile-band policy (Northern / Southern California, New Mexico, Oregon)")
+        st.caption("Bands per city come from the price PDFs. Trips with a different pay that is listed in the price list are approved exceptions; long trips and Sacramento are approved per trip by management.")
+        show(_bs)
+        _bad = _bd[_bd.Status.str.startswith(("ABOVE", "BELOW", "Long trip: needs", "ZERO", "Sacramento: pay NOT", "City not"))]
+        with st.expander(f"Trips that need review ({len(_bad):,})", expanded=len(_bad) > 0): show(_bad, 400)
+        with st.expander("Mile bands"): show(PP.bands_table())
+    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book), "N.CA mile bands": _bs, "N.CA band detail": _bd}), "Pay_Policy_Review.xlsx", XLSX)
     pdf_button("Driver pay policy review", "paypol", lambda: PG.pay_policy_report(rec, _book))
 
 
@@ -275,7 +296,7 @@ elif page.startswith("7"):
 else:
     st.header("Full report per state")
     st.caption("One PDF per state: financial performance, price check, price and trip differences, driver pay policy, weekly comparison and monthly report. States without a state report get the estimate and the price check only.")
-    codes_ = [c for c in sorted(main.state.dropna().unique()) if c not in ("Unassigned", "NEEDS REVIEW")]
+    codes_ = PG.report_states(main, rec)
     pick_ = st.selectbox("State", codes_, format_func=lambda c: STATE_NAMES.get(c, c)); _b8 = RB.load()
     pdf_button(f"{STATE_NAMES.get(pick_, pick_)} full report", f"state_{pick_}", lambda: PG.state_full_report(pick_, main, rec, hist, _b8, ak_rate, err_price))
     if st.button("Generate ZIP with all states", key="gen_zip"): ss["zip_all"] = PG.all_states_zip(main, rec, hist, _b8, ak_rate, err_price)

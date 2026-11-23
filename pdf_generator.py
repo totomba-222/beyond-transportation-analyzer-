@@ -31,7 +31,7 @@ EXPLAIN = [
     ("Totals by state and provider", "The same numbers split by state, with First and EverDriven side by side. Each state normally belongs to one company (Nebraska and Kansas are EverDriven; the others are First)."),
     ("Totals by provider", "How many trips and how much money each company (First or EverDriven) paid Beyond. Revenue/Trip = revenue divided by trips. Revenue % = that company's share of all revenue."),
     ("Totals by state", "One row per state for everything uploaded. Drivers = different drivers, Miles = total miles, Revenue = money paid by First / EverDriven. Trips % and Revenue % = the state's share of the company total."),
-    ("Claim: trips paid", "Trips that the provider paid at the wrong (error) price instead of the official price. Shortfall per trip = official minus paid. Total owed = trips x shortfall: this is the amount to claim from the provider."),
+    ("Claim: trips short", "Trips where the provider paid the official price minus a fixed $2.50 (42.50 instead of 45, 47.50 instead of 50, 82.50 instead of 85). Shortfall per trip = official minus paid. Total owed = trips x shortfall: this is the amount to claim from the provider."),
     ("CLAIM TO FIRST", "Trips that the provider paid at the wrong (error) price instead of the official price. Total owed = trips x shortfall per trip: this is the amount to claim."),
     ("claim by driver", "The same claim split by driver, so every driver's trips and amount can be checked."),
     ("Paid price vs contract price", "Compares what the provider paid for each trip with the contract price learned from earlier state reports for the same route. 'Below' = possible underpayment, 'above' = paid more than usual. Coverage = share of trips whose contract price is known."),
@@ -310,9 +310,9 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
         s, grp, drv, _ = SR.first_rate_audit(main, rate, err=err)
         if s["Trips below official rate"]:
             R_.section("L"); R_.h1(f"Alaska rate check ({label} report only)")
-            R_.p(f"{s['Trips below official rate']} Alaska trips of {s['Alaska trips in report']} were paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}. "
+            R_.p(f"{s['Trips below official rate']} Alaska trips of {s['Alaska trips in report']} were short by the fixed ${rate-SR._err(err):,.2f} each (price ending in .50, at least ${SR._err(err):,.2f}). "
                  f"Total owed by the provider: <b>{usd(s['Total owed'])}</b>. Trip-by-trip detail is in the Excel file.")
-            R_.table(grp, f"Claim: trips paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}", font=8); R_.table(drv, "Claim by driver", font=7)
+            R_.table(grp, f"Claim: trips short by the fixed ${rate-SR._err(err):,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)", font=8); R_.table(drv, "Claim by driver", font=7)
             if s["Other trips below the rate (not claimed)"]:
                 R_.p(f"Note: {s['Other trips below the rate (not claimed)']} other Alaska trips were paid below the rate at a different price ({s['Other prices (not claimed)']}); "
                      f"they are not part of this claim (shortfall {usd(s['Their shortfall (not claimed)'])}).")
@@ -353,7 +353,7 @@ def _add_disc(R_, rec, rate=45.0, err=None):
         nm = STATE_NAMES.get(code, code); a, s, f = SR.discrepancy_sections(rec, code)
         claim, other = SR.claim_split(rec, code, rate, err)
         if len(claim):
-            R_.table(claim, f"{nm} - CLAIM TO FIRST: trips paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}", font=8)
+            R_.table(claim, f"{nm} - CLAIM TO FIRST: trips short by the fixed ${rate-SR._err(err):,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)", font=8)
             d = SR.claim_by_driver(rec, code, rate, err)
             if len(d): R_.table(d, f"{nm} - claim by driver (trip-by-trip detail is in the Excel file)", font=7)
         so = SR.state_only_by_driver(rec, code)
@@ -361,7 +361,7 @@ def _add_disc(R_, rec, rate=45.0, err=None):
         mo = SR.monitor_by_driver(rec, code)
         if len(mo): R_.table(mo, f"{nm} - monitor (MO) payments: monitors ride next to the driver, so there is no separate trip revenue (information only, not a discrepancy)", font=7)
         n_acc, amt_acc = SR.accepted_summary(rec[rec.state == code])
-        if n_acc: R_.p(f"Note: {n_acc} {nm} trips with other price differences (total {usd(abs(amt_acc))}) are treated as correct and are not part of the claim; only trips paid ${SR._err(err):,.2f} are claimed.")
+        if n_acc: R_.p(f"Note: {n_acc} {nm} trips with other price differences (total {usd(abs(amt_acc))}) are treated as correct and are not part of the claim; only trips short by the fixed ${rate-SR._err(err):,.2f} are claimed.")
         if len(f): R_.table(f, f"{nm} - trips in First but NOT in the state report", font=6.5)
 
 
@@ -407,7 +407,8 @@ def _add_weekly(R_, h, week=None):
     wk = pd.Timestamp(week) if week is not None else ws[-1]
     t, ci, pi, warns = HI.weekly_compare(h, wk)
     R_.p((f"Current week: {ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d} (trips dated {ci['first']:%Y-%m-%d} to {ci['last']:%Y-%m-%d}). "
-          f"Previous week: {pi['start']:%Y-%m-%d} to {pi['end']:%Y-%m-%d}.") if ci["first"] is not None else "No trips in the selected week.")
+          f"Previous week: {pi['start']:%Y-%m-%d} to {pi['end']:%Y-%m-%d}.") if (ci["first"] is not None and pd.notna(ci["first"]) and pd.notna(ci["last"])) else
+          (f"Current week: {ci['start']:%Y-%m-%d} to {ci['end']:%Y-%m-%d} (this state's report has no trip dates, so it is placed in the week of the other uploaded reports)." if ci["first"] is not None else "No trips in the selected week."))
     for w in warns: R_.p(f"<b>Warning:</b> {w}")
     R_.p("Revenue = amount paid by First / EverDriven. Driver payments, profit and margin exist only for states with an uploaded state report.")
     _kpi_pdf(R_, t, ["Current week", "Previous week", "Difference"], "Company - all states")
@@ -471,6 +472,15 @@ def _add_paypol(R_, rec, book):
     for code in over.State.unique():
         d = over[over.State == code].drop(columns=["State", "State source"]); R_.table(d, f"{code} - trips paid above the pay policy ({len(d)} trips, excess {usd(d['Excess pay'].sum())})", font=6.5)
     if len(loss): R_.table(loss.drop(columns=["State source", "Pay policy"]).rename(columns={"Excess pay": "Pay above revenue"}), "Trips where the driver was paid more than the trip revenue", font=6.5)
+    import pay_policy as PP
+    bs, bd = PP.band_check(rec, book)
+    if len(bs):
+        R_.h1("Driver pay vs the official mile-band policy (Northern / Southern California, New Mexico, Oregon)")
+        R_.p("Bands per city come from the price PDFs. A different pay that is listed in the price list is an approved exception; long trips and Sacramento are approved per trip by management.")
+        R_.table(PP.bands_table(), "Mile bands", wide=False, font=8, note="Driver pay per trip by miles for each city. Richmond's bands are inferred from its trips.")
+        R_.table(bs, "Driver pay against the mile bands, by city", font=7, note="Matches band = paid exactly the band pay. ABOVE / BELOW band = paid differently with no approval in the price list. Long trip: needs management approval = beyond the last band with no approved pay.")
+        bad = bd[bd.Status.str.startswith(("ABOVE", "BELOW", "Long trip: needs", "ZERO", "Sacramento: pay NOT", "City not"))]
+        if len(bad): R_.table(bad.drop(columns=["State"]).head(120), f"Trips that need review ({len(bad)}; first {min(len(bad), 120)})", font=6.5)
 
 
 def pay_policy_report(rec, book):
@@ -488,7 +498,7 @@ def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=Non
     k = {"Trips (provider report)": len(ms), "Drivers": ms.driver.nunique(), "Miles": ms.miles.sum(min_count=1), "Provider revenue (paid)": ms.main_amount.sum(min_count=1)}
     if has_rep:
         f = SR.state_financials(rs); row = f[f.State == nm].iloc[0]; pt = rs[rs.driver_payment.notna() & (rs.audit_status != "MONITOR PAYMENT")]
-        k.update({"State-report revenue": row["Revenue"], "Driver payments": row["Driver Payments"], "Monitor payments": row["Monitor payments"], "Profit": row["Profit"], "Margin %": row["Margin %"],
+        k.update({"Trips (state report)": int(row["Trips"]), "State-report revenue": row["Revenue"], "Driver payments": row["Driver Payments"], "Monitor payments": row["Monitor payments"], "Profit": row["Profit"], "Margin %": row["Margin %"],
                   "Avg revenue/trip": k["Provider revenue (paid)"] / len(ms) if len(ms) else np.nan, "Avg driver payment/trip": pt.driver_payment.sum() / len(pt) if len(pt) else np.nan})
     R_.kpis(k)
     R_.p("This report has six parts: financial performance, price check, price and trip differences against the state report, driver pay policy, weekly comparison and monthly report."
@@ -496,6 +506,8 @@ def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=Non
     R_.section("L"); R_.h1("1. Financial performance")
     if has_rep:
         R_.table(f[f.State == nm], "Financial performance (state report)")
+        nopay = rs[rs.state_revenue.notna() & rs.driver_payment.isna() & (rs.audit_status != "MONITOR PAYMENT")]
+        if len(nopay): R_.p(f"<b>Note:</b> {len(nopay)} trips with revenue {usd(nopay.state_revenue.sum())} have no driver payment in the state report; their revenue is counted fully as profit.")
         d = FC.driver_table(rs, code).drop(columns=["Rows missing revenue/payment"], errors="ignore"); R_.table(d, "Driver performance", font=7)
     elif len(ms):
         est = SR.estimate_financials(ms, book, ()); R_.table(est[est.State == nm] if len(est) else est, "Estimated profit by state")
@@ -505,12 +517,18 @@ def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=Non
     if len(ms):
         pc, det, _ = SR.price_check(ms, book, SR._err(err), rate)
         R_.table(pc[pc.State == nm] if (pc.State == nm).any() else pc.iloc[-1:], "Paid price vs contract price, by state")
+        if code in ("N.CA", "NM", "KS", "NE"):
+            import pay_policy as PP
+            pls, pld = PP.price_list_check(ms)
+            if len(pls):
+                R_.table(pls, "Price paid by First vs the agreed price list (city price PDFs, or the agreed rule of the state)", note="Below list = First paid less than the listed price for the same route (shortfall to claim). Above list = paid more than listed.")
+                if len(pld): R_.table(pld.head(80), f"Trips not at the list price (first {min(len(pld), 80)} of {len(pld)})", font=6.5)
         if len(det): R_.table(det.drop(columns=["State", "Source file", "Source row"], errors="ignore").head(80), f"Trips paid below the contract price (trip by trip, first {min(len(det), 80)} of {len(det)}; full list in Excel)", font=6.5)
         if code == "AK":
             s, grp, drv, _ = SR.first_rate_audit(ms, rate, err=err)
             if s["Trips below official rate"]:
-                R_.p(f"Alaska claim: {s['Trips below official rate']} trips of {s['Alaska trips in report']} were paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}. Total owed: <b>{usd(s['Total owed'])}</b>.")
-                R_.table(grp, f"Claim: trips paid ${SR._err(err):,.2f} instead of the official ${rate:,.2f}", font=8); R_.table(drv, "Claim by driver", font=7)
+                R_.p(f"Alaska claim: {s['Trips below official rate']} trips of {s['Alaska trips in report']} were short by the fixed ${rate-SR._err(err):,.2f} each (price ending in .50, at least ${SR._err(err):,.2f}). Total owed: <b>{usd(s['Total owed'])}</b>.")
+                R_.table(grp, f"Claim: trips short by the fixed ${rate-SR._err(err):,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)", font=8); R_.table(drv, "Claim by driver", font=7)
     else:
         R_.p("No trips for this state in the uploaded reports.")
     R_.section("L")
@@ -538,10 +556,15 @@ def master_report(main, rec, hist, book, label=None, rate=45.0, err=None, adjust
     return R_.build()
 
 
+def report_states(main, rec):
+    """Every state that has a provider (First/EverDriven) report OR a state report: each one gets its own full report."""
+    s = set(main.state.dropna().unique()) | set(rec[rec.state_source != ""].state.dropna().unique()) if len(rec) else set(main.state.dropna().unique())
+    return sorted(c for c in s if c not in ("Unassigned", "NEEDS REVIEW", ""))
+
+
 def all_states_zip(main, rec, hist, book, rate=45.0, err=None, week=None):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for code in sorted(main.state.dropna().unique()):
-            if code in ("Unassigned", "NEEDS REVIEW"): continue
+        for code in report_states(main, rec):
             z.writestr(f"{STATE_NAMES.get(code, code).replace(' ', '_').replace('(', '').replace(')', '')}_full_report.pdf", state_full_report(code, main, rec, hist, book, rate, err, week))
     return buf.getvalue()

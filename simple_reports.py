@@ -45,7 +45,9 @@ def state_financials(rec):
     r = rec[rec.state_source != ""]; rows = []
     def line(label, g):
         mon, trips = g[g.audit_status == "MONITOR PAYMENT"], g[g.audit_status != "MONITOR PAYMENT"]
-        pr = g[g.profit.notna()]; profit = pr.profit.sum() if len(pr) else np.nan; den = pr.state_revenue.sum(min_count=1)
+        # profit = revenue - payments over every row that has revenue (a trip with revenue but NO driver pay counts its full revenue as profit) + monitor costs
+        pr = g[g.state_revenue.notna() | (g.audit_status == "MONITOR PAYMENT")]
+        profit = (pr.state_revenue.fillna(0).sum() - pr.driver_payment.fillna(0).sum()) if len(pr) else np.nan; den = pr.state_revenue.sum(min_count=1)
         return {"State": label, "Trips": len(trips), "Drivers": trips.driver.str.lower().nunique(), "Revenue": g.state_revenue.sum(min_count=1),
                 "Driver Payments": g.driver_payment.sum(min_count=1), "Monitor payments": mon.driver_payment.sum(),
                 "Profit": profit, "Margin %": profit / den * 100 if len(pr) and den else np.nan,
@@ -161,14 +163,14 @@ def claim_split(rec, code, rate=45.0, err=None):
     t = g.groupby(["state_revenue", "main_revenue"]).agg(Trips=("revenue_difference", "size"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
     t["Shortfall per trip"] = t.state_revenue - t.main_revenue
     t = t.rename(columns={"state_revenue": "Official price", "main_revenue": "Price paid by First", "Owed": "Total owed"})[["Trips", "Official price", "Price paid by First", "Shortfall per trip", "Total owed"]]
-    is_claim = ((t["Official price"].round(2) == round(rate, 2)) & (t["Price paid by First"].round(2) == round(_err(err), 2))) if code == "AK" else pd.Series(False, index=t.index)
+    is_claim = ak_claim_mask(t["Price paid by First"], t["Official price"], rate, err).set_axis(t.index) if code == "AK" else pd.Series(False, index=t.index)
     c, o = t[is_claim], t[~is_claim]
     return (_tot(c, sum_cols=["Total owed"]) if len(c) else c), (_tot(o, sum_cols=["Total owed"]) if len(o) else o)
 
 
 def claim_by_driver(rec, code, rate=45.0, err=None):
     g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
-    if code == "AK": g = g[(g.state_revenue.round(2) == round(rate, 2)) & (g.main_revenue.round(2) == round(_err(err), 2))]
+    if code == "AK": g = g[ak_claim_mask(g.main_revenue, g.state_revenue, rate, err).set_axis(g.index)]
     else: return pd.DataFrame()
     if g.empty: return pd.DataFrame()
     t = g.groupby("driver").agg(Trips=("revenue_difference", "size"), Miles=("main_miles", "sum"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
@@ -177,10 +179,10 @@ def claim_by_driver(rec, code, rate=45.0, err=None):
 
 
 def apply_rate_rule(rec, rate=45.0, err=None):
-    """Management rule: in Alaska only trips whose official price equals the agreed rate (45) are errors.
+    """Management rule: in Alaska only trips short by exactly the fixed $2.50 (paid 42.50/47.50/82.50 vs 45/50/85) are errors.
     Other Alaska price differences are ACCEPTED (relabelled MATCHED, note kept). The original rec is untouched."""
     r = rec.copy()
-    claim = (r.state_revenue.round(2) == round(rate, 2)) & (r.main_revenue.round(2) == round(_err(err), 2))
+    claim = ak_claim_mask(r.main_revenue, r.state_revenue, rate, err).set_axis(r.index)
     m = (r.state == "AK") & (r.audit_status == "REVENUE MISMATCH") & ~claim
     r.loc[m, "notes"] = "ACCEPTED: price differs from state report, treated as correct (management decision)"
     r.loc[m, "audit_status"] = "MATCHED"
@@ -247,7 +249,7 @@ def revenue_bridge(rec, rate=45.0, err=None):
         first_only = g[(g.audit_status == "MISSING FROM STATE REPORT")].main_revenue.sum()
         both = g[g.main_revenue.notna() & g.state_revenue.notna()]
         diff = (both.state_revenue - both.main_revenue).round(2); nz = diff.abs() > 0.005
-        claim_m = nz & (code == "AK") & (both.state_revenue.round(2) == round(rate, 2)) & (both.main_revenue.round(2) == round(_err(err), 2))
+        claim_m = nz & (code == "AK") & ak_claim_mask(both.main_revenue, both.state_revenue, rate, err).set_axis(both.index)
         claim, other = diff[claim_m].sum(), diff[nz & ~claim_m].sum()
         state_only = g[g.main_revenue.isna() & g.state_revenue.notna()].state_revenue.sum()
         state_total = g.state_revenue.sum()
@@ -267,31 +269,41 @@ OFFICIAL_RATES = {"AK": 45.0}        # state -> official per-trip price; extend 
 
 
 def first_rate_audit(main, rate=45.0, state="AK", err=None):
-    """Claim = `state` trips paid EXACTLY `paid` ($42.50) where the official rate is `rate` ($45.00). Other trips paid below
+    """Claim = `state` trips paid at least `paid` ($42.50) ending in .50, i.e. missing the fixed $2.50 (42.50/45, 47.50/50, 82.50/85). Other trips paid below
     the rate are NOT part of the claim; they are only reported in the summary. Returns (summary, grouped, by driver, detail)."""
     paid = _err(err)
     s_all = main[(main.state == state) & main.main_amount.notna()]
-    g = s_all[(s_all.main_amount - paid).abs() < 0.005].copy()
-    oth = s_all[(s_all.main_amount < rate - 0.005) & ((s_all.main_amount - paid).abs() >= 0.005)]
+    delta = round(rate - paid, 2)
+    # a claim = price paid >= 42.50 and ending in .50 (the fixed $2.50 is missing): 42.50->45, 47.50->50, 82.50->85
+    is_c = (s_all.main_amount >= paid - 0.005) & ((s_all.main_amount % 1 - 0.5).abs() < 0.005)
+    g = s_all[is_c].copy()
+    oth = s_all[(s_all.main_amount < rate - 0.005) & ~is_c]
     empty = pd.DataFrame()
     other = {"Other trips below the rate (not claimed)": len(oth), "Their shortfall (not claimed)": (rate - oth.main_amount).sum() if len(oth) else 0.0,
              "Other prices (not claimed)": ", ".join(f"${p:,.2f} x{n}" for p, n in oth.main_amount.value_counts().sort_index().items())}
     if g.empty: return {"Trips below official rate": 0, "Total owed": 0.0, "Alaska trips in report": len(s_all), **other}, empty, empty, empty
-    g["short"] = rate - g.main_amount
+    g["official"] = g.main_amount + delta; g["short"] = delta
     grp = g.groupby("main_amount").agg(Trips=("short", "size"), Owed=("short", "sum")).reset_index()
-    grp["Official price"] = rate; grp["Shortfall per trip"] = rate - grp.main_amount
+    grp["Official price"] = grp.main_amount + delta; grp["Shortfall per trip"] = delta
     grp = grp.rename(columns={"main_amount": "Price paid", "Owed": "Total owed"})[["Trips", "Official price", "Price paid", "Shortfall per trip", "Total owed"]]
     drv = g.groupby("driver_disp").agg(Trips=("short", "size"), Miles=("miles", "sum"), Owed=("short", "sum")).reset_index()
     drv.columns = ["Driver", "Trips", "Miles", "Total owed"]
     det = g.sort_values(["driver", "date"])[["date", "driver_disp", "trip_id", "trip_name", "miles", "main_amount", "short", "src_file", "src_row"]].copy()
-    det.insert(5, "Official price", rate)
+    det.insert(5, "Official price", g.sort_values(["driver", "date"]).official.values)
     det.columns = ["Date", "Driver", "Trip ID", "Trip Name", "Miles", "Official price", "Price paid", "Shortfall", "Source file", "Source row"]
-    summary = {"Trips below official rate": len(g), "Official price": rate, "Total owed": g.short.sum(), "Drivers affected": g.driver.nunique(),
+    summary = {"Trips below official rate": len(g), "Shortfall per trip": delta, "Total owed": g.short.sum(), "Drivers affected": g.driver.nunique(),
                "Alaska trips in report": len(s_all), **other}
     return summary, _tot(grp, sum_cols=["Total owed"]), _with_total(drv, "Driver", ["Trips", "Miles", "Total owed"]), det
 
 
 def _err(err): return ERROR_PRICE if err is None else err
+
+
+def ak_claim_mask(paid, official, rate=45.0, err=None):
+    """Alaska rule (management): the price First pays is the true price minus a fixed $2.50 (45 -> 42.50, 50 -> 47.50, 85 -> 82.50 ...).
+    A trip is a claim when the price paid is at least `err` (42.50) and the official price is exactly paid + (rate - err)."""
+    paid = pd.Series(paid); official = pd.Series(official); delta = round(rate - _err(err), 2)
+    return (paid >= _err(err) - 0.005) & ((official - paid - delta).abs() < 0.005)
 
 
 # ---------------------------------------------------------------- rate book: price check + estimated financials (before the state reports arrive)
@@ -306,7 +318,7 @@ def price_check(main, book, err=42.5, rate=45.0):
     a = a[~zero]                                                  # cancelled / $0 trips are not price errors
     known = a[a.exp_revenue.notna() & a.main_amount.notna()]
     under = known[known["diff"] < -0.005]; over = known[known["diff"] > 0.005]
-    ak_ok = ~(under.state == "AK") | (((under.main_amount - err).abs() < 0.005) & ((under.exp_revenue - rate).abs() < 0.005))
+    ak_ok = ~(under.state == "AK") | ak_claim_mask(under.main_amount, under.exp_revenue, rate, err).set_axis(under.index)
     claim, accepted = under[ak_ok], under[~ak_ok]
     rows = []
     for code, g in a.groupby("state"):
