@@ -20,7 +20,11 @@ MONEY_K = ("revenue", "payment", "profit", "difference", "paid")
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def show(df, height=None):
+_TBL = [0]
+st.markdown("<style>[data-testid='stElementToolbar']{display:none !important}</style>", unsafe_allow_html=True)   # no CSV download icon: tables are downloaded as PDF
+
+
+def show(df, height=None, title=None):
     if df is None or len(df) == 0:
         st.info("No records."); return
     cfg = {}
@@ -31,6 +35,10 @@ def show(df, height=None):
             elif any(k in lc for k in MONEY_K) and not lc.startswith("trips"): cfg[c] = st.column_config.NumberColumn(format="$%.2f")
     kw = {"height": height} if height else {}      # newer Streamlit rejects height=None
     st.dataframe(df, use_container_width=True, hide_index=True, column_config=cfg, **kw)
+    if title:
+        _TBL[0] += 1
+        try: st.download_button("⬇️ PDF: " + title[:60], PG.table_pdf(df.head(600), title, "Table"), f"{title[:40].replace(' ', '_').replace('/', '-')}.pdf", "application/pdf", key=f"tpdf_{_TBL[0]}")
+        except Exception: pass
 
 
 def money(v): return "n/a" if pd.isna(v) else f"${v:,.2f}"
@@ -137,36 +145,24 @@ if page.startswith("1"):
         c[4].metric("Adjustments", money(o["Adjustments"])); c[5].metric("Net revenue received", money(o["Net revenue"]))
         with st.expander("Non-trip adjustments"): show(res.adjustments)
     if main.provider.nunique() > 1:
-        st.subheader("Totals by provider"); show(SR.provider_table(main))
-        st.subheader("Totals by state and provider"); show(SR.state_provider_table(main))
-    t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t)
+        st.subheader("Totals by provider"); show(SR.provider_table(main), title="Totals by provider")
+        st.subheader("Totals by state and provider"); show(SR.state_provider_table(main), title="Totals by state and provider")
+    t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t, title="Totals by state")
     st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
-    _wr = set(rec[rec.state_source != ""].state); _est1 = SR.estimate_financials(main, RB.load(), _wr)
-    if len(_est1):
-        st.subheader("Full state view right after the First upload: revenue, estimated payments, profit and margin")
-        st.caption("Revenue = what First / EverDriven paid (net). Payments, profit and margin are ESTIMATES from earlier weeks' pay rates until the state report is uploaded; then the real numbers replace them.")
-        show(_est1)
-    _pls, _pld = PP.price_list_check(main)
-    if len(_pls):
-        st.subheader("Price paid by First vs the price list (Northern California price PDFs, New Mexico / Kansas / Nebraska rules)")
-        st.caption("Price list = the 'Gross' column of the city price PDFs. A trip below the list price is a shortfall to raise with First.")
-        show(_pls)
-        if len(_pld):
-            with st.expander(f"Trips not at the list price ({len(_pld):,})"): show(_pld, 400)
     rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate, err=err_price)
     if rs["Trips below official rate"]:
         st.subheader(f"Alaska rate check - trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)")
         c2 = st.columns(3); c2[0].metric(f"Trips paid ${err_price:,.2f}", f"{rs['Trips below official rate']:,}"); c2[1].metric("Total owed by the provider", money(rs["Total owed"])); c2[2].metric("Drivers affected", f"{rs['Drivers affected']:,}")
-        show(rgrp)
+        show(rgrp, title="Alaska claim by price")
         if rs["Other trips below the rate (not claimed)"]:
             st.info(f"{rs['Other trips below the rate (not claimed)']} other Alaska trips were paid below the rate at a different price ({rs['Other prices (not claimed)']}) - NOT part of this claim (shortfall {money(rs['Their shortfall (not claimed)'])}).")
-        with st.expander("Claim by driver"): show(rdrv)
+        with st.expander("Claim by driver"): show(rdrv, title="Alaska claim by driver")
         with st.expander("Claim - trip by trip"): show(rdet, 400)
     book = RB.load(); pcs, pcd, pca = SR.price_check(main, book, err_price, ak_rate)
     st.subheader("Price check against contract prices (rate book)")
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
-    show(pcs)
-    with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400)
+    show(pcs, title="Price check against contract prices")
+    with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400, title="Trips paid below the contract price")
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
@@ -201,8 +197,8 @@ elif page.startswith("3"):
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
     n_acc, amt_acc = SR.accepted_summary(rec)
     if n_acc: st.caption(f"{n_acc} Alaska trips with other price differences (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim; only trips paid ${err_price:,.2f} are claimed.")
-    st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate, err_price))
-    t = SR.discrepancy_summary(rec); show(t)
+    st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate, err_price), title="Revenue bridge")
+    t = SR.discrepancy_summary(rec); show(t, title="Summary of differences by state")
     if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
     sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
     for code in rec[rec.state_source != ""].state.unique():
@@ -211,6 +207,9 @@ elif page.startswith("3"):
         with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
             cl, ot = SR.claim_split(rec, code, ak_rate, err_price)
             if len(cl): st.markdown(f"**Claim to First: trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)**"); show(cl)
+            pp_, pd_, po_ = SR.price_diff_claim(rec, code, ak_rate, err_price)
+            if len(pp_): st.markdown("**Claim to First/EverDriven: trips paid LESS than the state report price**"); show(pp_, title=f"{nm} - claim by price"); show(pd_, title=f"{nm} - claim by driver"); sheets[f"{code} claim"[:31]] = pp_
+            if len(po_): st.markdown("**Provider paid MORE than the state report (no claim - information)**"); show(po_)
             mo = SR.monitor_by_driver(rec, code)
             if len(mo): st.markdown("**Monitor (MO) payments - costs with no trip revenue (information only)**"); show(mo); sheets[f"{code} monitors"[:31]] = mo
             for ttl, df, sh in (("Trips with a different price", a, "price"), ("In the state report but not in First", s, "state-only"), ("In First but not in the state report", f, "First-only")):

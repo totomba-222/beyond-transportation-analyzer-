@@ -168,6 +168,25 @@ def claim_split(rec, code, rate=45.0, err=None):
     return (_tot(c, sum_cols=["Total owed"]) if len(c) else c), (_tot(o, sum_cols=["Total owed"]) if len(o) else o)
 
 
+def price_diff_claim(rec, code, rate=45.0, err=None):
+    """Any state (Alaska rule kept for AK): trips where First/EverDriven paid LESS than the state report says Beyond should receive.
+    Returns (by price: trips / state price / paid / shortfall per trip / total owed, by driver, trips over-paid by First (info, no claim))."""
+    g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
+    if code == "AK" or g.empty: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    low = g[g.revenue_difference < -0.004]; high = g[g.revenue_difference > 0.004]
+    by_price = pd.DataFrame(); by_drv = pd.DataFrame()
+    if len(low):
+        t = low.groupby(["state_revenue", "main_revenue"]).agg(Trips=("revenue_difference", "size"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
+        t["Shortfall per trip"] = t.state_revenue - t.main_revenue
+        t = t.rename(columns={"state_revenue": "State report price", "main_revenue": "Price paid by provider", "Owed": "Total owed"})[["Trips", "State report price", "Price paid by provider", "Shortfall per trip", "Total owed"]]
+        by_price = _tot(t, sum_cols=["Total owed"])
+        d = low.groupby("driver").agg(Trips=("revenue_difference", "size"), Miles=("main_miles", "sum"), Owed=("revenue_difference", lambda x: -x.sum())).reset_index()
+        d.columns = ["Driver", "Trips", "Miles", "Total owed"]; by_drv = _with_total(d, "Driver", ["Trips", "Miles", "Total owed"])
+    over = high[["date", "driver", "trip_name", "main_miles", "main_revenue", "state_revenue", "revenue_difference"]].copy() if len(high) else pd.DataFrame()
+    if len(over): over.columns = ["Date", "Driver", "Trip Name", "Miles", "Provider paid", "State report", "Difference"]
+    return by_price, by_drv, over
+
+
 def claim_by_driver(rec, code, rate=45.0, err=None):
     g = rec[(rec.state == code) & (rec.audit_status == "REVENUE MISMATCH")]
     if code == "AK": g = g[ak_claim_mask(g.main_revenue, g.state_revenue, rate, err).set_axis(g.index)]
@@ -324,8 +343,7 @@ def price_check(main, book, err=42.5, rate=45.0):
     for code, g in a.groupby("state"):
         k = known[known.state == code]; u = claim[claim.state == code]; o = over[over.state == code]
         rows.append({"State": _nm(code), "Trips": len(g), "Trips with a known contract price": len(k), "Coverage %": len(k) / len(g) * 100 if len(g) else np.nan,
-                     "Trips paid below contract price": len(u), "Total shortfall": -u["diff"].sum() if len(u) else 0.0,
-                     "Trips paid above contract price": len(o), "Total excess": o["diff"].sum() if len(o) else 0.0})
+                     "Trips paid below contract price": len(u), "Total shortfall": -u["diff"].sum() if len(u) else 0.0})
     t = pd.DataFrame(rows).sort_values("Trips", ascending=False)
     tot = {c: t[c].sum() for c in t.columns if c not in ("State", "Coverage %")}; tot["State"] = "TOTAL"; tot["Coverage %"] = tot["Trips with a known contract price"] / tot["Trips"] * 100 if tot["Trips"] else np.nan
     det = claim.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()

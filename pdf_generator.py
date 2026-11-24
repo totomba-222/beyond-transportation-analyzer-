@@ -174,6 +174,15 @@ class Report:
         doc.build(self.story); self.pages = doc.page; return buf.getvalue()
 
 
+
+def table_pdf(df, title, subtitle="Table", period=""):
+    """One table as a PDF (used by the 'Download PDF' button under every table of the app)."""
+    R_ = Report(subtitle, period); R_.land(); R_.h1(title)
+    if df is None or len(df) == 0: R_.p("No records.")
+    else: R_.story.append(df_table(df, R_.width, 6.5 if len(df.columns) > 9 else 7.5))
+    return R_.build()
+
+
 # ---------------------------------------------------------------- report builders
 TRIP_COLS = {"date": "Date", "driver": "Driver", "main_trip_id": "Trip ID", "trip_name": "Trip Name", "main_miles": "Miles",
              "main_revenue": "Main Revenue", "state_revenue": "State Revenue", "driver_payment": "Driver Payment",
@@ -319,15 +328,10 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
     if with_book:
         import ratebook as RB
         book = RB.load(); pc, _, acc = SR.price_check(main, book, SR._err(err), rate or 45.0)
-        if pc.iloc[-1]["Trips paid below contract price"] or pc.iloc[-1]["Trips paid above contract price"]:
+        if pc.iloc[-1]["Trips paid below contract price"]:
             R_.section("L"); R_.h1("Price check against contract prices (rate book)")
             R_.p("Contract price per route learned from earlier state reports (same route, otherwise same state and miles). Alaska: only trips paid exactly the error price are claimed.")
             R_.table(pc, "Paid price vs contract price, by state", font=7)
-        est = SR.estimate_financials(main, book, states_with_report)
-        if len(est):
-            R_.section("L"); R_.h1("ESTIMATED financial performance (no state report uploaded yet)")
-            R_.p("<b>Estimate, not actual:</b> driver payments are estimated from earlier weeks' pay rates; replace with the state report when it arrives.")
-            R_.table(est, "Estimated profit by state", font=7)
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -660,8 +664,9 @@ def state_report_data(code, main, rec, book, rate=45.0, err=None):
     has_rep = bool(len(rs)) and bool((rs.state_source != "").any())
     D = {"name": nm, "fp": fp, "has_rep": has_rep, "ms": ms, "rs": rs, "code": code, "control": _state_control(main, code)}
     D["fin"] = SR.state_financials(rs) if has_rep else pd.DataFrame()
+    D["pclaim"] = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
     if has_rep:
-        rr = SR.apply_rate_rule(rs, rate, err)
+        rr = SR.apply_rate_rule(rs, rate, err); D["pclaim"] = SR.price_diff_claim(rr, code, rate, err)
         a, s_only, f_only = SR.discrepancy_sections(rr, code)
         _nt = lambda d: d[~d.iloc[:, 0].astype(str).str.upper().eq("TOTAL") & ~d.iloc[:, 1].astype(str).str.upper().eq("TOTAL")] if len(d) else d   # drop the TOTAL rows: they are not trips
         a, s_only, f_only = _nt(a), _nt(s_only), _nt(f_only)
@@ -741,7 +746,7 @@ def manager_table(D):
     return out
 
 
-def _build_state_pdf(D, rate, err, rows_pay=16, rows_other=8):
+def _build_state_pdf(D, rate, err, rows_pay=16, rows_other=8, hs=None, week=None):
     nm, fp, ms, rs, code_ = D["name"], D["fp"], D["ms"], D["rs"], D.get("code")
     R_ = Report(f"{nm} - weekly report", _period(ms if len(ms) else rs)); R_.land()
     R_.h1(f"{nm}: weekly report  ({fp} vs state report)")
@@ -777,6 +782,8 @@ def _build_state_pdf(D, rate, err, rows_pay=16, rows_other=8):
         if code_ == "N.CA": R_.p("<i>Note: Benicia routes are listed at $45 because First cut them from $50; after the N.CA manager spoke to First, it added $5 on some Richmond routes (now $55-$60). These list prices are the agreed prices, not a claim.</i>")
         if len(cl): R_.table(cl.head(rows_other), f"Trips to claim from {fp}" + (f"  [first {rows_other} of {len(cl)}; all in Excel]" if len(cl) > rows_other else ""), font=6.5, note="")
         if ak and len(ak[1]): R_.table(ak[1], "Alaska claim by price", font=7, note="")
+        pcl = D["pclaim"][0]
+        if len(pcl): R_.table(pcl, f"Claim to {fp}: trips paid LESS than the state report price ({int(pcl.iloc[-1]['Trips'])} trips, {usd(pcl.iloc[-1]['Total owed'])})", font=7, note="")
     if D["has_rep"]:
         R_.section("L"); R_.h2("3. Driver pay: state report vs the agreed pay policy - summary")
         ps, pdiff = D["paysum"], D["paydiff"]
@@ -794,16 +801,22 @@ def _build_state_pdf(D, rate, err, rows_pay=16, rows_other=8):
         if mt.empty: R_.p("<b>No difference between this report and the state report.</b>")
         else:
             R_.table(mt.head(rows_pay), f"{len(mt)} items to explain" + (f"  [largest {rows_pay} shown; all in the Excel file, sheet 'For state manager']" if len(mt) > rows_pay else ""), font=6.5, note="")
+    if hs is not None and len(hs):                      # weekly review / comparison and monthly report of THIS state (after the 2 core pages)
+        R_.section("P"); _add_weekly(R_, hs, week); R_.section("P"); _add_monthly(R_, hs)
     return R_
 
 
 def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=None, max_pages=2):
-    """ONE state in at most `max_pages` pages. The previous long report is still available as state_full_report_long."""
+    """ONE state: 2 core pages (provider vs state report, prices, pay policy, differences for the state manager), then the weekly
+    review/comparison and the monthly report of that state when history exists. The previous long report is state_full_report_long."""
     D = state_report_data(code, main, rec, book, rate, err)
+    hs = hist[hist.state == code] if hist is not None and len(hist) else None
+    chosen = (2, 1)
     for rp, ro in ((16, 8), (12, 6), (9, 4), (6, 3), (4, 2), (2, 1)):
-        R_ = _build_state_pdf(D, rate, err, rp, ro); b = R_.build()
-        if R_.pages <= max_pages: return b
-    return b
+        chosen = (rp, ro); R_ = _build_state_pdf(D, rate, err, rp, ro); R_.build()
+        if R_.pages <= max_pages: break
+    R_ = _build_state_pdf(D, rate, err, chosen[0], chosen[1], hs, week)
+    return R_.build()
 
 
 def state_excel(code, main, rec, hist, book, rate=45.0, err=None):
@@ -821,6 +834,9 @@ def state_excel(code, main, rec, hist, book, rate=45.0, err=None):
         if len(D["paysum"]): fr["Pay summary"] = D["paysum"]
         try: fr["Drivers"] = FC.driver_table(D["rs"], code).drop(columns=["Rows missing revenue/payment"], errors="ignore")
         except Exception: pass
+    if len(D["pclaim"][0]): fr[f"Price claim to {fp}"] = D["pclaim"][0]
+    if len(D["pclaim"][1]): fr["Price claim by driver"] = D["pclaim"][1]
+    if len(D["pclaim"][2]): fr[f"{fp} paid more (info)"] = D["pclaim"][2]
     cl = _claim_rows(D)
     if len(cl): fr[f"Claim to {fp}"] = cl
     if len(D["estimates"]): fr["Not claimed (estimated)"] = D["estimates"]
