@@ -34,10 +34,6 @@ OR_SCHOOLS = [
     "sequoia falls", "serendipity sch", "north albany", "south albany",
     "stayton ms", "structured skills", "trillium north point", "tualatin es",
     "twality", "wheatley sch", "mark twain es",
-    # added 2026-11-24: Gresham-Barlow SD (Gresham) and West Linn-Wilsonville SD
-    # (Wilsonville) - these routes were being left without a state.
-    "sam barlow", "sam barlow hs", "lowrie primary", "inza wood",
-    "gresham hs", "gresham high", "gordon russell", "dexter mccarty",
 ]
 
 # Region keywords: matched as WHOLE WORDS / WHOLE PHRASES on the normalised trip

@@ -2,6 +2,7 @@
 Bands come from the header text of the city price PDFs. Richmond has no band text: its bands are inferred from its trips (same as Berkeley) - confirm.
 Beyond the last band (and in Sacramento) pay is set by management per trip: such trips are checked against the approved pay seen in the price list.
 The per-mile rate after the last band is unreadable in the PDF ('1?2 in each mile'), so it is NOT assumed: set LONG_RATE once confirmed."""
+import re
 import numpy as np
 import pandas as pd
 from ratebook import route_key
@@ -9,8 +10,9 @@ from config import STATE_NAMES
 
 try:
     from nc_policy import ROUTES as NC
-except Exception:
-    NC = {}
+    NC_LOAD_ERROR = None
+except Exception as _e:                      # never silent: the reports warn when the North California price list is missing
+    NC = {}; NC_LOAD_ERROR = repr(_e)
 
 # (from mile, to mile, driver pay)
 BANDS = {"Benicia": [(1, 7, 38.0)],
@@ -76,11 +78,35 @@ def _band_pay(city, miles):
     return np.nan, "above last band"
 
 
+def _variants(k):
+    """Same route written differently: stray '_a' left by '(W)_A', and the mirror trip (IB <-> OB) of the same school and number."""
+    k2 = re.sub(r"(?<=\d)\s+[a-z]$", "", re.sub(r"\s+_[a-z]\b", "", k))     # 'ob 01 a' (from '(W)_A') -> 'ob 01'
+    out = [k, k2]
+    for x in (k, k2):
+        if " ib " in x: out.append(x.replace(" ib ", " ob ", 1))
+        elif " ob " in x: out.append(x.replace(" ob ", " ib ", 1))
+    return out
+
+
+def _stem_cities():
+    from classification import _school_stem
+    m = {}
+    for rk, v in NC.items(): m.setdefault(_school_stem(rk), set()).add(v["city"])
+    return m, _school_stem
+
+
 def route_info(trip_name):
+    """(city, info). 1 exact route in the city price lists; 2 same route written differently (suffix / IB-OB mirror);
+    3 same SCHOOL listed in only ONE city (city by school; no approved pay list, so only the city bands apply); Sacramento by route."""
     k = route_key(trip_name)
-    if k in NC: return NC[k]["city"], NC[k]
+    for v in _variants(k):
+        if v in NC: return NC[v]["city"], NC[v]
+    nib = re.sub(r"\b(?:ib|ob)\b ?", "", k).replace("  ", " ").strip()
     for sk, v in SACRAMENTO.items():
-        if k.startswith(sk): return "Sacramento", v
+        if k.startswith(sk) or nib.startswith(sk) or re.sub(r"\b(?:ib|ob)\b ?", "", sk).strip() == nib.rstrip(" 0123456789").strip() + " " + nib.split()[-1]: return "Sacramento", v
+    if NC:
+        m, stem = _stem_cities(); cs = m.get(stem(k), set())
+        if len(cs) == 1: c = next(iter(cs)); return c, {"city": c, "gross": [], "pay": [], "by_school": True}
     return None, None
 
 
@@ -106,7 +132,8 @@ def bands_pay(mi):
 def band_check(rec, book=None):
     """Driver pay in the state report vs the mile-band policy. N.CA: bands of the route's city (price PDFs). S.CA: the state bands.
     Returns (summary, detail)."""
-    base = rec[(rec.state_source != "") & rec.driver_payment.notna() & (rec.audit_status != "MONITOR PAYMENT") & rec.trip_name.fillna("").ne("")]
+    # a trip name (route) is needed for the per-route price lists (N.CA, IL); the mile-based states only need the miles of the state report
+    base = rec[(rec.state_source != "") & rec.driver_payment.notna() & (rec.audit_status != "MONITOR PAYMENT") & (rec.trip_name.fillna("").ne("") | rec.state.isin(["S.CA", "AK", "KS", "NE", "NM", "OR"]))]
     r = base[base.state == STATE]
     rows = []
     for t in r.itertuples():
@@ -121,6 +148,7 @@ def band_check(rec, book=None):
                 if kind == "band":
                     if abs(pay - exp) < TOL: st = "Matches band"
                     elif any(abs(pay - a) < TOL for a in approved): st = "Approved exception (price list)"
+                    elif city == "San Leandro" and pay > exp: st = "Approved exception (San Leandro: per N.CA manager, confirmed Nov 24; approved by Mr. Abdoun)"
                     else: st = "ABOVE band" if pay > exp else "BELOW band"
                 else:
                     if LONG_RATE is not None and pd.notna(mi):

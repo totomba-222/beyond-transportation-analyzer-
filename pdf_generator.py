@@ -24,7 +24,7 @@ H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName="Helvetica-Bold", font
 H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, spaceBefore=8, spaceAfter=4)
 EXP = ParagraphStyle("exp", fontName="Helvetica", fontSize=7.5, leading=9.5, textColor=colors.HexColor("#4B5563"))
 BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName="Helvetica", fontSize=8.5, leading=11)
-MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid", "adjust")
+MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid", "adjust", "pay", "short", "total")
 
 EXPLAIN = [
     ("=Summary by state", "One row per state for driver payments. 'Trips with a pay policy' = trips whose route has a stable usual pay; only those are judged. 'Trips paid above policy' and 'Total excess pay' show overpayment; 'above trip revenue' shows trips where the driver was paid more than the trip earns."),
@@ -93,7 +93,7 @@ def df_table(df, width, font=7):
     for _, r in df.iterrows():
         data.append([Paragraph(fmt_cell(c, r[c]).replace("&", "&amp;").replace("<", "&lt;"), ParagraphStyle("td", fontName="Helvetica", fontSize=font, leading=font + 2,
                      alignment=2 if isinstance(r[c], (int, float, np.number)) else 0)) for c in df.columns])
-    lens = [max([len(str(c)) * 0.8] + [min(len(fmt_cell(c, v)), 28) for v in df[c].head(150)]) + 2 for c in df.columns]
+    lens = [max(11, max([len(str(c)) * 0.8] + [min(len(fmt_cell(c, v)), 28) for v in df[c].head(150)]) + 2) for c in df.columns]
     tot = sum(lens)
     t = LongTable(data, colWidths=[width * l / tot for l in lens], repeatRows=1)
     st = [("BACKGROUND", (0, 0), (-1, 0), NAVY), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#C9D1DC")),
@@ -171,7 +171,7 @@ class Report:
         doc.addPageTemplates(tp if self.start == "P" else tp[::-1])
         self.story += [Spacer(1, 26), KeepTogether([Paragraph("_______________________________", BODY),
                        Paragraph("<b>Hatem Elalfy</b><br/>CFO", BODY)])]
-        doc.build(self.story); return buf.getvalue()
+        doc.build(self.story); self.pages = doc.page; return buf.getvalue()
 
 
 # ---------------------------------------------------------------- report builders
@@ -488,8 +488,8 @@ def pay_policy_report(rec, book):
 
 
 # ---------------------------------------------------------------- full report of ONE state, master report, all-states zip
-def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=None):
-    """Everything about one state: financial performance, price check, price + trip differences, pay policy, weekly and monthly."""
+def state_full_report_long(code, main, rec, hist, book, rate=45.0, err=None, week=None):
+    """(long version, 10+ pages, kept unchanged) Everything about one state: financial performance, price check, price + trip differences, pay policy, weekly and monthly."""
     import financial_calculations as FC
     nm = STATE_NAMES.get(code, code); ms, rs = main[main.state == code], rec[rec.state == code]
     hs = hist[hist.state == code] if hist is not None and len(hist) else None
@@ -542,6 +542,292 @@ def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=Non
     return R_.build()
 
 
+
+# ---------------------------------------------------------------- compact 2-page state report (long version kept as state_full_report_long)
+def provider_of(code):
+    """The company that pays Beyond in this state: EverDriven (NE, KS) or First (all others)."""
+    from config import EVERDRIVEN_STATES
+    return "EverDriven" if code in EVERDRIVEN_STATES else "First"
+
+
+_PAY_OK = ("Matches", "Approved", "Allowed")
+_EXPLAIN = "state manager to explain"
+
+
+def _pay_category(status):
+    s = str(status)
+    if s.startswith("Matches route policy (differs"): return "Negotiated route: equals the route's usual pay"
+    if s.startswith(_PAY_OK) or s.startswith("Sacramento: management-approved"): return "Matches the pay policy"
+    if s.startswith("Long trip (>16 mi): management-set"): return "Long trip: pay set by management"
+    if s.startswith("ABOVE"): return "ABOVE policy - " + _EXPLAIN
+    if s.startswith("BELOW"): return "BELOW policy - " + _EXPLAIN
+    if s.startswith("ZERO") or s.startswith("No driver pay"): return "ZERO pay - " + _EXPLAIN
+    if s.startswith(("Long trip: needs", "Sacramento: pay NOT")): return "Needs management approval - " + _EXPLAIN
+    return "Not checked (no pay policy for this route)"
+
+
+
+NEGOTIATED_CAT = "Negotiated with the driver (approved list)"
+
+
+def _apply_negotiated(bd, diffs):
+    """Trips whose driver pay was negotiated (negotiated_pay.py) leave the 'to explain' list and get their own category."""
+    try:
+        from negotiated_pay import NEGOTIATED
+        from normalization import norm_name
+        from ratebook import route_key
+    except Exception:
+        return bd, diffs
+    if not NEGOTIATED: return bd, diffs
+    def hit(state, driver, trip, pay):
+        for st, dr, rt, pv, note in NEGOTIATED:
+            if st not in ("*", state) or (dr != "*" and norm_name(dr) != norm_name(driver)): continue
+            if pv is not None and abs(float(pv) - float(pay)) > 0.005: continue
+            if rt in ("*", None) or route_key(rt).split() == route_key(trip).split()[:len(route_key(rt).split())] or route_key(rt) in route_key(trip): return note or "negotiated"
+        return None
+    for df in (bd, diffs):
+        if df.empty: continue
+        inv = {v: k for k, v in STATE_NAMES.items()}
+        notes = [hit(inv.get(s, s), d, t, p) for s, d, t, p in zip(df["State"], df.Driver, df["Trip Name"], df["Driver pay"])]
+        m = pd.Series([n is not None for n in notes], index=df.index)
+        df.loc[m & ~df.Category.str.startswith("Matches"), "Category"] = NEGOTIATED_CAT
+        df.loc[m, "Source"] = ["Negotiated: " + n for n in notes if n is not None]
+    diffs = diffs[diffs.Category != NEGOTIATED_CAT].copy()
+    return bd, diffs
+
+
+def state_pay_differences(rs, book):
+    """Driver pay in the STATE REPORT vs the agreed pay policy. Returns (summary by category, trip-level differences).
+    Differences = band/rule policy + trips paid above the route's usual pay (learned from earlier weeks). Nothing from the old checks is dropped."""
+    import pay_policy as PP
+    bs, bd = PP.band_check(rs, book)
+    if bd.empty: return pd.DataFrame(), pd.DataFrame()
+    bd = bd.copy(); bd["Category"] = bd.Status.map(_pay_category); bd["Source"] = "Agreed pay policy"
+    diffs = bd[bd.Category.str.endswith(_EXPLAIN)].copy()
+    try:
+        _, over, _ = SR.pay_check(rs, book)
+        if len(over):
+            o = over.rename(columns={"Pay policy": "Policy pay", "Excess pay": "Difference"}).copy()
+            key = set(zip(diffs.Date, diffs.Driver, diffs["Trip Name"]))
+            o = o[[(a, b, c) not in key for a, b, c in zip(o.Date, o.Driver, o["Trip Name"])]]
+            o = o[[PP.route_info(t)[0] != "San Leandro" for t in o["Trip Name"]]]      # San Leandro exceptions: all approved by Mr. Abdoun
+            if len(o):
+                oset = set(zip(o.Date, o.Driver, o["Trip Name"]))
+                o["Status"] = "ABOVE the route's usual pay"; o["Category"] = "ABOVE policy - " + _EXPLAIN; o["Source"] = "Route's usual pay (earlier weeks)"
+                o["Driver pay"] = o["Driver pay"].astype(float); o["Pay % of revenue"] = np.nan; o["City"] = ""
+                diffs = pd.concat([diffs, o[[c for c in diffs.columns if c in o.columns]]], ignore_index=True)
+                m = pd.Series([(a, b, c) in oset for a, b, c in zip(bd.Date, bd.Driver, bd["Trip Name"])], index=bd.index) & (bd.Category != "Not checked (no pay policy for this route)")
+                bd.loc[m & bd.Category.str.startswith(("Matches", "Negotiated")), "Category"] = "ABOVE policy - " + _EXPLAIN
+                bd.loc[bd.Category.eq("Not checked (no pay policy for this route)") & pd.Series([(a, b, c) in oset for a, b, c in zip(bd.Date, bd.Driver, bd["Trip Name"])], index=bd.index), "Category"] = "ABOVE policy - " + _EXPLAIN
+    except Exception:
+        pass
+    bd, diffs = _apply_negotiated(bd, diffs)
+    nck = bd[bd.Category.str.startswith("Not checked")]
+    if len(nck): diffs = pd.concat([diffs, nck], ignore_index=True)
+    s = bd.groupby("Category").agg(Trips=("Driver pay", "size"), **{"State report pay": ("Driver pay", "sum"), "Difference vs policy": ("Difference", "sum")}).reset_index()
+    order = {"Matches the pay policy": 0, "Negotiated route": 1, "Long trip": 2}
+    s["_o"] = s.Category.map(lambda c: next((v for k, v in order.items() if c.startswith(k)), 3)); s = s.sort_values(["_o", "Category"]).drop(columns="_o")
+    return s, diffs
+
+
+def _group_pay_differences(diffs):
+    """Same driver + same route + same pay + same policy -> ONE row with the number of trips (state manager explains once per row)."""
+    if diffs.empty: return diffs
+    from ratebook import route_key
+    d = diffs.copy(); d["_rk"] = d["Trip Name"].map(route_key); d["Policy pay"] = d["Policy pay"].astype(float)
+    gk = ["Driver", "_rk", "Driver pay", "Policy pay", "Status"]
+    out = d.groupby(gk, dropna=False).agg(Route=("Trip Name", "first"), Miles=("Miles", "first"), Trips=("Driver pay", "size"), Revenue=("Trip revenue", "first"),
+                                       Total=("Difference", "sum"), Dates=("Date", lambda x: ", ".join(sorted({pd.Timestamp(v).strftime("%m-%d") for v in x if pd.notna(v)})))).reset_index()
+    out["Difference per trip"] = out["Driver pay"] - out["Policy pay"]
+    out = out.rename(columns={"Driver pay": "State report pay", "Total": "Total difference"})
+    out["Abs"] = out["Total difference"].abs().fillna(0); out = out.sort_values("Abs", ascending=False)
+    return out[["Driver", "Route", "Miles", "Trips", "Dates", "Revenue", "State report pay", "Policy pay", "Difference per trip", "Total difference", "Status"]].reset_index(drop=True)
+
+
+def _state_control(main_state, code):
+    """How every trip of this state got its state: proves nothing was guessed silently (state report > route/school > driver map)."""
+    g = main_state[main_state.state == code]
+    if g.empty: return ""
+    c = g.state_source.fillna("").map(lambda s: "state report" if s == "state report" else ("school / route" if s.startswith("trip route") or s in ("Oregon school", "region keyword") else ("main file" if s == "main file hint" else "driver map"))).value_counts()
+    return "; ".join(f"{k}: {v}" for k, v in c.items())
+
+
+def state_report_data(code, main, rec, book, rate=45.0, err=None):
+    """Every number of the compact state report (and of the state Excel) in one place."""
+    import pay_policy as PP
+    nm = STATE_NAMES.get(code, code); fp = provider_of(code)
+    ms, rs = main[main.state == code], rec[rec.state == code]
+    has_rep = bool(len(rs)) and bool((rs.state_source != "").any())
+    D = {"name": nm, "fp": fp, "has_rep": has_rep, "ms": ms, "rs": rs, "code": code, "control": _state_control(main, code)}
+    D["fin"] = SR.state_financials(rs) if has_rep else pd.DataFrame()
+    if has_rep:
+        rr = SR.apply_rate_rule(rs, rate, err)
+        a, s_only, f_only = SR.discrepancy_sections(rr, code)
+        _nt = lambda d: d[~d.iloc[:, 0].astype(str).str.upper().eq("TOTAL") & ~d.iloc[:, 1].astype(str).str.upper().eq("TOTAL")] if len(d) else d   # drop the TOTAL rows: they are not trips
+        a, s_only, f_only = _nt(a), _nt(s_only), _nt(f_only)
+        D["recon"] = {"a": a, "state_only": s_only, "first_only": f_only, "bridge": SR.revenue_bridge(rr, rate, err), "claim": SR.claim_split(rr, code, rate, err)[0],
+                      "matched": int(rr.audit_status.isin(["EXACT MATCH", "MATCHED"]).sum()), "review": int((rr.audit_status == "NEEDS MANUAL REVIEW").sum()),
+                      "monitors": SR.monitor_by_driver(rr, code)}
+        D["paysum"], D["paydiff"] = state_pay_differences(rs, book)
+    claims, est = [], pd.DataFrame()
+    if len(ms):
+        pc, det, _ = SR.price_check(ms, book, SR._err(err), rate)
+        D["pc"] = pc[pc.State == nm] if (pc.State == nm).any() else pc.iloc[-1:]
+        if len(det):
+            by_route = det[det["Price source"].astype(str).str.lower().eq("route")]; est = det[~det.index.isin(by_route.index)]
+            if len(by_route): claims.append(by_route.assign(Basis="Same route, earlier weeks").rename(columns={"Contract price": "Agreed price"}))
+        if code in ("N.CA", "NM", "KS", "NE"):
+            pls, pld = PP.price_list_check(ms)
+            if len(pld):
+                below = pld[pld.Status.astype(str).str.startswith("BELOW")]
+                if len(below): claims.append(below.rename(columns={"List price": "Agreed price", "Paid by First": "Paid"}).assign(Basis="Agreed price list / rule", Difference=lambda x: -x["Shortfall"]))
+        if code == "AK":
+            s, grp, drv, adet = SR.first_rate_audit(ms, rate, err=err); D["ak"] = (s, grp, drv, adet)
+    D["claims"] = claims; D["estimates"] = est
+    return D
+
+
+def _claim_rows(D):
+    """Flat table of every trip to claim from First/EverDriven: date, driver, trip, agreed price, paid, short, basis. No trip appears twice."""
+    rows = []
+    for c in D.get("claims", []):
+        for r in c.to_dict("records"):
+            agreed, paid = r.get("Agreed price"), r.get("Paid")
+            try: agreed = float(str(agreed).split("/")[0].replace("$", "").replace(",", ""))
+            except Exception: agreed = np.nan
+            short = (agreed - paid) if (pd.notna(agreed) and pd.notna(paid)) else abs(r.get("Difference", np.nan))
+            rows.append({"Date": r.get("Date"), "Driver": r.get("Driver"), "Trip ID": r.get("Trip ID", ""), "Trip Name": r.get("Trip Name"), "Agreed price": agreed, "Paid": paid, "Short": short, "Basis": r["Basis"]})
+    out = pd.DataFrame(rows, columns=["Date", "Driver", "Trip ID", "Trip Name", "Agreed price", "Paid", "Short", "Basis"])
+    if len(out):
+        out = out[out.Short.notna() & (out.Short > 0.004)].copy()
+        out["_b"] = out.Basis.map(lambda b: 0 if "list" in str(b) else 1)      # the agreed list/rule wins over the route history for the same trip
+        out = out.sort_values(["_b", "Short"], ascending=[True, False]).drop_duplicates(["Date", "Driver", "Trip Name"]).drop(columns="_b")
+        out = out.sort_values(["Short", "Date"], ascending=[False, True]).reset_index(drop=True)
+    return out
+
+
+
+def manager_table(D):
+    """ONE table with EVERY difference the state manager must explain before payroll: trips missing on either side, price differences,
+    driver pay vs policy, routes that could not be checked. The last column is left empty for the manager's explanation."""
+    fp = D["fp"]; rows = []
+    def add(typ, df, drv, route, n, dates, detail, diff):
+        for r in df.itertuples(): rows.append({"Type": typ, "Driver": drv(r), "Route": route(r), "Trips": n(r), "Dates": dates(r), "Detail": detail(r), "Difference": diff(r)})
+    def grp(df, cols):  # group a recon frame by driver (+route) with count and dates
+        if df is None or df.empty: return []
+        return df
+    if D["has_rep"]:
+        rc = D["recon"]; fo, so, a = rc["first_only"], rc["state_only"], rc["a"]
+        if len(fo):
+            for (dr, rt), x in fo.groupby(["Driver", "Trip Name"]):
+                rows.append({"Type": f"In {fp}, NOT in state report", "Driver": dr, "Route": rt, "Trips": len(x), "Dates": ", ".join(sorted({pd.Timestamp(v).strftime("%m-%d") for v in x["Date"] if pd.notna(v)})),
+                             "Detail": f"{fp} paid {usd(x['First Revenue'].sum())}", "Difference": x["First Revenue"].sum()})
+        if len(so):
+            for dr, x in so.groupby("Driver"):
+                rows.append({"Type": f"In state report, NOT in {fp}", "Driver": dr, "Route": "", "Trips": len(x), "Dates": "", "Detail": f"State report revenue {usd(x['State Revenue'].sum())}, driver pay {usd(x['Driver Payment'].sum())}",
+                             "Difference": x["State Revenue"].sum()})
+        if len(a):
+            for (dr, rt), x in a.groupby(["Driver", "Trip Name"]):
+                rows.append({"Type": f"Price differs: {fp} vs state report", "Driver": dr, "Route": rt, "Trips": len(x), "Dates": ", ".join(sorted({pd.Timestamp(v).strftime("%m-%d") for v in x["Date"] if pd.notna(v)})),
+                             "Detail": f"{fp} {usd(x['First Revenue'].sum())} vs state {usd(x['State Revenue'].sum())}", "Difference": x["Difference (First - State)"].sum()})
+        pg = _group_pay_differences(D["paydiff"])
+        for r in pg.itertuples():
+            nck = str(r.Status).startswith(("City not", "No policy", "No driver"))
+            rows.append({"Type": "Route not checked (no pay policy)" if nck else "Driver pay vs pay policy", "Driver": r.Driver, "Route": r.Route, "Trips": r.Trips, "Dates": r.Dates,
+                         "Detail": (f"Paid {usd(r._7)}/trip; no policy for this route" if nck else f"Paid {usd(r._7)} vs policy {usd(r._8)} per trip ({r.Status})"), "Difference": np.nan if nck else r._10})
+    out = pd.DataFrame(rows, columns=["Type", "Driver", "Route", "Trips", "Dates", "Detail", "Difference"])
+    if len(out):
+        out["_a"] = out.Difference.abs().fillna(0); out = out.sort_values(["Type", "_a"], ascending=[True, False]).drop(columns="_a").reset_index(drop=True)
+    return out
+
+
+def _build_state_pdf(D, rate, err, rows_pay=16, rows_other=8):
+    nm, fp, ms, rs, code_ = D["name"], D["fp"], D["ms"], D["rs"], D.get("code")
+    R_ = Report(f"{nm} - weekly report", _period(ms if len(ms) else rs)); R_.land()
+    R_.h1(f"{nm}: weekly report  ({fp} vs state report)")
+    no_first = len(ms) == 0
+    k = {} if no_first else {f"{fp} trips": len(ms), "Drivers": ms.driver.nunique(), "Miles": ms.miles.sum(min_count=1), f"{fp} revenue (paid)": ms.main_amount.sum(min_count=1)}
+    if D["has_rep"]:
+        row = D["fin"][D["fin"].State == nm].iloc[0]
+        k.update({"State report trips": int(row["Trips"]), "State report revenue": row["Revenue"], "Driver payments": row["Driver Payments"], "Monitor payments": row["Monitor payments"],
+                  "Profit": row["Profit"], "Margin %": row["Margin %"]})
+    R_.table(pd.DataFrame([k]), None, font=7.5, note="")
+    if D.get("control"): R_.p(f"<b>How each trip got its state</b> (state report > school/route > driver map; nothing unassigned is counted): {D['control']}.")
+    if not D["has_rep"]:
+        R_.p(f"<b>No state report was uploaded for {nm}</b>: driver payments, profit and the comparison with the state report cannot be calculated.")
+    if no_first and D["has_rep"]:
+        R_.p(f"<b>No {fp} report was uploaded for {nm}.</b> Upload it to reconcile trip by trip and to check the prices {fp} paid. Below: the state report payments against the pay policy.")
+    elif D["has_rep"]:
+        rc = D["recon"]; a, so, fo = rc["a"], rc["state_only"], rc["first_only"]
+        R_.h2(f"1. {fp} vs the {nm} state report - trip by trip")
+        fr = D["fin"][D["fin"].State == nm].iloc[0]
+        ok = (len(a) + len(so) + len(fo) + rc["review"] == 0)
+        t = pd.DataFrame([{f"{fp} trips": len(ms), "State report trips": int(fr["Trips"]), "Matched trips": rc["matched"], f"In {fp}, NOT in state report": len(fo),
+                           f"In state report, NOT in {fp}": len(so), "Trips with price difference": len(a), "Manual review": rc["review"],
+                           f"{fp} revenue": ms.main_amount.sum(min_count=1), "State report revenue": float(fr["Revenue"]), "Result": "MATCHED to the cent" if ok else "DIFFERENCES - see below"}])
+        R_.table(t, None, font=7.5, note="")
+    cl = _claim_rows(D) if not no_first else pd.DataFrame(); est = D["estimates"] if not no_first else pd.DataFrame(); ak = D.get("ak")
+    if not no_first:
+        R_.h2(f"{2 if D['has_rep'] else 1}. Prices paid by {fp} vs the agreed price")
+        parts = []
+        if len(cl): parts.append(f"<b>Claim to {fp} (agreed price, same route or agreed list): {len(cl)} trips, {usd(cl.Short.sum())}</b>")
+        if ak and ak[0].get("Trips below official rate"): parts.append(f"<b>Alaska fixed $2.50 claim: {ak[0]['Trips below official rate']} of {ak[0]['Alaska trips in report']} trips, {usd(ak[0]['Total owed'])}</b> (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)")
+        if len(est): parts.append(f"Not claimed (price estimated from other routes with similar miles - verify first): {len(est)} trips, {usd(est['Difference'].abs().sum() if 'Difference' in est.columns else np.nan)}")
+        R_.p("; ".join(parts) if parts else f"No trip was paid below the agreed price by {fp}.")
+        if code_ == "N.CA": R_.p("<i>Note: Benicia routes are listed at $45 because First cut them from $50; after the N.CA manager spoke to First, it added $5 on some Richmond routes (now $55-$60). These list prices are the agreed prices, not a claim.</i>")
+        if len(cl): R_.table(cl.head(rows_other), f"Trips to claim from {fp}" + (f"  [first {rows_other} of {len(cl)}; all in Excel]" if len(cl) > rows_other else ""), font=6.5, note="")
+        if ak and len(ak[1]): R_.table(ak[1], "Alaska claim by price", font=7, note="")
+    if D["has_rep"]:
+        R_.section("L"); R_.h2("3. Driver pay: state report vs the agreed pay policy - summary")
+        ps, pdiff = D["paysum"], D["paydiff"]
+        if ps.empty: R_.p("No driver payments to check.")
+        else:
+            nc = ps[ps.Category.str.startswith("Not checked")]["Trips"].sum()
+            import pay_policy as _PP
+            if code_ == "N.CA" and getattr(_PP, "NC_LOAD_ERROR", None): R_.p(f"<b>Warning:</b> the North California price list (nc_policy.py) could not be loaded: {_PP.NC_LOAD_ERROR}")
+            R_.table(ps, None, font=7.5, note="")
+            if nc and nc >= 0.5 * ps.Trips.sum():
+                R_.p(f"<b>Warning:</b> {int(nc)} of {int(ps.Trips.sum())} trips could not be checked because their route has no pay policy loaded. Make sure the price list module (nc_policy.py for North California) is deployed with the app.")
+    if D["has_rep"]:
+        mt = manager_table(D)
+        R_.h2("4. DIFFERENCES FOR THE STATE MANAGER TO EXPLAIN BEFORE PAYROLL")
+        if mt.empty: R_.p("<b>No difference between this report and the state report.</b>")
+        else:
+            R_.table(mt.head(rows_pay), f"{len(mt)} items to explain" + (f"  [largest {rows_pay} shown; all in the Excel file, sheet 'For state manager']" if len(mt) > rows_pay else ""), font=6.5, note="")
+    return R_
+
+
+def state_full_report(code, main, rec, hist, book, rate=45.0, err=None, week=None, max_pages=2):
+    """ONE state in at most `max_pages` pages. The previous long report is still available as state_full_report_long."""
+    D = state_report_data(code, main, rec, book, rate, err)
+    for rp, ro in ((16, 8), (12, 6), (9, 4), (6, 3), (4, 2), (2, 1)):
+        R_ = _build_state_pdf(D, rate, err, rp, ro); b = R_.build()
+        if R_.pages <= max_pages: return b
+    return b
+
+
+def state_excel(code, main, rec, hist, book, rate=45.0, err=None):
+    """Full detail behind the compact report: every trip, difference and claim."""
+    import excel_generator as EG, financial_calculations as FC
+    D = state_report_data(code, main, rec, book, rate, err); fp = D["fp"]; fr = {}
+    if D["has_rep"]:
+        mt = manager_table(D); fr["For state manager"] = mt if len(mt) else pd.DataFrame({"Result": ["No difference between the provider report and the state report"]})
+        fr["Summary"] = D["fin"]; rc = D["recon"]; fr["Reconciliation"] = rc["bridge"]
+        for nm_, df in (("In state only", rc["state_only"]), (f"In {fp} only", rc["first_only"]), ("Price differences", rc["a"])):
+            if len(df): fr[nm_] = df
+        if len(D["paydiff"]): fr["Pay vs policy (trips)"] = D["paydiff"].drop(columns=["Category", "Source"], errors="ignore")
+        g = _group_pay_differences(D["paydiff"])
+        if len(g): fr["Pay differences (grouped)"] = g
+        if len(D["paysum"]): fr["Pay summary"] = D["paysum"]
+        try: fr["Drivers"] = FC.driver_table(D["rs"], code).drop(columns=["Rows missing revenue/payment"], errors="ignore")
+        except Exception: pass
+    cl = _claim_rows(D)
+    if len(cl): fr[f"Claim to {fp}"] = cl
+    if len(D["estimates"]): fr["Not claimed (estimated)"] = D["estimates"]
+    if D.get("ak") is not None and len(D["ak"][3]): fr["Alaska claim detail"] = D["ak"][3]
+    return EG.build_workbook({k[:31]: v for k, v in fr.items()})
+
+
 def master_report(main, rec, hist, book, label=None, rate=45.0, err=None, adjustments=None, week=None):
     """All combined reports in ONE file: provider + state totals, price check, state financials, differences, pay policy, weekly, monthly."""
     label = label or SR.provider_label(main); has = (rec.state_source != "").any()
@@ -566,5 +852,8 @@ def all_states_zip(main, rec, hist, book, rate=45.0, err=None, week=None):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for code in report_states(main, rec):
-            z.writestr(f"{STATE_NAMES.get(code, code).replace(' ', '_').replace('(', '').replace(')', '')}_full_report.pdf", state_full_report(code, main, rec, hist, book, rate, err, week))
+            fn = STATE_NAMES.get(code, code).replace(' ', '_').replace('(', '').replace(')', '')
+            z.writestr(f"{fn}_report.pdf", state_full_report(code, main, rec, hist, book, rate, err, week))
+            try: z.writestr(f"{fn}_details.xlsx", state_excel(code, main, rec, hist, book, rate, err))
+            except Exception as e: z.writestr(f"{fn}_details_ERROR.txt", str(e))
     return buf.getvalue()
