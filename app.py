@@ -304,9 +304,16 @@ elif page.startswith("7"):
 # ------------------------------------------------------------------ page 8: full report per state
 else:
     st.header("Full report per state")
-    st.caption("One PDF per state: financial performance, price check, price and trip differences, driver pay policy, weekly comparison and monthly report. States without a state report get the estimate and the price check only.")
-    codes_ = PG.report_states(main, rec)
-    pick_ = st.selectbox("State", codes_, format_func=lambda c: STATE_NAMES.get(c, c)); _b8 = RB.load()
-    pdf_button(f"{STATE_NAMES.get(pick_, pick_)} full report", f"state_{pick_}", lambda: PG.state_full_report(pick_, main, rec, hist, _b8, ak_rate, err_price))
+    st.caption("One report per state, shown on the screen and downloadable as a 2-page PDF or an Excel file: First/EverDriven vs the state report, prices paid, pay policy, and the differences for the state manager. States without a state report get the estimate and the price check only.")
+    import state_view as SV
+    codes_ = PG.report_states(main, rec); _b8 = RB.load()
+    if ss.get("state_pick") not in codes_: ss["state_pick"] = codes_[0] if codes_ else None
+    st.caption("Click a state: its report opens on the screen (and can be downloaded as PDF or Excel).")
+    _cols = st.columns(max(len(codes_), 1))
+    for _c, _code in zip(_cols, codes_):
+        if _c.button(STATE_NAMES.get(_code, _code), key=f"stbtn_{_code}", use_container_width=True, type="primary" if ss.get("state_pick") == _code else "secondary"): ss["state_pick"] = _code
+    if ss.get("state_pick"):
+        st.divider(); SV.render(ss["state_pick"], main, rec, hist, _b8, ak_rate, err_price, show)
+    st.divider()
     if st.button("Generate ZIP with all states", key="gen_zip"): ss["zip_all"] = PG.all_states_zip(main, rec, hist, _b8, ak_rate, err_price)
     if ss.get("zip_all"): st.download_button("⬇️ Download ZIP: all states", ss["zip_all"], "All_States_Full_Reports.zip", "application/zip", key="dl_zip")
