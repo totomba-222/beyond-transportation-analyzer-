@@ -336,20 +336,34 @@ def price_check(main, book, err=42.5, rate=45.0):
     if "cancelled" in a.columns: zero = zero | a.cancelled.fillna(False).astype(bool)
     a = a[~zero]                                                  # cancelled / $0 trips are not price errors
     known = a[a.exp_revenue.notna() & a.main_amount.notna()]
-    under = known[known["diff"] < -0.005]; over = known[known["diff"] > 0.005]
-    ak_ok = ~(under.state == "AK") | ak_claim_mask(under.main_amount, under.exp_revenue, rate, err).set_axis(under.index)
-    claim, accepted = under[ak_ok], under[~ak_ok]
+    under = known[(known["diff"] < -0.005) & (known.state != "AK")]
+    claim = under                                                               # EVERY trip paid below the contract price is a claim (basis shown per trip: same route, or same state + miles)
+    verify = under.iloc[0:0]
+    def _det(x):
+        d = x.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()
+        d["state"] = d.state.map(_nm)
+        d.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Contract price", "Price source", "Paid", "Difference", "Source file", "Source row"]
+        return d
+    det, ver = _det(claim), _det(verify)
+    # Alaska: ONE number everywhere = the fixed-rule claim (price paid ends in .50, official = paid + 2.50). It does not need a known contract price.
+    ak_s, _, _, ak_det = first_rate_audit(main, rate, err=err)
+    if len(ak_det):
+        akd = pd.DataFrame({"State": _nm("AK"), "Date": ak_det["Date"], "Driver": ak_det["Driver"], "Trip ID": ak_det["Trip ID"], "Trip Name": ak_det["Trip Name"], "Miles": ak_det["Miles"],
+                            "Contract price": ak_det["Official price"], "Price source": "Alaska fixed rule", "Paid": ak_det["Price paid"], "Difference": -ak_det["Shortfall"],
+                            "Source file": ak_det["Source file"], "Source row": ak_det["Source row"]})
+        det = pd.concat([det, akd], ignore_index=True)
     rows = []
     for code, g in a.groupby("state"):
-        k = known[known.state == code]; u = claim[claim.state == code]; o = over[over.state == code]
+        k = known[known.state == code]
+        if code == "AK": nu, su, nv, sv = int(ak_s["Trips below official rate"]), float(ak_s["Total owed"]), 0, 0.0
+        else:
+            u = claim[claim.state == code]; v = verify[verify.state == code]
+            nu, su, nv, sv = len(u), (-u["diff"].sum() if len(u) else 0.0), len(v), (-v["diff"].sum() if len(v) else 0.0)
         rows.append({"State": _nm(code), "Trips": len(g), "Trips with a known contract price": len(k), "Coverage %": len(k) / len(g) * 100 if len(g) else np.nan,
-                     "Trips paid below contract price": len(u), "Total shortfall": -u["diff"].sum() if len(u) else 0.0})
+                     "Trips paid below contract price": nu, "Total shortfall": su})
     t = pd.DataFrame(rows).sort_values("Trips", ascending=False)
     tot = {c: t[c].sum() for c in t.columns if c not in ("State", "Coverage %")}; tot["State"] = "TOTAL"; tot["Coverage %"] = tot["Trips with a known contract price"] / tot["Trips"] * 100 if tot["Trips"] else np.nan
-    det = claim.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()
-    det["state"] = det.state.map(_nm)
-    det.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Contract price", "Price source", "Paid", "Difference", "Source file", "Source row"]
-    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True), det, {"accepted_trips": len(accepted), "accepted_amount": -accepted["diff"].sum() if len(accepted) else 0.0}
+    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True), det, {"accepted_trips": len(verify), "accepted_amount": -verify["diff"].sum() if len(verify) else 0.0, "verify": ver}
 
 
 def estimate_financials(main, book, states_with_report=()):
@@ -414,3 +428,14 @@ def pay_check(rec, book, tol=0.005):
     names = ["State", "Date", "Driver", "Trip Name", "Miles", "Trip revenue", "Driver pay", "Pay policy", "Excess pay", "Trip matched by", "State source"]
     mk = lambda d: d.sort_values(["state", "excess"], ascending=[True, False])[cols].rename(columns=dict(zip(cols, names))).assign(State=lambda x: x.State.map(_nm)).reset_index(drop=True)
     return t, mk(over), mk(loss.assign(excess=loss.driver_payment - loss.state_revenue))
+
+
+def claim_tables(det):
+    """Alaska-style claim for ONE state from the price-check detail: (by price, by driver). Same columns as the Alaska claim."""
+    if det is None or det.empty: return pd.DataFrame(), pd.DataFrame()
+    d = det.copy(); d["short"] = -d["Difference"]
+    g = d.groupby(["Contract price", "Paid"]).agg(Trips=("short", "size"), Owed=("short", "sum")).reset_index()
+    g["Shortfall per trip"] = g["Contract price"] - g["Paid"]
+    g = g.rename(columns={"Contract price": "Official price", "Paid": "Price paid", "Owed": "Total owed"})[["Trips", "Official price", "Price paid", "Shortfall per trip", "Total owed"]].sort_values("Total owed", ascending=False)
+    v = d.groupby("Driver").agg(Trips=("short", "size"), Miles=("Miles", "sum"), Owed=("short", "sum")).reset_index().rename(columns={"Owed": "Total owed"}).sort_values("Total owed", ascending=False)
+    return _tot(g, sum_cols=["Total owed"]), _with_total(v, "Driver", ["Trips", "Miles", "Total owed"])

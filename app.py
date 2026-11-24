@@ -162,7 +162,16 @@ if page.startswith("1"):
     st.subheader("Price check against contract prices (rate book)")
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs, title="Price check against contract prices")
-    with st.expander(f"Trips paid below the contract price - trip by trip ({len(pcd):,})"): show(pcd, 400, title="Trips paid below the contract price")
+    st.subheader("CLAIMS to First / EverDriven - every trip paid below the contract price (same layout as Alaska)")
+    st.caption("Basis per trip: same route paid more in earlier weeks, same state + miles, or the Alaska fixed rule. Each state has the claim by price, by driver and trip by trip.")
+    _tot_n, _tot_amt = int((-pcd["Difference"] > 0).sum()), float(-pcd["Difference"].sum()) if len(pcd) else 0.0
+    cc = st.columns(2); cc[0].metric("Trips to claim", f"{_tot_n:,}"); cc[1].metric("Total to claim", money(_tot_amt))
+    for stn in [x for x in pcs.State if x != "TOTAL"]:
+        dd = pcd[pcd.State == stn]
+        if dd.empty: continue
+        gp, gd = SR.claim_tables(dd)
+        with st.expander(f"{stn}: {len(dd):,} trips, {money(-dd['Difference'].sum())}", expanded=False):
+            show(gp, title=f"{stn} - claim by price"); show(gd, title=f"{stn} - claim by driver"); show(dd, 400, title=f"{stn} - claim trip by trip")
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)

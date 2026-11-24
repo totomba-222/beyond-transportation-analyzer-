@@ -332,6 +332,13 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
             R_.section("L"); R_.h1("Price check against contract prices (rate book)")
             R_.p("Contract price per route learned from earlier state reports (same route, otherwise same state and miles). Alaska: only trips paid exactly the error price are claimed.")
             R_.table(pc, "Paid price vs contract price, by state", font=7)
+            _, cdet, _x = SR.price_check(main, book, SR._err(err), rate or 45.0)
+            for st_ in [x for x in pc.State if x != "TOTAL"]:
+                dd = cdet[cdet.State == st_]
+                if st_ == "Alaska" or dd.empty: continue                      # Alaska has its own claim section above
+                gp, gd = SR.claim_tables(dd)
+                R_.table(gp, f"{st_} - CLAIM: trips paid below the contract price (by price)", font=7.5, note="")
+                R_.table(gd, f"{st_} - claim by driver (trip-by-trip detail is in the Excel file)", font=7, note="")
     un = main[main.state == "Unassigned"]
     if len(un): R_.p(f"<b>Note:</b> {len(un)} trips ({usd(un.main_amount.sum())}) of {un.driver.nunique()} drivers have no state yet (new drivers not found in any state report). "
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
@@ -679,8 +686,8 @@ def state_report_data(code, main, rec, book, rate=45.0, err=None):
         pc, det, _ = SR.price_check(ms, book, SR._err(err), rate)
         D["pc"] = pc[pc.State == nm] if (pc.State == nm).any() else pc.iloc[-1:]
         if len(det):
-            by_route = det[det["Price source"].astype(str).str.lower().eq("route")]; est = det[~det.index.isin(by_route.index)]
-            if len(by_route): claims.append(by_route.assign(Basis="Same route, earlier weeks").rename(columns={"Contract price": "Agreed price"}))
+            by_route = det[det["Price source"].astype(str).str.lower().isin(["route", "miles"])]; est = pd.DataFrame()
+            if len(by_route): claims.append(by_route.assign(Basis=by_route["Price source"].map({"route": "Same route, earlier weeks", "miles": "Same state + miles (earlier weeks)"})).rename(columns={"Contract price": "Agreed price"}))
         if code in ("N.CA", "NM", "KS", "NE"):
             pls, pld = PP.price_list_check(ms)
             if len(pld):
