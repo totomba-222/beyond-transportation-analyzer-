@@ -162,7 +162,8 @@ if page.startswith("1"):
     st.subheader("Price check against contract prices (rate book)")
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs, title="Price check against contract prices")
-    st.subheader("CLAIMS to First / EverDriven - every trip paid below the contract price (same layout as Alaska)")
+    _cl_states = [x for x in pcs.State if x != "TOTAL" and (pcd.State == x).any()] if len(pcd) else []
+    st.subheader("CLAIMS to First / EverDriven - trips paid below the contract price" + (": " + ", ".join(_cl_states) if _cl_states else ""))
     st.caption("Basis per trip: same route paid more in earlier weeks, same state + miles, or the Alaska fixed rule. Each state has the claim by price, by driver and trip by trip.")
     _tot_n, _tot_amt = int((-pcd["Difference"] > 0).sum()), float(-pcd["Difference"].sum()) if len(pcd) else 0.0
     cc = st.columns(2); cc[0].metric("Trips to claim", f"{_tot_n:,}"); cc[1].metric("Total to claim", money(_tot_amt))
