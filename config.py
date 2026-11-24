@@ -33,6 +33,7 @@ OR_SCHOOLS = [
     "patton ms", "phillips acdy", "philomath", "powell valley", "salem heights",
     "sequoia falls", "serendipity sch", "north albany", "south albany",
     "stayton ms", "structured skills", "trillium north point", "tualatin es",
+    "sam barlow hs", "lowrie primary", "inza wood ms", "inza r wood ms",   # Gresham-Barlow SD (Gresham) and West Linn-Wilsonville SD (Wilsonville), Oregon
     "twality", "wheatley sch", "mark twain es",
 ]
 
@@ -71,6 +72,7 @@ STATE_TOKEN_HINTS = {
 }
 
 BASE_DRIVER_STATE = {
+    "Abba Ahmat Yaya Nafi": "OR", "Ayad A Alabbasi": "OR",   # both drive Oregon school routes (Sam Barlow HS / Lowrie Primary, Inza Wood MS)
     'abdalrahman omer fadlalla': 'N.CA', 'abdelaziz dafi': 'NM',
     'abdelhakem benazouz': 'AK', 'abdul azizi': 'S.CA', 'abdulfatah ali alowdi': 'N.CA',
     'abdulgaleel a albadani': 'N.CA', 'abdullah ahmed eissa': 'N.CA',
