@@ -1,5 +1,6 @@
 """Simple 3-stage reports built on the tested engine (no new matching logic)."""
 import numpy as np
+from ratebook import route_key
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -337,8 +338,21 @@ def price_check(main, book, err=42.5, rate=45.0):
     a = a[~zero]                                                  # cancelled / $0 trips are not price errors
     known = a[a.exp_revenue.notna() & a.main_amount.notna()]
     under = known[(known["diff"] < -0.005) & (known.state != "AK")]
-    claim = under                                                               # EVERY trip paid below the contract price is a claim (basis shown per trip: same route, or same state + miles)
-    verify = under.iloc[0:0]
+    # CLAIM = the SAME route was paid more in earlier weeks. A price only estimated from OTHER routes with similar miles is NOT a claim
+    # (e.g. Oregon trips whose state report price equals the paid price): it is kept apart and never added to the amount owed.
+    claim_route = under[under.exp_rev_src.astype(str).str.lower().eq("route")]
+    mil = under[under.exp_rev_src.astype(str).str.lower().eq("miles")]
+    # A price estimated from state + miles is accepted EXCEPT when it is simply the price of ANOTHER route of the same school with the same miles in the same
+    # report (e.g. an IB route priced 73.75 used for the OB route that really is 66.25): then the estimate is not this route's price and it is not claimed.
+    from classification import _school_stem
+    def _borrowed(r):
+        stem = _school_stem(route_key(r.trip_name)); mi = round(float(r.miles)) if pd.notna(r.miles) else None
+        if mi is None: return False
+        sib = a[(a.state == r.state) & (a.trip_name != r.trip_name) & (a.miles.round() == mi) & ((a.main_amount - r.exp_revenue).abs() < 0.005)]
+        return any(_school_stem(route_key(t)) == stem for t in sib.trip_name.unique())
+    borrowed = mil[[bool(_borrowed(r)) for r in mil.itertuples()]] if len(mil) else mil
+    claim = pd.concat([claim_route, mil[~mil.index.isin(borrowed.index)]])
+    verify = borrowed
     def _det(x):
         d = x.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()
         d["state"] = d.state.map(_nm)

@@ -880,3 +880,49 @@ def all_states_zip(main, rec, hist, book, rate=45.0, err=None, week=None):
             try: z.writestr(f"{fn}_details.xlsx", state_excel(code, main, rec, hist, book, rate, err))
             except Exception as e: z.writestr(f"{fn}_details_ERROR.txt", str(e))
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------- one driver: every trip, with the check of each trip
+def driver_trips(rec, main, driver, book=None, rate=45.0, err=None):
+    """Every trip of ONE driver (all states) with: provider price, state-report revenue and driver pay, reconciliation status, pay policy
+    and the contract-price check. Returns (trip table with TOTAL row, KPI dict)."""
+    import pay_policy as PP, ratebook as _RB
+    from normalization import norm_name
+    key = norm_name(driver)
+    r = rec[rec.driver.map(norm_name) == key].copy()
+    if r.empty: return pd.DataFrame(), {}
+    book = book if book is not None else _RB.load()
+    t = r.sort_values("date")[["date", "state", "trip_name", "main_miles", "main_revenue", "state_revenue", "driver_payment", "profit", "audit_status"]].copy()
+    t["state"] = t.state.map(lambda c: STATE_NAMES.get(c, c))
+    t.columns = ["Date", "State", "Trip Name", "Miles", "Provider paid", "State report revenue", "Driver pay", "Profit", "Reconciliation"]
+    try:
+        _, bd = PP.band_check(r, book)
+        if len(bd):
+            b = bd[["Date", "Trip Name", "Policy pay", "Status"]].drop_duplicates(["Date", "Trip Name"]).rename(columns={"Status": "Pay vs policy"})
+            t = t.merge(b, on=["Date", "Trip Name"], how="left")
+    except Exception: pass
+    try:
+        m = main[main.driver.map(norm_name) == key]
+        if len(m):
+            _, det, _x = SR.price_check(m, book, SR._err(err), rate)
+            if len(det):
+                d = det[["Date", "Trip Name", "Contract price", "Difference"]].drop_duplicates(["Date", "Trip Name"]).rename(columns={"Difference": "Short vs contract"})
+                t = t.merge(d, on=["Date", "Trip Name"], how="left")
+    except Exception: pass
+    t["Date"] = pd.to_datetime(t["Date"]).dt.strftime("%Y-%m-%d")
+    k = {"Driver": driver, "Trips": len(t), "Miles": t.Miles.sum(min_count=1), "Provider paid": t["Provider paid"].sum(min_count=1), "State report revenue": t["State report revenue"].sum(min_count=1),
+         "Driver pay": t["Driver pay"].sum(min_count=1), "Profit": t["Profit"].sum(min_count=1)}
+    tot = {c: "" for c in t.columns}; tot.update({"Date": "TOTAL", **{c: t[c].sum(min_count=1) for c in ("Miles", "Provider paid", "State report revenue", "Driver pay", "Profit")}})
+    if "Short vs contract" in t: tot["Short vs contract"] = t["Short vs contract"].sum(min_count=1)
+    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True), k
+
+
+def driver_trip_report(rec, main, driver, book=None, rate=45.0, err=None):
+    """PDF for one driver: headline numbers + every trip."""
+    t, k = driver_trips(rec, main, driver, book, rate, err)
+    R_ = Report(f"Driver report - {driver}", _period(rec[rec.driver.map(lambda x: str(x).lower()) == str(driver).lower()])); R_.land()
+    R_.h1(f"Driver report: {driver}")
+    if t.empty: R_.p("No trips for this driver in the uploaded reports."); return R_.build()
+    R_.table(pd.DataFrame([{x: v for x, v in k.items() if x != "Driver"}]), None, font=7.5, note="")
+    R_.table(t, f"All trips ({len(t) - 1})", font=6.5, note="Reconciliation = provider report vs state report. Pay vs policy = driver pay against the agreed policy. Short vs contract = provider paid less than the same route was paid before (negative = short).")
+    return R_.build()

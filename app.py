@@ -128,7 +128,7 @@ if histfile:
     except Exception as e: st.warning(f"History CSV could not be read: {e}")
 hist = HI.merge(_prev, HI.weekly_rows(rec)) if len(rec) else HI.merge(_prev, pd.DataFrame(columns=HI.COLS))
 st.sidebar.download_button("⬇️ Save weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
-page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state"])
+page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state", "9) Driver report"])
 with st.sidebar:
     st.divider()
     if has_state: pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
@@ -302,7 +302,7 @@ elif page.startswith("7"):
 
 
 # ------------------------------------------------------------------ page 8: full report per state
-else:
+elif page.startswith("8"):
     st.header("Full report per state")
     st.caption("One report per state, shown on the screen and downloadable as a 2-page PDF or an Excel file: First/EverDriven vs the state report, prices paid, pay policy, and the differences for the state manager. States without a state report get the estimate and the price check only.")
     import state_view as SV
@@ -317,3 +317,25 @@ else:
     st.divider()
     if st.button("Generate ZIP with all states", key="gen_zip"): ss["zip_all"] = PG.all_states_zip(main, rec, hist, _b8, ak_rate, err_price)
     if ss.get("zip_all"): st.download_button("⬇️ Download ZIP: all states", ss["zip_all"], "All_States_Full_Reports.zip", "application/zip", key="dl_zip")
+
+elif page.startswith("9"):
+    st.header("Driver report")
+    st.caption("Pick a driver: every trip of his from the uploaded reports (provider price, state-report revenue and pay, differences, pay policy), as a PDF or Excel file.")
+    import excel_generator as EG
+    _rs = rec[rec.driver.fillna("").ne("")]
+    _stp = st.selectbox("State", ["All states"] + sorted({STATE_NAMES.get(c, c) for c in _rs.state.dropna().unique()}))
+    _pool = _rs if _stp == "All states" else _rs[_rs.state.map(lambda c: STATE_NAMES.get(c, c)) == _stp]
+    _names = sorted({str(x).strip() for x in _pool.driver}, key=lambda x: x.lower())
+    _drv = st.selectbox("Driver", _names)
+    if _drv:
+        _b9 = RB.load(); _t, _k = PG.driver_trips(rec, main, _drv, _b9, ak_rate, err_price)
+        if _t.empty: st.info("No trips for this driver.")
+        else:
+            _c = st.columns(5)
+            for _col, _lab in zip(_c, ["Trips", "Provider paid", "State report revenue", "Driver pay", "Profit"]):
+                _v = _k.get(_lab); _col.metric(_lab, f"{int(_v):,}" if _lab == "Trips" else money(_v))
+            show(_t, 500)
+            _fn = "driver_" + "".join(ch if ch.isalnum() else "_" for ch in _drv)[:40]
+            _d1, _d2 = st.columns(2)
+            _d1.download_button("⬇️ Download PDF", PG.driver_trip_report(rec, main, _drv, _b9, ak_rate, err_price), f"{_fn}.pdf", "application/pdf", key="drv_pdf", use_container_width=True, type="primary")
+            _d2.download_button("⬇️ Download Excel", EG.build_workbook({"Driver trips": _t}), f"{_fn}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="drv_xls", use_container_width=True)
