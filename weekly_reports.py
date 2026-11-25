@@ -25,7 +25,7 @@ def week_slice(rec, ws):
 def period_info(s, ws, we):
     if s.empty:
         return {"start": ws, "end": we, "first_trip": None, "last_trip": None, "days_with_trips": 0, "complete": False}
-    days = s.date.dt.normalize().nunique()
+    days = pd.to_datetime(s.date, errors="coerce").dt.normalize().nunique()
     return {"start": ws, "end": we, "first_trip": s.date.min(), "last_trip": s.date.max(), "days_with_trips": days,
             "complete": days >= 5}      # a full operating week = at least Mon-Fri
 

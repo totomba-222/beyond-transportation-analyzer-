@@ -13,7 +13,7 @@ def _ws(d): return d.dt.normalize() - pd.to_timedelta(d.dt.weekday, unit="D")
 
 
 def weekly_rows(rec):
-    r = rec.copy(); d = r.date
+    r = rec.copy(); r["date"] = pd.to_datetime(r["date"], errors="coerce"); d = r.date
     ws, mo = _ws(d), d.dt.to_period("M").astype(str)
     gm = (ws.mode().iloc[0], mo.mode().iloc[0]) if d.notna().any() else (None, None)
     for st in r.state.dropna().unique():                       # undated rows (state-only rows) belong to the state's own week

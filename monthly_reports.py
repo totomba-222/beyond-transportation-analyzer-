@@ -4,7 +4,7 @@ from financial_calculations import kpis
 
 
 def month_key(rec):
-    return rec.date.dt.to_period("M").astype(str)
+    return pd.to_datetime(rec.date, errors="coerce").dt.to_period("M").astype(str)
 
 
 def monthly_table(rec, by=None):

@@ -96,7 +96,9 @@ if res.main is None or res.main.empty:
     st.error("No trips found in the First/EverDriven files."); [st.write(w) for w in res.warnings]; st.stop()
 for _w in res.warnings:
     if "date far" in _w or "other provider" in _w or "control" in _w.lower(): st.warning(_w)
-main, rec = res.main, SR.apply_rate_rule(res.rec, ak_rate, err_price)     # rule applied everywhere: only the error-price trips stay REVENUE MISMATCH
+main, rec = res.main, SR.apply_rate_rule(res.rec, ak_rate, err_price)
+for _df in (main, rec):                      # newer pandas keeps all-empty / mixed dates as text: always real datetimes (history, weekly and monthly reports use .dt)
+    if "date" in _df.columns: _df["date"] = pd.to_datetime(_df["date"], errors="coerce")     # rule applied everywhere: only the error-price trips stay REVENUE MISMATCH
 has_state = bool(len(res.st))
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
 if n_un:
