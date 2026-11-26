@@ -147,33 +147,12 @@ def match_table(D):
 
 
 def claims_table(D, rate, err):
-    import simple_reports as SR
-    parts = [PG._claim_rows(D)]
-    ak = D.get("ak")
-    if ak and len(ak[3]):
-        a = ak[3]
-        parts.append(pd.DataFrame({
-            "Date": a["Date"], "Driver": a["Driver"], "Trip ID": a["Trip ID"], "Trip Name": a["Trip Name"],
-            "Agreed price": a["Official price"], "Paid": a["Price paid"], "Short": a["Shortfall"],
-            "Basis": "Alaska fixed $2.50 (42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)",
-        }))
-    if D["has_rep"] and D["code"] != "AK":
-        rr = SR.apply_rate_rule(D["rs"], rate, err)
-        g = rr[(rr.state == D["code"]) & (rr.audit_status == "REVENUE MISMATCH") & (rr.revenue_difference < -0.004)]
-        if len(g):
-            parts.append(pd.DataFrame({
-                "Date": g.date, "Driver": g.driver, "Trip ID": g.main_trip_id, "Trip Name": g.trip_name,
-                "Agreed price": g.state_revenue, "Paid": g.main_revenue, "Short": -g.revenue_difference,
-                "Basis": "Paid less than the state report price",
-            }))
-    parts = [p for p in parts if len(p)]
+    """Trips paid below the agreed price + a TOTAL row (the same list as the PDF: pdf_generator.claims_all)."""
     cols = ["Date", "Driver", "Trip ID", "Trip Name", "Agreed price", "Paid", "Short", "Basis"]
-    if not parts:
+    t = PG.claims_all(D, rate, err)
+    if t.empty:
         return pd.DataFrame(columns=cols)
-    t = pd.concat(parts, ignore_index=True).drop_duplicates(["Date", "Driver", "Trip Name"]).sort_values(["Short", "Date"], ascending=[False, True]).reset_index(drop=True)
-    total = {c: "" for c in cols}
-    total.update({"Driver": f"TOTAL ({len(t)} trips)", "Short": t.Short.sum()})
-    return pd.concat([t, pd.DataFrame([total])], ignore_index=True)
+    return t.reset_index(drop=True)
 
 
 def tables_workbook(D, rate, err):
@@ -190,65 +169,111 @@ def _section(title, description):
     st.markdown(f'<div class="report-section"><h3>{_safe(title)}</h3><p>{_safe(description)}</p></div>', unsafe_allow_html=True)
 
 
-def render(code, main, rec, hist, book, rate, err, show):
-    _inject_styles()
-    D = PG.state_report_data(code, main, rec, book, rate, err)
-    nm, fp, ms = D["name"], D["fp"], D["ms"]
-    fn = nm.replace(" ", "_").replace("(", "").replace(")", "")
-    T1, T2, T3 = main_table(D), match_table(D), claims_table(D, rate, err)
-
-    has_rep = D["has_rep"]
-    reconciliation_ok = bool(len(T2) and (T2.Section == "Matching").any() and T2[T2.Type == "RESULT"].Detail.astype(str).str.startswith("MATCHED").any() and not (T2.Section == "Difference to explain").any())
-    status_text = "Reconciled to the cent" if reconciliation_ok else ("State report loaded · review differences" if has_rep else "Awaiting state report")
-    status_class = "good" if reconciliation_ok else "warn"
-
+def _calm_styles():
     st.markdown(
-        f'<div class="state-hero"><div class="eyebrow">Beyond Transportation · State intelligence report</div>'
-        f'<h1>{_safe(nm)}</h1><p>{_safe(fp)} provider report compared with the official state report</p>'
-        f'<span class="state-status {status_class}">{_safe(status_text)}</span></div>',
+        """
+        <style>
+        .kpi-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px; }
+        .kpi-label { color: #6b7280; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+        .kpi-value { color: #1f2937; font-size: 21px; font-weight: 650; margin-top: 6px; line-height: 1.1; }
+        .calm-note { color: #6b7280; font-size: 13px; margin: 4px 0 10px; }
+        div[data-testid="stDownloadButton"] button { border-radius: 8px; }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-    _kpi_cards(kpi_row(D))
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns([1.15, 1, 1])
+def _fmt_rows(rows):
+    """Comparison rows of simple_pdf._compare_rows -> a table of strings (this week / last week / difference / change)."""
+    import simple_pdf as SP
+    out = []
+    for r in rows:
+        cur, prev = r["cur"], r["prev"]
+        diff = (float(cur) - float(prev)) if not SP._na(cur) and not SP._na(prev) else np.nan
+        pc = diff / abs(float(prev)) * 100 if not SP._na(diff) and float(prev) else np.nan
+        d_txt = "n/a" if SP._na(diff) else (SP.pts(diff) if r.get("pts") else (f"{diff:+,.0f}" if r["fmt"] in (SP.num, SP.miles) else SP.usd(diff)))
+        out.append({"": r["label"], "This week": r["fmt"](cur), "Last week": r["fmt"](prev), "Difference": d_txt, "Change": "n/a" if r.get("pts") else SP.chg(pc)})
+    return pd.DataFrame(out)
+
+
+def render(code, main, rec, hist, book, rate, err, show):
+    """Simple on-screen state report: the same four parts as the PDF (summary, paid below the agreed price, pay above the policy, comparison)."""
+    import simple_pdf as SP
+    _calm_styles()
+    D = PG.state_report_data(code, main, rec, book, rate, err)
+    S = SP.state_summary(D, rate, err)
+    nm, fp, ms = D["name"], D["fp"], D["ms"]
+    fn = nm.replace(" ", "_").replace("(", "").replace(")", "")
+
+    st.subheader(nm)
+    st.caption(f"{fp} vs state report  |  {PG._period(ms if len(ms) else D['rs'])}")
+
+    c1, c2 = st.columns(2)
     with c1:
-        st.download_button("Download 3-table workbook", tables_workbook(D, rate, err), f"{fn}_3_tables.xlsx", XLSX, key=f"sv_all_{code}", use_container_width=True, type="primary")
+        st.download_button("Download PDF report", SP.state_report_pdf(D, hist, None, rate, err), f"{fn}_report.pdf", "application/pdf", key=f"sv_pdf_{code}", use_container_width=True, type="primary")
     with c2:
-        st.download_button("Download PDF report", PG.state_full_report(code, main, rec, hist, book, rate, err), f"{fn}_report.pdf", "application/pdf", key=f"sv_pdf_{code}", use_container_width=True)
-    with c3:
-        st.download_button("Download trip details", PG.state_excel(code, main, rec, hist, book, rate, err), f"{fn}_details.xlsx", XLSX, key=f"sv_xls_{code}", use_container_width=True)
+        st.download_button("Download Excel (all details)", PG.state_excel(code, main, rec, hist, book, rate, err), f"{fn}_details.xlsx", XLSX, key=f"sv_xls_{code}", use_container_width=True)
 
-    if not has_rep:
-        st.warning(f"No state report was uploaded for {nm}. Driver payments, profit, and reconciliation cannot be calculated yet.")
-    if len(ms) == 0 and has_rep:
-        st.warning(f"No {fp} report was uploaded for {nm}. Upload it to reconcile trip by trip and verify provider pricing.")
+    if S["has_rep"]:
+        _kpi_cards({"Trips": f"{S['trips']:,}", "Revenue": _money(S["state_revenue"]), "Driver payments": _money(S["payments"]), "Profit": _money(S["profit"]),
+                    "Margin": SP.pct(S["margin"])})
+        if S["recon_ok"] is True:
+            st.markdown(f'<div class="calm-note">Matched with the state report: {S["trips"]:,} trips, revenue equal to the cent.</div>', unsafe_allow_html=True)
+        elif S["recon_ok"] is False:
+            a_, so_, fo_, rv_ = S["recon_counts"]
+            st.warning(f"Differences with the state report: {a_} trips with a price difference, {fo_} only in {fp}, {so_} only in the state report" + (f", {rv_} to review" if rv_ else "") + ". See the Excel file, sheet 'For state manager'.")
+    else:
+        st.warning(f"No state report was uploaded for {nm}. Driver payments, profit and margin cannot be calculated yet.")
+        _kpi_cards({f"{fp} trips": f"{S['first_trips']:,}", f"{fp} revenue": _money(S["first_revenue"])})
 
-    tab1, tab2, tab3 = st.tabs(["Overview", "Reconciliation", "Claims & actions"])
+    show(pd.DataFrame([
+        {"": "Trips", nm: SP.num(S["first_trips"]), f"All {fp} states": SP.num(S["prov_trips"]), "Share": SP.pct(S["share_trips"])},
+        {"": f"Revenue paid by {fp}", nm: SP.usd(S["first_revenue"]), f"All {fp} states": SP.usd(S["prov_revenue"]), "Share": SP.pct(S["share_revenue"])},
+    ]))
+
+    tab1, tab2, tab3 = st.tabs(["Paid below the agreed price", "Pay above the policy", "Comparison with last week"])
 
     with tab1:
-        _section("Executive overview", "Headline operating and financial measures for this state.")
-        show(T1, title=f"{nm} - executive overview")
-        st.download_button("Export overview", _xls(T1, "Executive overview"), f"{fn}_overview.xlsx", XLSX, key=f"sv_t1_{code}")
-        if D.get("control"):
-            st.markdown(f'<div class="report-note">State assignment evidence: {_safe(D["control"])}</div>', unsafe_allow_html=True)
-
-    with tab2:
-        _section("Reconciliation review", f"Trip matching, price differences, and pay-policy checks for {fp} versus the {nm} state report.")
-        if reconciliation_ok:
-            st.success(f"{fp} and the {nm} state report agree trip by trip and to the cent.")
-        show(T2, title=f"{nm} - reconciliation review")
-        st.download_button("Export reconciliation", _xls(T2, "Reconciliation review"), f"{fn}_matching_differences.xlsx", XLSX, key=f"sv_t2_{code}")
-
-    with tab3:
-        _section("Claims and actions", f"Trips where {fp} paid below the agreed price, with the amount and evidence needed for follow-up.")
-        n_claim = len(T3) - 1 if len(T3) else 0
-        if n_claim > 0:
-            st.error(f"Claim to {fp}: {n_claim:,} trips · {_money(T3.iloc[-1]['Short'])}")
+        T3 = claims_table(D, rate, err)
+        n_claim = len(T3)
+        if not len(ms):
+            st.info(f"No {fp} report was uploaded for {nm}, so the prices {fp} paid cannot be checked.")
+        elif n_claim > 0:
+            st.error(f"Claim to {fp}: {n_claim:,} trips  |  {_money(T3['Short'].sum())}")
+            show(T3, 400)
+            if D["code"] == "N.CA":
+                st.caption("Benicia routes are listed at $45 because First cut them from $50; after the N.CA manager spoke to First, it added $5 on some Richmond routes (now $55-$60). These list prices are the agreed prices, not a claim.")
         else:
             st.success(f"No trip was paid below the agreed price by {fp}.")
-        if len(ms) and not D["estimates"].empty:
-            st.info(f"Not claimed: {len(D['estimates']):,} trips use prices estimated from similar routes. Verify before taking action.")
-        show(T3, title=f"{nm} - claim to {fp}")
-        st.download_button("Export claim list", _xls(T3, f"Claim to {fp}"), f"{fn}_claim.xlsx", XLSX, key=f"sv_t3_{code}")
+
+    with tab2:
+        if not S["has_rep"]:
+            st.info("Needs the state report (it holds the driver payments).")
+        elif S["above_trips"] == 0:
+            st.success("All checked trips are within the pay policy. Profit and margin are unchanged.")
+        else:
+            st.error(f"{S['above_trips']:,} trips paid above the policy  |  excess driver pay {_money(S['above_amount'])}")
+            show(pd.DataFrame([
+                {"": "Actual", "Revenue": SP.usd(S["state_revenue"]), "Driver payments": SP.usd(S["payments"]), "Profit": SP.usd(S["profit"]), "Margin": SP.pct(S["margin"])},
+                {"": "If the policy was applied", "Revenue": SP.usd(S["state_revenue"]), "Driver payments": SP.usd(S["payments_policy"]), "Profit": SP.usd(S["profit_policy"]), "Margin": SP.pct(S["margin_policy"])},
+                {"": "Loss from not applying the policy", "Revenue": "", "Driver payments": SP.usd(S["above_amount"]), "Profit": SP.usd(S["above_amount"]),
+                 "Margin": SP.pts(S["margin_policy"] - S["margin"]) if pd.notna(S["margin_policy"]) and pd.notna(S["margin"]) else "n/a"},
+            ]))
+            g = PG._group_pay_differences(S["above"])
+            if len(g):
+                show(g.drop(columns=["Miles", "Revenue", "Difference per trip", "Status"], errors="ignore"), 400)
+        if S["has_rep"] and S["not_checked"]:
+            st.caption(f"Not checked: {S['not_checked']:,} trips on routes that have no pay policy yet (listed in the Excel file).")
+
+    with tab3:
+        rows_c, note = SP._compare_rows(D, S, hist, None)
+        show(_fmt_rows(rows_c))
+        if note:
+            st.caption(note)
+        pick = [r for r in rows_c if r["label"] in ("Revenue", "Driver payments", "Profit") and not SP._na(r["cur"])]
+        if pick:
+            chart = pd.DataFrame({"This week": [float(r["cur"]) for r in pick]}, index=[r["label"] for r in pick])
+            if any(not SP._na(r["prev"]) for r in pick):
+                chart["Last week"] = [np.nan if SP._na(r["prev"]) else float(r["prev"]) for r in pick]
+            st.bar_chart(chart)

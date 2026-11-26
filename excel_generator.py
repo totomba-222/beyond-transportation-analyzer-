@@ -7,11 +7,19 @@ from openpyxl.utils import get_column_letter
 MONEY = '$#,##0.00;[Red]($#,##0.00);-'
 
 
+def _drop_total_rows(df):
+    if df is None or df.empty:
+        return df
+    labels = df.astype(object).apply(lambda col: col.map(lambda v: str(v).strip().lower()))
+    mask = labels.apply(lambda col: col.str.match(r"^(grand\s+|sub\s*)?total(\b|\s*\()", na=False)).any(axis=1)
+    return df.loc[~mask].reset_index(drop=True)
+
+
 def build_workbook(frames: dict) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
         for name, df in frames.items():
-            df = df.copy()
+            df = _drop_total_rows(df.copy())
             df.to_excel(xw, sheet_name=name[:31], index=False)
             ws = xw.sheets[name[:31]]
             for j, col in enumerate(df.columns, 1):

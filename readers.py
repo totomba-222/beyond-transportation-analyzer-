@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from normalization import (file_hash, is_total_label, norm_name, norm_trip,
+from normalization import (file_hash, is_total_label, is_total_text, norm_name, norm_trip,
                            norm_trip_id, parse_date, to_number)
 
 # header synonyms, matched on the header with all non-alphanumerics removed
@@ -177,6 +177,16 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
 
         num = lambda c: body[m[c]].map(to_number) if c in m else pd.Series(np.nan, index=body.index)
         drv_raw = body[m["driver"]]
+        # --- total rows must never be counted as trips (that would double every number): a total is recognised by its label in ANY text cell
+        #     ("Total", "Grand total", "Total payments"...), or by being a money row with no driver / trip id / date / trip name at all
+        _money0 = [m[c] for c in ("main_amount", "revenue", "driver_pay") if c in m]
+        _any_money0 = pd.concat([body[c].map(to_number).notna() for c in _money0], axis=1).any(axis=1) if _money0 else pd.Series(False, index=body.index)
+        _blank = lambda ser: ser.isna() | ser.astype(str).str.strip().isin(["", "nan", "None"])
+        _tot_text = body.apply(lambda r_: any(is_total_text(v) for v in r_.tolist() if isinstance(v, str)), axis=1) if len(body) else pd.Series(False, index=body.index)
+        _ident = [m[c] for c in ("trip_id", "date", "trip_name") if c in m]
+        _no_ident = _blank(body[_ident[0]]) if _ident else pd.Series(False, index=body.index)
+        for _c in _ident[1:]: _no_ident &= _blank(body[_c])
+        _tot_noid = _any_money0 & _no_ident & _blank(drv_raw)
         # grouped layout (driver written only on the first row of each group, e.g. Nebraska 'Details'): forward-fill
         _hd = drv_raw.notna() & ~drv_raw.astype(str).str.strip().isin(["", "nan", "None"])
         _mc = [m[c] for c in ("main_amount", "revenue", "driver_pay") if c in m]
@@ -186,13 +196,14 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
             body[m["driver"]] = drv_raw
             warns.append(f"Sheet '{sheet}': driver names carried down from the first row of each group.")
         has_driver = drv_raw.notna() & ~drv_raw.astype(str).str.strip().isin(["", "nan", "None"])
-        is_tot = drv_raw.map(is_total_label) & has_driver
+        _old_total = drv_raw.map(is_total_label) & has_driver                       # a plain 'Total' label in the driver column (the original rule)
+        is_tot = _old_total | (_tot_text & (_any_money0 | has_driver)) | (_tot_noid & has_driver)      # blank-driver rows are totals only when the driver was carried down by forward fill
         money_cols = [m[c] for c in ("main_amount", "revenue", "driver_pay") if c in m]
         any_money = pd.concat([body[c].map(to_number).notna() for c in money_cols], axis=1).any(axis=1) if money_cols else pd.Series(False, index=body.index)
 
         # control totals + exclusions (never silent)
         for idx in body.index[is_tot | (~has_driver & any_money)]:
-            kind = "TOTAL" if is_tot[idx] else "SUBTOTAL/UNLABELED"
+            kind = "TOTAL" if _old_total[idx] else "SUBTOTAL/UNLABELED"      # extra detected totals / per-driver subtotals are excluded but not compared with the whole-sheet sum
             ctrl.append({"src_file": filename, "src_sheet": sheet, "src_row": idx + 1, "kind": kind,
                          "declared_revenue": to_number(body.at[idx, m.get("main_amount") or m.get("revenue")]) if (m.get("main_amount") or m.get("revenue")) else np.nan,
                          "declared_driver_pay": to_number(body.at[idx, m["driver_pay"]]) if "driver_pay" in m else np.nan,
@@ -204,6 +215,21 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
                              "reason": "total row" if is_tot[idx] else ("subtotal / unlabeled numbers (no driver)" if any_money[idx] else "stray text, no driver")})
 
         det = body[has_driver & ~is_tot].copy()
+        _rk = m.get("main_amount") if role == "main" else m.get("revenue"); _pk = m.get("driver_pay") if role == "state" else None
+        if _rk is not None and len(det) > 2:
+            _rv = body[_rk].map(to_number); _pv = body[_pk].map(to_number) if _pk else None
+            for i in [i for i in det.index if pd.notna(_rv[i])][-3:]:
+                prev = det.index[det.index < i]
+                if len(prev) < 2: continue
+                sr = _rv[prev].sum()
+                same_pay = True if _pv is None else (pd.isna(_pv[i]) or abs(_pv[i] - _pv[prev].sum()) < 0.015)
+                if sr > 0 and abs(_rv[i] - sr) < 0.015 and same_pay:
+                    ctrl.append({"src_file": filename, "src_sheet": sheet, "src_row": i + 1, "kind": "TOTAL",
+                                 "declared_revenue": _rv[i], "declared_driver_pay": _pv[i] if _pv is not None else np.nan,
+                                 "declared_miles": to_number(body.at[i, m["miles"]]) if "miles" in m else np.nan, "block_start_row": None})
+                    excl.append({"src_file": filename, "src_sheet": sheet, "src_row": i + 1, "reason": "total row (equals the sum of the rows above)"})
+                    warns.append(f"'{filename}' / '{sheet}': row {i + 1} equals the sum of the rows above, so it is a total and was NOT counted as a trip.")
+                    det = det.drop(index=i)
         # block ids so per-driver subtotals (S.CA style) can be verified later
         sub_pos = [i for i in body.index if (not has_driver[i]) and any_money[i]]
         blk_of = {}

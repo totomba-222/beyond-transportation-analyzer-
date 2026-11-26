@@ -13,6 +13,11 @@ def is_total_label(s) -> bool:
     return re.sub(r"[^a-z ]", "", str(s).strip().lower()) in _TOTAL_WORDS
 
 
+def is_total_text(s) -> bool:
+    """A text cell that starts with 'total' / 'grand total' / 'subtotal' ('Total', 'Total Payments', 'TOTAL (466 trips)'): a total row, not a trip."""
+    return bool(re.match(r"^\s*(grand\s+|sub\s*|report\s+)?totals?\b", str(s).strip().lower()))
+
+
 def norm_name(s) -> str:
     """Canonical driver key: ascii-fold, lowercase, strip punctuation, collapse
     spaces. '(MO)' is kept as the token 'mo' because it is part of how the

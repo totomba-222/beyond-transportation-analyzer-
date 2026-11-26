@@ -6,7 +6,9 @@ import pandas as pd
 import financial_calculations as F
 
 COLS = ["week_start", "month", "state", "trips", "drivers", "miles", "revenue", "state_revenue", "driver_payments", "profit", "profit_base",
-        "paid_trips", "first_date", "last_date"]
+        "paid_trips", "first_date", "last_date",
+        "short_trips", "short_amount", "above_trips", "above_amount"]      # last 4: trips paid below the agreed price (claim) / above the pay policy; filled by add_extras
+EXTRA = ["short_trips", "short_amount", "above_trips", "above_amount"]
 
 
 def _ws(d): return d.dt.normalize() - pd.to_timedelta(d.dt.weekday, unit="D")
@@ -40,7 +42,21 @@ def to_csv(h): return h.sort_values(["week_start", "state"]).to_csv(index=False)
 def from_csv(f):
     h = pd.read_csv(f)
     for c in ("week_start", "first_date", "last_date"): h[c] = pd.to_datetime(h[c], errors="coerce")
+    for c in EXTRA:                                   # history files saved before these columns existed still load
+        if c not in h.columns: h[c] = np.nan
     return h[COLS]
+
+
+def add_extras(rows, extras):
+    """rows = HI.weekly_rows(rec); extras = {state code: {short_trips, short_amount, above_trips, above_amount}} of THIS upload.
+    Written on the state's busiest week of the upload (an upload normally holds one week)."""
+    r = rows.copy()
+    for st, ex in (extras or {}).items():
+        m = r[r.state == st]
+        if m.empty: continue
+        i = m.trips.astype(float).idxmax()
+        for c in EXTRA: r.loc[i, c] = ex.get(c, np.nan)
+    return r
 
 
 def merge(prev, cur):

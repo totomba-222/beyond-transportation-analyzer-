@@ -45,8 +45,7 @@ def group_table(rec, by, verified=True):
 def state_table(rec, verified=True):
     t = group_table(rec, "state", verified)
     t["State"] = t["state"].map(lambda c: STATE_NAMES.get(c, c))
-    tot = kpis(rec, verified); tot.update({"state": "TOTAL", "State": "TOTAL", "Revenue/Trip": tot["Revenue"] / tot["Trips"] if tot["Trips"] else np.nan})
-    return pd.concat([t, pd.DataFrame([tot])], ignore_index=True).drop(columns="state")
+    return t.drop(columns="state").reset_index(drop=True)
 
 
 def driver_table(rec, state=None, verified=True):

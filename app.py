@@ -6,6 +6,7 @@ import streamlit as st
 
 import app_logic as AL
 import history as HI
+import history_store as HS
 import weekly_reports as W
 import classification as C
 import excel_generator as EG
@@ -25,6 +26,10 @@ st.markdown("<style>[data-testid='stElementToolbar']{display:none !important}</s
 
 
 def show(df, height=None, title=None):
+    if df is not None and len(df):
+        labels = df.astype(object).apply(lambda col: col.map(lambda v: str(v).strip().lower()))
+        total_rows = labels.apply(lambda col: col.str.match(r"^(grand\s+|sub\s*)?total(\b|\s*\()", na=False)).any(axis=1)
+        df = df.loc[~total_rows].reset_index(drop=True)
     if df is None or len(df) == 0:
         st.info("No records."); return
     cfg = {}
@@ -97,9 +102,10 @@ if res.main is None or res.main.empty:
 for _w in res.warnings:
     if "date far" in _w or "other provider" in _w or "control" in _w.lower(): st.warning(_w)
 main, rec = res.main, SR.apply_rate_rule(res.rec, ak_rate, err_price)
+_all_main, _all_rec = main.copy(), rec.copy()
 for _df in (main, rec):                      # newer pandas keeps all-empty / mixed dates as text: always real datetimes (history, weekly and monthly reports use .dt)
     if "date" in _df.columns: _df["date"] = pd.to_datetime(_df["date"], errors="coerce")     # rule applied everywhere: only the error-price trips stay REVENUE MISMATCH
-has_state = bool(len(res.st))
+has_state = bool(len(rec) and (rec.state_source != "").any())
 n_un = int(main.state.isin(["Unassigned", "NEEDS REVIEW"]).sum())
 if n_un:
     sug = C.suggest_states(main, res.st)
@@ -124,12 +130,61 @@ if len(_auto):
 if full_map:
     st.sidebar.download_button("⬇️ Save driver map (CSV)", pd.DataFrame(sorted(full_map.items()), columns=["driver", "state"]).to_csv(index=False), "driver_map.csv", "text/csv")
 
-_prev = None
+# Optional report filters are applied only after upload parsing and state assignment.
+with st.sidebar:
+    st.subheader("5) Report filters (optional)")
+    _driver_options = sorted(main.driver_disp.dropna().astype(str).str.strip().unique(), key=str.casefold)
+    _provider_options = sorted(main.provider.map(SR.PROVIDER_NAMES).fillna(main.provider).dropna().astype(str).unique(), key=str.casefold)
+    selected_drivers = st.multiselect("Drivers", _driver_options, default=[], help="Leave empty to include every driver.")
+    selected_providers = st.multiselect("Providers", _provider_options, default=[], help="Leave empty to include every provider.")
+
+def _filter_values(df, column, selected):
+    if not selected or column not in df.columns:
+        return pd.Series(True, index=df.index)
+    wanted = {str(v).strip().casefold() for v in selected}
+    return df[column].fillna("").astype(str).str.strip().str.casefold().isin(wanted)
+
+if selected_drivers or selected_providers:
+    _main_driver_col = "driver_disp" if "driver_disp" in main.columns else "driver"
+    _rec_driver_col = "driver_disp" if "driver_disp" in rec.columns else "driver"
+    _main_provider = main.provider.map(SR.PROVIDER_NAMES).fillna(main.provider).astype(str)
+    _rec_provider = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider).astype(str) if "provider" in rec.columns else pd.Series("", index=rec.index)
+    _driver_mask = _filter_values(main, _main_driver_col, selected_drivers)
+    _rec_driver_mask = _filter_values(rec, _rec_driver_col, selected_drivers)
+    _provider_mask = _main_provider.str.strip().str.casefold().isin({str(v).strip().casefold() for v in selected_providers}) if selected_providers else pd.Series(True, index=main.index)
+    _rec_provider_mask = _rec_provider.str.strip().str.casefold().isin({str(v).strip().casefold() for v in selected_providers}) if selected_providers else pd.Series(True, index=rec.index)
+    main = main.loc[_driver_mask & _provider_mask].reset_index(drop=True)
+    rec = rec.loc[_rec_driver_mask & _rec_provider_mask].reset_index(drop=True)
+    if len(main) == 0:
+        st.warning("The selected filters returned no trips. Clear one or more filters to generate a report.")
+        st.stop()
+    st.sidebar.caption(f"Active filter: {len(main):,} trips selected")
+
+_prev = HS.load()
 if histfile:
-    try: _prev = HI.from_csv(histfile)
+    try:
+        _uploaded_history = HI.from_csv(histfile)
+        _prev = HI.merge(_prev, _uploaded_history)
     except Exception as e: st.warning(f"History CSV could not be read: {e}")
-hist = HI.merge(_prev, HI.weekly_rows(rec)) if len(rec) else HI.merge(_prev, pd.DataFrame(columns=HI.COLS))
-st.sidebar.download_button("⬇️ Save weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
+@st.cache_data(show_spinner="Checking prices and pay policy...")
+def _week_extras(_main, _rec, _book, rate, err, key):
+    import simple_pdf as _SP
+    return _SP.week_extras(_main, _rec, _book, rate, err)       # per state: trips paid below the agreed price / above the pay policy (saved in the history for next week's comparison)
+
+
+try:
+    _history_has_state = bool(len(_all_rec) and (_all_rec.state_source != "").any())
+    _ex = _week_extras(_all_main, _all_rec, RB.load(), ak_rate, err_price, (mt, stt, json.dumps(ss["overrides"]), json.dumps(ss["colmap"]), json.dumps(full_map))) if _history_has_state else {}
+except Exception:
+    _ex = {}
+_cur_rows = HI.add_extras(HI.weekly_rows(_all_rec), _ex) if len(_all_rec) else pd.DataFrame(columns=HI.COLS)
+hist = HI.merge(_prev, _cur_rows)
+try:
+    HS.save(hist)
+except Exception as e:
+    st.sidebar.warning(f"Weekly history could not be saved automatically: {e}")
+st.sidebar.caption("Weekly history is saved automatically for the next comparison.")
+st.sidebar.download_button("⬇️ Download weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
 page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state", "9) Driver report"])
 with st.sidebar:
     st.divider()
@@ -150,7 +205,7 @@ if page.startswith("1"):
         st.subheader("Totals by provider"); show(SR.provider_table(main), title="Totals by provider")
         st.subheader("Totals by state and provider"); show(SR.state_provider_table(main), title="Totals by state and provider")
     t = SR.first_state_table(main); st.subheader("Totals by state" + (" (all providers combined)" if main.provider.nunique() > 1 else "")); show(t, title="Totals by state")
-    st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue"]])
+    st.bar_chart(t.set_index("State")[["Revenue"]])
     rs, rgrp, rdrv, rdet = SR.first_rate_audit(main, ak_rate, err=err_price)
     if rs["Trips below official rate"]:
         st.subheader(f"Alaska rate check - trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)")
@@ -164,24 +219,30 @@ if page.startswith("1"):
     st.subheader("Price check against contract prices (rate book)")
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs, title="Price check against contract prices")
-    _cl_states = [x for x in pcs.State if x != "TOTAL" and (pcd.State == x).any()] if len(pcd) else []
+    _policy_prices, _policy_price_detail = PP.price_list_check(main)
+    if len(_policy_prices):
+        st.subheader("Provider price vs official policy price")
+        st.caption("This compares the amount paid by First/EverDriven with the official contracted price or approved state pricing rule. It is separate from reconciliation with the state report.")
+        show(_policy_prices, title="Provider price vs official policy price")
+        if len(_policy_price_detail): show(_policy_price_detail, 400, title="Provider price differences vs official policy")
+    _cl_states = [x for x in pcs.State if (pcd.State == x).any()] if len(pcd) else []
     st.subheader("CLAIMS to First / EverDriven - trips paid below the contract price" + (": " + ", ".join(_cl_states) if _cl_states else ""))
     st.caption("Basis per trip: same route paid more in earlier weeks, same state + miles, or the Alaska fixed rule. Each state has the claim by price, by driver and trip by trip.")
     _tot_n, _tot_amt = int((-pcd["Difference"] > 0).sum()), float(-pcd["Difference"].sum()) if len(pcd) else 0.0
     cc = st.columns(2); cc[0].metric("Trips to claim", f"{_tot_n:,}"); cc[1].metric("Total to claim", money(_tot_amt))
-    for stn in [x for x in pcs.State if x != "TOTAL"]:
+    for stn in pcs.State:
         dd = pcd[pcd.State == stn]
         if dd.empty: continue
         gp, gd = SR.claim_tables(dd)
         with st.expander(f"{stn}: {len(dd):,} trips, {money(-dd['Difference'].sum())}", expanded=False):
             show(gp, title=f"{stn} - claim by price"); show(gd, title=f"{stn} - claim by driver"); show(dd, 400, title=f"{stn} - claim trip by trip")
     st.subheader("Trip-by-trip detail")
-    pick = st.selectbox("State", list(t.State[:-1])); d = SR.first_state_detail(main, names.get(pick, pick))
+    pick = st.selectbox("State", list(t.State)); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Official policy prices": _policy_prices, "Policy price detail": _policy_price_detail, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
-    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state)))
+    pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state), rec=rec))
 
 # ------------------------------------------------------------------ page 2
 elif page.startswith("2"):
@@ -196,8 +257,8 @@ elif page.startswith("2"):
     if len(_est): st.subheader("ESTIMATED performance for states without a state report"); st.caption("Estimate, not actual: not included in the table above."); show(_est)
     if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
     if (t["Trips missing revenue"] > 0).any(): st.warning("Some state-report trips have no revenue. They are kept, not counted as zero, and excluded from profit.")
-    st.bar_chart(t[t.State != "TOTAL"].set_index("State")[["Revenue", "Driver Payments", "Profit"]])
-    pick = st.selectbox("State detail", list(t.State[:-1])); show(SR.state_trip_detail(rec, names.get(pick, pick)), 500)
+    st.bar_chart(t.set_index("State")[["Revenue", "Driver Payments", "Profit"]])
+    pick = st.selectbox("State detail", list(t.State)); show(SR.state_trip_detail(rec, names.get(pick, pick)), 500)
     sheets = {"States": t}
     for code in rec[rec.state_source != ""].state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.state_trip_detail(rec, code)
     st.download_button("⬇️ Excel (state reports)", EG.build_workbook(sheets), "State_Reports.xlsx", XLSX)
@@ -209,14 +270,22 @@ elif page.startswith("3"):
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
     n_acc, amt_acc = SR.accepted_summary(rec)
     if n_acc: st.caption(f"{n_acc} Alaska trips with other price differences (total ${abs(amt_acc):,.2f}) are treated as correct and excluded from the claim; only trips paid ${err_price:,.2f} are claimed.")
+    _match = rec.copy()
+    _match["Provider"] = _match.provider.map(SR.PROVIDER_NAMES).fillna(_match.provider) if "provider" in _match.columns else "Unknown"
+    _match["State"] = _match.state.map(lambda c: STATE_NAMES.get(c, c))
+    _match = _match.groupby(["Provider", "State", "audit_status"], dropna=False).size().reset_index(name="Trips")
+    _match = _match.rename(columns={"audit_status": "Matching result"})
+    st.subheader("First / EverDriven to state-report matching")
+    st.caption("Every uploaded trip is classified once: matched, price/payment difference, missing on one side, duplicate, or manual review.")
+    show(_match, title="Matching results by provider and state")
     st.subheader("Revenue bridge: First/EverDriven to state report"); show(SR.revenue_bridge(rec, ak_rate, err_price), title="Revenue bridge")
     t = SR.discrepancy_summary(rec); show(t, title="Summary of differences by state")
-    if len(t): st.metric("Total price difference (First - State)", money(t[t.State == "TOTAL"].iloc[0]["Total difference (First - State)"]))
-    sheets = {"Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
+    if len(t): st.metric("Total price difference (First - State)", money(t["Total difference (First - State)"].sum()))
+    sheets = {"Matching results": _match, "Revenue bridge": SR.revenue_bridge(rec, ak_rate, err_price), "Summary": t}
     for code in rec[rec.state_source != ""].state.unique():
         a, s, f = SR.discrepancy_sections(rec, code); nm = STATE_NAMES.get(code, code)
         if not (len(a) or len(s) or len(f)): continue
-        with st.expander(f"{nm}: {max(len(a) - 1, 0)} price differences, {max(len(s) - 1, 0)} state-only trips, {max(len(f) - 1, 0)} First-only trips"):
+        with st.expander(f"{nm}: {len(a)} price differences, {len(s)} state-only trips, {len(f)} First-only trips"):
             cl, ot = SR.claim_split(rec, code, ak_rate, err_price)
             if len(cl): st.markdown(f"**Claim to First: trips short by the fixed ${ak_rate-err_price:,.2f} (paid 42.50 vs 45, 47.50 vs 50, 82.50 vs 85...)**"); show(cl)
             pp_, pd_, po_ = SR.price_diff_claim(rec, code, ak_rate, err_price)
@@ -282,9 +351,27 @@ elif page.startswith("7"):
     st.header("Driver pay policy review")
     if not has_state: st.info("Upload the state reports to review driver payments."); st.stop()
     _book = RB.load(); ps, pover, ploss = SR.pay_check(rec, _book)
-    st.caption("Policy = the pay paid for the same route in >=80% of earlier trips (minimum 3). The route of each trip comes from the First / EverDriven report.")
+    st.caption("Policy = the official state pricing rule or the stable pay for the same route in >=80% of earlier trips (minimum 3). The report separates nonconforming trips, excess payment loss, and actual vs policy-applied profit and margin.")
+    _policy_fin = PG.policy_financial_table(rec, main, _book, ak_rate, err_price)
+    if len(_policy_fin):
+        st.subheader("Policy deviations and financial impact")
+        show(_policy_fin, title="Policy deviations and financial impact")
+        _above_trips = int(_policy_fin["Trips paid above policy"].sum())
+        _loss = float(_policy_fin["Excess payment / loss"].sum())
+        _profit = float(_policy_fin["Actual profit"].sum(min_count=1))
+        _profit_policy = float(_policy_fin["Profit if policy applied"].sum(min_count=1))
+        _base = float(rec[rec.state_source != ""].state_revenue.sum(min_count=1))
+        _margin = _profit / _base * 100 if _base else float("nan")
+        _margin_policy = _profit_policy / _base * 100 if _base else float("nan")
+        _c = st.columns(5)
+        _c[0].metric("Trips not matching policy", f"{int(_policy_fin['Trips not matching policy'].sum()):,}")
+        _c[1].metric("Trips paid above policy", f"{_above_trips:,}")
+        _c[2].metric("Loss from not applying policy", money(_loss))
+        _c[3].metric("Profit if policy applied", money(_profit_policy))
+        _c[4].metric("Margin if policy applied", f"{_margin_policy:.1f}%" if pd.notna(_margin_policy) else "n/a")
+        st.caption(f"Actual profit: {money(_profit)} | Actual margin: {_margin:.1f}%" if pd.notna(_margin) else f"Actual profit: {money(_profit)} | Actual margin: n/a")
     show(ps)
-    if len(ps): st.metric("Total excess pay above policy", money(ps.iloc[-1]["Total excess pay"]))
+    if len(ps): st.metric("Total excess pay above learned route policy", money(ps["Total excess pay"].sum()))
     for code in pover.State.unique():
         d_ = pover[pover.State == code]
         with st.expander(f"{code}: {len(d_)} trips paid above the pay policy (excess {money(d_['Excess pay'].sum())})"): show(d_.drop(columns=["State"]))
@@ -299,7 +386,7 @@ elif page.startswith("7"):
         _bad = _bd[_bd.Status.str.startswith(("ABOVE", "BELOW", "Long trip: needs", "ZERO", "Sacramento: pay NOT", "City not"))]
         with st.expander(f"Trips that need review ({len(_bad):,})", expanded=len(_bad) > 0): show(_bad, 400)
         with st.expander("Mile bands"): show(PP.bands_table())
-    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book), "N.CA mile bands": _bs, "N.CA band detail": _bd}), "Pay_Policy_Review.xlsx", XLSX)
+    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Policy financial impact": _policy_fin, "Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book), "N.CA mile bands": _bs, "N.CA band detail": _bd}), "Pay_Policy_Review.xlsx", XLSX)
     pdf_button("Driver pay policy review", "paypol", lambda: PG.pay_policy_report(rec, _book))
 
 
