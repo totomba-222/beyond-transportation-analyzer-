@@ -402,6 +402,66 @@ import zipfile
 import history as HI
 
 
+def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
+    """Return summary-only tables for company, provider, and state reporting.
+
+    No trip-level rows are returned. Provider rows use provider revenue from
+    First/EverDriven, while actual profit uses uploaded state-report revenue
+    and driver payments where available.
+    """
+    import ratebook as RB
+    import simple_pdf as SP
+    book = book if book is not None else RB.load()
+    main = main.copy() if main is not None else pd.DataFrame()
+    rec = rec.copy() if rec is not None else pd.DataFrame()
+    if len(main):
+        main["Provider"] = main.provider.map(SR.PROVIDER_NAMES).fillna(main.provider) if "provider" in main.columns else "Unknown"
+    if len(rec):
+        rec["Provider"] = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider) if "provider" in rec.columns else "Unknown"
+
+    def row(label, provider, state, m, r):
+        has_rep = len(r) and "state_source" in r.columns and (r.state_source != "").any()
+        rr = r[r.state_source != ""] if has_rep else r.iloc[0:0]
+        net_pay = m.main_amount.sum(min_count=1) if len(m) else np.nan
+        policy_price = rr.state_revenue.sum(min_count=1) if len(rr) and rr.state_revenue.notna().any() else np.nan
+        if pd.isna(policy_price) and len(m):
+            a = RB.annotate(m, book)
+            policy_price = a.exp_revenue.sum(min_count=1) if a.exp_revenue.notna().any() else np.nan
+        price_diff = net_pay - policy_price if pd.notna(net_pay) and pd.notna(policy_price) else np.nan
+        payments = rr.driver_payment.sum(min_count=1) if len(rr) else np.nan
+        profit = (rr.state_revenue - rr.driver_payment).sum(min_count=1) if len(rr) and rr.state_revenue.notna().any() else np.nan
+        base = rr.state_revenue.sum(min_count=1) if len(rr) else np.nan
+        margin = profit / base * 100 if pd.notna(profit) and pd.notna(base) and base else np.nan
+        above = np.nan; nonconforming = np.nan; policy_profit = np.nan; policy_margin = np.nan; loss = np.nan; not_checked = np.nan
+        if has_rep:
+            try:
+                D = state_report_data(state, main[main.state == state], rec[rec.state == state], book, rate, err)
+                S = SP.state_summary(D, rate, err)
+                above, policy_profit, policy_margin, loss = S["above_trips"], S["profit_policy"], S["margin_policy"], S["above_amount"]
+                not_checked = S["not_checked"]
+                if D.get("paydiff") is not None and len(D.get("paydiff")):
+                    cats = D["paydiff"].Category.astype(str)
+                    nonconforming = int(cats.str.startswith(("ABOVE", "BELOW", "ZERO", "Long trip: needs", "Needs management approval", "City not", "No policy")).sum())
+            except Exception:
+                pass
+        margin_diff = policy_margin - margin if pd.notna(policy_margin) and pd.notna(margin) else np.nan
+        return {"Level": label, "Provider": provider or "All providers", "State": STATE_NAMES.get(state, state) if state else "All states",
+                "Drivers": int(m.driver.nunique()) if len(m) else 0, "Trips": int(len(m)), "Net pay": net_pay,
+                "Price in current policy": policy_price, "Price difference": price_diff, "Driver payments": payments,
+                "Current profit": profit, "Current margin %": margin, "Profit if policy applied": policy_profit,
+                "Margin % in policy": policy_margin, "Margin difference %": margin_diff,
+                "Trips not matching policy": nonconforming, "Trips above policy": above,
+                "Loss from not applying policy": loss, "Trips not checked": not_checked}
+
+    states = sorted(set(main.state.dropna()) | set(rec.state.dropna())) if len(main) or len(rec) else []
+    providers = sorted(set(main.Provider.dropna()) | set(rec.Provider.dropna())) if len(main) or len(rec) else []
+    state_rows = [row("State", p, st, main[(main.Provider == p) & (main.state == st)], rec[(rec.Provider == p) & (rec.state == st)]) for p in providers for st in states if ((main.Provider == p) & (main.state == st)).any() or ((rec.Provider == p) & (rec.state == st)).any()]
+    provider_rows = [row("Provider", p, None, main[main.Provider == p], rec[rec.Provider == p]) for p in providers]
+    company = pd.DataFrame([row("Company", None, None, main, rec)])
+    cols = list(company.columns)
+    return {"company": company, "providers": pd.DataFrame(provider_rows, columns=cols), "states": pd.DataFrame(state_rows, columns=cols)}
+
+
 def policy_financial_table(rec, main=None, book=None, rate=45.0, err=None):
     """One row per state: policy deviations and actual vs policy-applied financials.
 
@@ -530,6 +590,17 @@ def _add_paypol(R_, rec, book):
         R_.table(bs, "Driver pay against the mile bands, by city", font=7, note="Matches band = paid exactly the band pay. ABOVE / BELOW band = paid differently with no approval in the price list. Long trip: needs management approval = beyond the last band with no approved pay.")
         bad = bd[bd.Status.str.startswith(("ABOVE", "BELOW", "Long trip: needs", "ZERO", "Sacramento: pay NOT", "City not"))]
         if len(bad): R_.table(bad.drop(columns=["State"]).head(120), f"Trips that need review ({len(bad)}; first {min(len(bad), 120)})", font=6.5)
+
+
+def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
+    """Summary-only report: company total, provider totals, then state totals."""
+    tabs = consolidated_summary_tables(main, rec, book, rate, err)
+    R_ = Report("Consolidated Provider and State Summary", _period(main))
+    R_.h1("Consolidated provider and state summary")
+    R_.p("Summary only: no trip-level detail is included. First and EverDriven are separated so provider shares and state comparisons remain clear.")
+    for key, title in (("company", "All providers - company total"), ("providers", "Provider totals: First and EverDriven"), ("states", "State totals under each provider")):
+        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="Net pay = provider amount received. Current profit/margin use state-report revenue and driver payments. Policy values show the result if excess policy payments were removed.")
+    return R_.build()
 
 
 def pay_policy_report(rec, book):
