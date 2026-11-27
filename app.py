@@ -113,7 +113,7 @@ with st.sidebar:
     st.subheader("3) Saved driver map (optional)")
     mapfile = st.file_uploader("CSV with columns driver,state", type=["csv"], key="map")
     st.subheader("4) Previous weeks history (optional)")
-    histfile = st.file_uploader("weekly_history.csv saved last time", type=["csv"], key="hist")
+    histfile = st.file_uploader("Upload weekly_history.csv from the previous week", type=["csv"], key="hist")
 if not mfiles:
     st.info("Upload a First or EverDriven report to begin."); st.stop()
 
@@ -223,7 +223,7 @@ try:
     HS.save(hist)
 except Exception as e:
     st.sidebar.warning(f"Weekly history could not be saved automatically: {e}")
-st.sidebar.caption("Weekly history is saved automatically for the next comparison.")
+st.sidebar.caption("The app saves weekly totals during normal reruns. For reliable retention after a cloud restart or redeploy, download weekly_history.csv and upload it again next week.")
 st.sidebar.download_button("⬇️ Download weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
 page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state", "9) Driver report", "10) Consolidated summary"])
 with st.sidebar:
@@ -353,7 +353,7 @@ elif page.startswith("3"):
 # ------------------------------------------------------------------ page 10: consolidated summary
 elif page.startswith("10"):
     st.header("Consolidated company, provider, and state summary")
-    st.caption("Company-wide financial summary. First and EverDriven are shown as separate provider reports, followed by each state's totals. The tables show revenue paid, expected driver payments, amount to request from the provider, shortfall, profit, and margin.")
+    st.caption("Company-wide financial summary. First and EverDriven are separate provider reports. Each state row shows trips, revenue, driver payments, profit, margin, amount to request, and the state's trip/revenue share of its provider total. Weekly comparisons are available in the Weekly comparison report.")
     _sum_tabs = PG.consolidated_summary_tables(main, rec, RB.load(), ak_rate, err_price)
     st.subheader("Company total - First + EverDriven")
     show(_sum_tabs["company"], title="Company consolidated summary")

@@ -492,7 +492,46 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
     provider_rows = [row("Provider", p, None, main[main.Provider == p], rec[rec.Provider == p]) for p in providers]
     company = pd.DataFrame([row("Company", None, None, main, rec)])
     cols = list(company.columns)
-    return {"company": company, "providers": pd.DataFrame(provider_rows, columns=cols), "states": pd.DataFrame(state_rows, columns=cols)}
+
+    # Keep the executive report readable: diagnostics remain available in the
+    # detailed state/Excel reports, while this table contains only management
+    # KPIs and provider-relative shares.
+    def compact(rows, company_row=False):
+        d = pd.DataFrame(rows, columns=cols)
+        if d.empty: return d
+        denom_trips = float(d["Trips"].sum()) if company_row else np.nan
+        denom_rev = pd.to_numeric(d["Expected revenue / amount to request"], errors="coerce").sum(min_count=1) if company_row else np.nan
+        if not company_row:
+            p_trips = d.groupby("Provider")["Trips"].transform("sum")
+            p_rev = d.groupby("Provider")["Expected revenue / amount to request"].transform("sum")
+        else:
+            p_trips = pd.Series(denom_trips, index=d.index)
+            p_rev = pd.Series(denom_rev, index=d.index)
+        rev = pd.to_numeric(d["Expected revenue / amount to request"], errors="coerce")
+        out = pd.DataFrame({
+            "Provider": d["Provider"],
+            "State": d["State"],
+            "Trips": d["Trips"],
+            "Trips % of provider": d["Trips"] / p_trips * 100,
+            "Revenue": rev,
+            "Revenue % of provider": rev / p_rev * 100,
+            "Driver payments": d["Expected driver payments"],
+            "Profit": d["Current profit"],
+            "Margin %": d["Current margin %"],
+            "Amount to request from provider": d["Amount to request from provider"],
+            "Policy loss": d["Loss from not applying policy"],
+        })
+        return out
+
+    # Provider rows are the denominator for state percentages.
+    providers_compact = compact(provider_rows, company_row=False)
+    states_compact = compact(state_rows, company_row=False)
+    company_compact = compact([row("Company", None, None, main, rec)], company_row=True)
+    if len(company_compact):
+        company_compact["State"] = "All states"
+        company_compact["Trips % of provider"] = 100.0
+        company_compact["Revenue % of provider"] = 100.0
+    return {"company": company_compact, "providers": providers_compact, "states": states_compact}
 
 
 def policy_financial_table(rec, main=None, book=None, rate=45.0, err=None):
@@ -644,7 +683,7 @@ def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
                  "Loss from not applying policy": x.get("Loss from not applying policy", np.nan)})
     R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated into clearly named provider reports. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to provider revenue.")
     for key, title in (("company", "Company total - First + EverDriven"), ("providers", "Provider reports - First and EverDriven"), ("states", "State totals within each provider report")):
-        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="Revenue paid by provider = actual First/EverDriven payment. Expected revenue / amount to request = the state-report or current-policy amount. Expected driver payments = the amount paid to drivers. Amount to request from provider = positive unpaid shortfall only. Current profit = expected revenue minus driver payments; margin = profit divided by expected revenue.")
+        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="This is an executive summary, not a trip list. Revenue = state-report/current-policy revenue used for the financial result. Driver payments = expected payments to drivers. Amount to request from provider = positive unpaid shortfall only. Trips % of provider and Revenue % of provider compare each First state with First total, and each EverDriven state with EverDriven total. Current profit = revenue minus driver payments; margin = profit divided by revenue.")
     p = tabs["providers"].copy()
     if len(p) and "Amount to request from provider" in p.columns:
         p = p[["Provider", "Amount to request from provider"]].dropna()
