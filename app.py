@@ -232,6 +232,12 @@ with st.sidebar:
     pdf_button("MASTER report (everything in one file)", "master", lambda: PG.master_report(main, rec, hist, RB.load(), rate=ak_rate, err=err_price, adjustments=res.adjustments))
     pdf_button("Consolidated summary (company / provider / state)", "consolidated_summary", lambda: PG.consolidated_summary_report(main, rec, RB.load(), ak_rate, err_price))
     if has_state: pdf_button("State report - 3 tables", "state_three_tables", lambda: PG.state_three_table_report(main, rec, RB.load(), ak_rate, err_price))
+    if has_state:
+        st.caption("Individual state reports")
+        for _code in sorted(rec[rec.state_source != ""].state.dropna().unique()):
+            _state_name = STATE_NAMES.get(_code, _code)
+            pdf_button(f"{_state_name} state report", f"state_{_code.replace('.', '_')}",
+                       lambda c=_code: PG.state_full_report_long(c, main, rec, hist, RB.load(), rate=ak_rate, err=err_price))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
@@ -261,12 +267,6 @@ if page.startswith("1"):
     st.subheader("Price check against contract prices (rate book)")
     st.caption("Contract price per route is learned from earlier state reports (same route; otherwise same state and miles). Cancelled / $0 trips are excluded. Alaska: only the error-price trips are claimed.")
     show(pcs, title="Price check against contract prices")
-    _policy_prices, _policy_price_detail = PP.price_list_check(main)
-    if len(_policy_prices):
-        st.subheader("Provider price vs official policy price (by state)")
-        st.caption("The summary is grouped by state, not city. Exception detail keeps city, route, miles, Spiff, and a reason-to-review so a changed address/district or route is not mistaken for a pricing error.")
-        show(_policy_prices, title="Provider price vs official policy price")
-        if len(_policy_price_detail): show(_policy_price_detail, 400, title="Provider price differences vs official policy")
     # Claims metrics must use unique detail trips only; TOTAL is a display row, never a trip.
     _claim_detail = pcd.copy() if pcd is not None else pd.DataFrame()
     if len(_claim_detail) and "State" in _claim_detail.columns:
@@ -288,7 +288,7 @@ if page.startswith("1"):
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State)); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": _claim_detail, "Official policy prices": _policy_prices, "Policy price detail": _policy_price_detail, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": _claim_detail, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
     pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state), rec=rec))

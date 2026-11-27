@@ -434,64 +434,38 @@ def states_financial_report(rec, main=None):
 
 
 def state_three_table_report(main, rec, book=None, rate=45.0, err=None):
-    """Compact state report with exactly three management tables.
-
-    This intentionally uses the established state_report_data/state_summary path
-    that produced the historical correct numbers, rather than the newer policy
-    dashboard aggregation path that could turn missing joins into zeroes.
-    """
-    import ratebook as RB
-    import simple_pdf as SP
-    book = book if book is not None else RB.load()
+    """One visible management report with exactly three tables."""
     R_ = Report("State Report - three management tables", _period(rec if rec is not None and len(rec) else main))
-    R_.h1("State report: financials, claims, and pricing-policy impact")
-    R_.p("All amounts are USD. Each section ends with one TOTAL row. Missing values are shown as n/a; they are not converted to zero.")
+    R_.h1("State report: provider totals, state financials, and price differences")
+    R_.p("All amounts are USD. Financial revenue uses the agreed price when available. Missing values are shown as n/a; they are not converted to zero.")
 
-    # Table 1: actual state financials from uploaded state reports.
+    tabs = consolidated_summary_tables(main, rec)
+    providers = tabs.get("providers", pd.DataFrame()).copy()
+    if len(providers):
+        keep = [c for c in ["Provider", "Trips", "Revenue", "Driver payments", "Profit", "Margin %"] if c in providers.columns]
+        R_.table(providers[keep], "1. Provider totals (First and EverDriven)", font=7.5,
+                 note="One row per provider; this table is the provider-level total used for the state review.")
+    else:
+        R_.p("No provider totals were calculated.")
+
     fin = SR.state_financials(rec) if rec is not None and len(rec) else pd.DataFrame()
-    if fin.empty:
+    if len(fin):
+        cols = ["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]
+        R_.table(fin[cols], "2. State financial report", font=7.5,
+                 note="State name, trips, agreed-price revenue, payments, profit, and margin. The final row is the total.")
+    else:
         R_.p("No state-report financial records were uploaded.")
-    else:
-        R_.table(fin[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]], "1. State financial summary", font=7.5,
-                 note="Revenue uses the agreed price when available. Driver Payments include driver and monitor payments; Profit = Revenue minus payments; Margin = Profit divided by Revenue.")
 
-    codes = [c for c in report_states(main, rec) if c not in ("Unassigned", "NEEDS REVIEW", "")]
-    claim_rows, policy_rows = [], []
-    for code in codes:
-        D = state_report_data(code, main, rec, book, rate, err)
-        if not D.get("has_rep"):
-            continue
-        S = SP.state_summary(D, rate, err)
-        provider = D.get("fp") or provider_of(code)
-        claim_rows.append({"State": D["name"], "Provider": provider, "Claim trips": S["claim_trips"], "Claim amount": S["claim_amount"]})
-        policy_rows.append({"State": D["name"], "Policy basis": "official policy / stable route pay", "Trips checked": int(S.get("trips") or 0) - int(S.get("not_checked") or 0),
-                            "Trips not verifiable": int(S.get("not_checked") or 0), "Trips not compliant": int(S.get("above_trips") or 0),
-                            "Policy loss": S.get("above_amount"), "Actual profit": S.get("profit"), "Profit if policy applied": S.get("profit_policy"),
-                            "Actual margin %": S.get("margin"), "Margin if policy applied %": S.get("margin_policy")})
-
-    claims = pd.DataFrame(claim_rows)
-    if claims.empty:
-        R_.p("No state-report claims were calculated.")
+    diff = SR.discrepancy_summary(rec) if rec is not None and len(rec) else pd.DataFrame()
+    if len(diff):
+        cols = [c for c in ["State", "Trips with price difference", "Total difference (First - State)",
+                            "Trips in First but not in state report", "Their First revenue",
+                            "Trips in state report but not in First", "Their state revenue",
+                            "Their driver payments"] if c in diff.columns]
+        R_.table(diff[cols], "3. Price differences / shortages by state", font=6.5,
+                 note="The difference is First/EverDriven revenue minus the agreed state-report revenue. Negative values indicate a shortage paid by the provider.")
     else:
-        total = {"State": "TOTAL", "Provider": "All", "Claim trips": claims["Claim trips"].sum(), "Claim amount": claims["Claim amount"].sum()}
-        claims = pd.concat([claims, pd.DataFrame([total])], ignore_index=True)
-        R_.table(claims, "2. Claims by state and provider", font=7.5,
-                 note="Claim amount is calculated from the established claim rules and is shown separately for First or EverDriven.")
-
-    policy = pd.DataFrame(policy_rows)
-    if policy.empty:
-        R_.p("No policy rows could be checked from the uploaded state reports.")
-    else:
-        total = {"State": "TOTAL", "Policy basis": "All states", "Trips checked": policy["Trips checked"].sum(), "Trips not verifiable": policy["Trips not verifiable"].sum(),
-                 "Trips not compliant": policy["Trips not compliant"].sum(), "Policy loss": policy["Policy loss"].sum(), "Actual profit": policy["Actual profit"].sum(),
-                 "Profit if policy applied": policy["Profit if policy applied"].sum(), "Actual margin %": np.nan, "Margin if policy applied %": np.nan}
-        gross = fin[fin.State != "TOTAL"]["Revenue"].sum() if len(fin) and "Revenue" in fin else np.nan
-        if pd.notna(gross) and gross:
-            total["Actual margin %"] = total["Actual profit"] / gross * 100
-            total["Margin if policy applied %"] = total["Profit if policy applied"] / gross * 100
-        policy = pd.concat([policy, pd.DataFrame([total])], ignore_index=True)
-        R_.table(policy, "3. Pricing-policy non-compliance and financial impact", font=6.5,
-                 note="Trips not verifiable are not counted as compliant. Policy loss is excess driver payment above the applicable policy; the projected profit and margin show the result if that loss had not occurred.")
+        R_.p("No price differences were found.")
     return R_.build()
 
 
