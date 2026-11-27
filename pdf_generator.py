@@ -194,7 +194,9 @@ class Report:
         if title: self.h2(title)
         if df is None or len(df) == 0: self.p("No records in this scope."); return
         # Every numeric report table ends with a visible TOTAL row; percentages are not summed.
-        df = SR.ensure_total(df)
+        total_helper = getattr(SR, "ensure_total", None)
+        if callable(total_helper):
+            df = total_helper(df)
         self.story.append(df_table(df, self.width, font or (6.5 if len(df.columns) > 9 else 7.5)))
         txt = note if note is not None else explain_for(title)
         if txt: self.story += [Spacer(1, 2), Paragraph("<i>What this table shows:</i> " + txt, EXP), Spacer(1, 4)]

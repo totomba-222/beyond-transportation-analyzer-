@@ -37,10 +37,29 @@ section[data-testid='stSidebar'] *{color:white}
 """, unsafe_allow_html=True)
 
 
+def _display_total(df):
+    """Keep the app compatible with older simple_reports.py deployments."""
+    if df is None or len(df) == 0:
+        return df
+    helper = getattr(SR, "ensure_total", None)
+    if callable(helper):
+        return helper(df)
+    labels = df.iloc[:, 0].astype(str).str.strip().str.upper()
+    if labels.isin(["TOTAL", "GRAND TOTAL"]).any():
+        return df.reset_index(drop=True)
+    row = {c: None for c in df.columns}
+    row[df.columns[0]] = "TOTAL"
+    for c in df.columns[1:]:
+        if pd.api.types.is_numeric_dtype(df[c]):
+            lc = str(c).lower()
+            row[c] = 100.0 if "%" in lc and (lc.endswith("%") or "share" in lc) else (None if "%" in lc else df[c].sum(min_count=1))
+    return pd.concat([df.reset_index(drop=True), pd.DataFrame([row])], ignore_index=True)
+
+
 def show(df, height=None, title=None):
     # Keep TOTAL rows and add one when a numeric report has none. Totals are never detail trips.
     if df is not None and len(df):
-        df = SR.ensure_total(df)
+        df = _display_total(df)
     if df is None or len(df) == 0:
         st.info("No records."); return
     cfg = {}
