@@ -369,7 +369,7 @@ elif page.startswith("10"):
     if len(_sum_tabs["states"]):
         _schart = _sum_tabs["states"].copy()
         _schart["Provider / State"] = _schart["Provider"].astype(str) + " / " + _schart["State"].astype(str)
-        _schart = _schart[["Provider / State", "Loss from not applying policy"]].dropna().set_index("Provider / State")
+        _schart = _schart[["Provider / State", "Policy loss"]].dropna().set_index("Provider / State")
         if len(_schart):
             st.subheader("Potential lost profit from paying above policy")
             st.bar_chart(_schart)
@@ -426,33 +426,27 @@ elif page.startswith("6"):
 elif page.startswith("7"):
     st.header("Driver pay policy review")
     if not has_state: st.info("Upload the state reports to review driver payments."); st.stop()
-    _book = RB.load(); ps, pover, ploss = SR.pay_check(rec, _book)
-    st.caption("Policy = the official state pricing rule or the stable pay for the same route in >=80% of earlier trips (minimum 3). The report separates nonconforming trips, excess payment loss, and actual vs policy-applied profit and margin.")
-    _policy_fin = PG.policy_financial_table(rec, main, _book, ak_rate, err_price)
-    if len(_policy_fin):
-        st.subheader("Policy deviations and financial impact")
-        show(_policy_fin, title="Policy deviations and financial impact")
-        _above_trips = int(_policy_fin["Trips paid above policy"].sum())
-        _loss = float(_policy_fin["Excess payment / loss"].sum())
-        _profit = float(_policy_fin["Actual profit"].sum(min_count=1))
-        _profit_policy = float(_policy_fin["Profit if policy applied"].sum(min_count=1))
-        _base = float(rec[rec.state_source != ""].state_revenue.sum(min_count=1))
-        _margin = _profit / _base * 100 if _base else float("nan")
-        _margin_policy = _profit_policy / _base * 100 if _base else float("nan")
-        _c = st.columns(5)
-        _c[0].metric("Trips not matching policy", f"{int(_policy_fin['Trips not matching policy'].sum()):,}")
-        _c[1].metric("Trips paid above policy", f"{_above_trips:,}")
-        _c[2].metric("Loss from not applying policy", money(_loss))
-        _c[3].metric("Profit if policy applied", money(_profit_policy))
-        _c[4].metric("Margin if policy applied", f"{_margin_policy:.1f}%" if pd.notna(_margin_policy) else "n/a")
-        st.caption(f"Actual profit: {money(_profit)} | Actual margin: {_margin:.1f}%" if pd.notna(_margin) else f"Actual profit: {money(_profit)} | Actual margin: n/a")
-    show(ps)
-    if len(ps): st.metric("Total excess pay above learned route policy", money(ps["Total excess pay"].sum()))
-    for code in pover.State.unique():
-        d_ = pover[pover.State == code]
-        with st.expander(f"{code}: {len(d_)} trips paid above the pay policy (excess {money(d_['Excess pay'].sum())})"): show(d_.drop(columns=["State"]))
-    if len(ploss):
-        with st.expander(f"Trips where the driver was paid more than the trip revenue ({len(ploss)})"): show(ploss.drop(columns=["State source"]))
+    _book = RB.load()
+    _policy_detail, _policy_summary, _pk = SR.policy_compliance_report(rec, _book)
+    st.caption("One rule is used everywhere: COMPLIANT requires a known policy price and an equal Net Pay. NON_COMPLIANT means a real difference. NOT_VERIFIABLE means the policy or required route/mileage input is missing; it is never counted as compliant. Gross Pay = state-report revenue; Net Pay = current driver payment.")
+    _c = st.columns(7)
+    _c[0].metric("Trips checked", f"{_pk['Trips']:,}")
+    _c[1].metric("Compliant", f"{_pk['Compliant']:,}")
+    _c[2].metric("Non-compliant", f"{_pk['Non-compliant']:,}")
+    _c[3].metric("Not verifiable", f"{_pk['Not verifiable']:,}")
+    _c[4].metric("Loss from non-compliance", money(_pk['Loss']))
+    _c[5].metric("Actual margin", f"{_pk.get('Actual margin %', float('nan')):.1f}%" if pd.notna(_pk.get('Actual margin %')) else "n/a")
+    _c[6].metric("Projected margin", f"{_pk.get('Projected margin %', float('nan')):.1f}%" if pd.notna(_pk.get('Projected margin %')) else "n/a")
+    st.subheader("Policy compliance by state")
+    show(_policy_summary, title="Policy compliance by state")
+    st.subheader("Trip-by-trip policy decision")
+    show(_policy_detail, 500, title="Trip-by-trip policy compliance")
+    _non = _policy_detail[_policy_detail.Status == "NON_COMPLIANT"] if len(_policy_detail) else _policy_detail
+    if len(_non):
+        with st.expander(f"Non-compliant trips ({len(_non):,})", expanded=True): show(_non, 500)
+    _nv = _policy_detail[_policy_detail.Status == "NOT_VERIFIABLE"] if len(_policy_detail) else _policy_detail
+    if len(_nv):
+        with st.expander(f"Not verifiable - not counted as compliant ({len(_nv):,})"): show(_nv, 500)
     with st.expander("Pay policy table (every route with a stable policy)"): show(SR.pay_policy_table(_book), 400)
     _bs, _bd = PP.band_check(rec, _book)
     if len(_bs):
@@ -462,7 +456,7 @@ elif page.startswith("7"):
         _bad = _bd[_bd.Status.str.startswith(("ABOVE", "BELOW", "Long trip: needs", "ZERO", "Sacramento: pay NOT", "City not"))]
         with st.expander(f"Trips that need review ({len(_bad):,})", expanded=len(_bad) > 0): show(_bad, 400)
         with st.expander("Mile bands"): show(PP.bands_table())
-    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Policy financial impact": _policy_fin, "Summary": ps, "Above policy": pover, "Above revenue": ploss, "Pay policy": SR.pay_policy_table(_book), "N.CA mile bands": _bs, "N.CA band detail": _bd}), "Pay_Policy_Review.xlsx", XLSX)
+    st.download_button("⬇️ Excel (pay policy review)", EG.build_workbook({"Policy compliance": _policy_summary, "Trip decisions": _policy_detail, "Non-compliant": _non, "Not verifiable": _nv, "Pay policy": SR.pay_policy_table(_book), "N.CA mile bands": _bs, "N.CA band detail": _bd}), "Pay_Policy_Review.xlsx", XLSX)
     pdf_button("Driver pay policy review", "paypol", lambda: PG.pay_policy_report(rec, _book))
 
 

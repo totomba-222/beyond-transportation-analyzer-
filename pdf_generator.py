@@ -445,6 +445,13 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
         rec["Provider"] = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider)
     elif "Provider" not in rec.columns:
         rec["Provider"] = "Unknown"
+    # State reports often do not carry a provider column. Assign those rows
+    # from the state ownership rule so they cannot become a blank/Company row.
+    if len(rec) and "state" in rec.columns:
+        rec["Provider"] = rec.apply(
+            lambda x: x["Provider"] if str(x["Provider"]).strip().casefold() in {"first", "everdriven"}
+            else provider_of(x["state"]), axis=1
+        )
 
     def row(label, provider, state, m, r):
         has_rep = len(r) and "state_source" in r.columns and (r.state_source != "").any()
@@ -487,7 +494,7 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
                 "Loss from not applying policy": loss, "Trips not checked": not_checked}
 
     states = sorted(set(main.state.dropna()) | set(rec.state.dropna())) if len(main) or len(rec) else []
-    providers = sorted(set(main.Provider.dropna()) | set(rec.Provider.dropna())) if len(main) or len(rec) else []
+    providers = sorted((set(main.Provider.dropna()) | set(rec.Provider.dropna())) - {"", "Unknown", "Company (First + EverDriven)"}) if len(main) or len(rec) else []
     state_rows = [row("State", p, st, main[(main.Provider == p) & (main.state == st)], rec[(rec.Provider == p) & (rec.state == st)]) for p in providers for st in states if ((main.Provider == p) & (main.state == st)).any() or ((rec.Provider == p) & (rec.state == st)).any()]
     provider_rows = [row("Provider", p, None, main[main.Provider == p], rec[rec.Provider == p]) for p in providers]
     company = pd.DataFrame([row("Company", None, None, main, rec)])
@@ -640,19 +647,16 @@ def monthly_comparison_report(h, m1, m2):
 
 
 def _add_paypol(R_, rec, book):
-    R_.h1("Driver pay policy review: payments above the usual pay for the same route")
-    s, over, loss = SR.pay_check(rec, book)
-    if s.empty: R_.p("No state reports with driver payments uploaded."); return
-    R_.p("Policy = the pay that was paid for the same route in at least 80% of earlier trips (minimum 3). The route of each trip comes from the First / EverDriven report. "
-         "Trips whose route has no stable policy yet are not judged.")
-    pf = policy_financial_table(rec, book=book)
-    if len(pf):
-        R_.table(pf, "Policy deviations and financial impact", font=7,
-                 note="Excess payment / loss is the additional driver payment above policy. Profit and margin if policy applied keep state-report revenue unchanged.")
-    R_.table(s, "Summary by state", font=7)
-    for code in over.State.unique():
-        d = over[over.State == code].drop(columns=["State", "State source"]); R_.table(d, f"{code} - trips paid above the pay policy ({len(d)} trips, excess {usd(d['Excess pay'].sum())})", font=6.5)
-    if len(loss): R_.table(loss.drop(columns=["State source", "Pay policy"]).rename(columns={"Excess pay": "Pay above revenue"}), "Trips where the driver was paid more than the trip revenue", font=6.5)
+    R_.h1("Driver pay policy review: auditable compliance and financial impact")
+    detail, summary, k = SR.policy_compliance_report(rec, book)
+    if summary.empty: R_.p("No state reports with driver payments and policy inputs uploaded."); return
+    R_.p("COMPLIANT requires a known policy price and equal Net Pay. NON_COMPLIANT is a real difference. NOT_VERIFIABLE means the policy or required route/mileage input is missing and is never counted as compliant. Gross Pay = state-report revenue; Net Pay = current driver payment.")
+    R_.kpis({"Trips checked": k["Trips"], "Compliant": k["Compliant"], "Non-compliant": k["Non-compliant"], "Not verifiable": k["Not verifiable"], "Loss from non-compliance": k["Loss"], "Actual margin %": k.get("Actual margin %", np.nan), "Projected margin %": k.get("Projected margin %", np.nan)})
+    R_.table(summary, "Policy compliance by state", font=6.5)
+    non = detail[detail.Status == "NON_COMPLIANT"]
+    nv = detail[detail.Status == "NOT_VERIFIABLE"]
+    if len(non): R_.table(non, f"Non-compliant trips ({len(non)})", font=6.5, note="Difference = Net Pay minus Policy Trip Price. Positive differences are counted as excess payment loss.")
+    if len(nv): R_.table(nv, f"Not verifiable - not counted as compliant ({len(nv)})", font=6.5)
     import pay_policy as PP
     bs, bd = PP.band_check(rec, book)
     if len(bs):
@@ -675,12 +679,11 @@ def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
     c = tabs["company"]
     if len(c):
         x = c.iloc[0]
-        R_.kpis({"Trips": x.get("Trips", np.nan), "Revenue paid by provider": x.get("Revenue paid by provider", np.nan),
+        R_.kpis({"Trips": x.get("Trips", np.nan), "Revenue": x.get("Revenue", np.nan),
+                 "Driver payments": x.get("Driver payments", np.nan),
+                 "Profit": x.get("Profit", np.nan), "Margin %": x.get("Margin %", np.nan),
                  "Amount to request from provider": x.get("Amount to request from provider", np.nan),
-                 "Expected driver payments": x.get("Expected driver payments", np.nan),
-                 "Spiff": x.get("Spiff", np.nan), "Current profit": x.get("Current profit", np.nan),
-                 "Current margin %": x.get("Current margin %", np.nan),
-                 "Loss from not applying policy": x.get("Loss from not applying policy", np.nan)})
+                 "Policy loss": x.get("Policy loss", np.nan)})
     R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated into clearly named provider reports. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to provider revenue.")
     for key, title in (("company", "Company total - First + EverDriven"), ("providers", "Provider reports - First and EverDriven"), ("states", "State totals within each provider report")):
         if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="This is an executive summary, not a trip list. Revenue = state-report/current-policy revenue used for the financial result. Driver payments = expected payments to drivers. Amount to request from provider = positive unpaid shortfall only. Trips % of provider and Revenue % of provider compare each First state with First total, and each EverDriven state with EverDriven total. Current profit = revenue minus driver payments; margin = profit divided by revenue.")
@@ -689,10 +692,10 @@ def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
         p = p[["Provider", "Amount to request from provider"]].dropna()
         if len(p): R_.chart(p, "Provider", ["Amount to request from provider"], "Amount to request from each provider")
     s = tabs["states"].copy()
-    if len(s) and "Loss from not applying policy" in s.columns:
+    if len(s) and "Policy loss" in s.columns:
         s["Label"] = s["Provider"].astype(str) + " - " + s["State"].astype(str)
-        s = s[["Label", "Loss from not applying policy"]].dropna()
-        if len(s): R_.chart(s, "Label", ["Loss from not applying policy"], "Potential lost profit from paying above policy by provider/state")
+        s = s[["Label", "Policy loss"]].dropna()
+        if len(s): R_.chart(s, "Label", ["Policy loss"], "Potential lost profit from paying above policy by provider/state")
     return R_.build()
 
 

@@ -521,6 +521,66 @@ def pay_check(rec, book, tol=0.005):
     return t, mk(over), mk(loss.assign(excess=loss.driver_payment - loss.state_revenue))
 
 
+def policy_compliance_report(rec, book, tol=0.005):
+    """One auditable pricing-policy decision for every checkable driver-payment trip.
+
+    Missing policy inputs are NOT_VERIFIABLE, never COMPLIANT. Gross Pay is
+    state-report revenue, Net Pay is the current driver payment, and the
+    difference is Net Pay minus Policy Trip Price.
+    """
+    import pay_policy as PP
+    cols = ["State", "Date", "Driver", "Trip Name", "Gross Pay", "Net Pay", "Policy Trip Price", "Difference", "Status", "Reason"]
+    base = rec[(rec.state_source != "") & rec.driver_payment.notna() &
+               (rec.audit_status != "MONITOR PAYMENT") & rec.trip_name.fillna("").ne("")].copy()
+    _, raw = PP.band_check(base, book)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=cols), pd.DataFrame(), {"Trips": 0, "Compliant": 0, "Non-compliant": 0, "Not verifiable": 0, "Loss": 0.0}
+    d = raw.copy()
+    d["Gross Pay"] = pd.to_numeric(d["Trip revenue"], errors="coerce")
+    d["Net Pay"] = pd.to_numeric(d["Driver pay"], errors="coerce")
+    d["Policy Trip Price"] = pd.to_numeric(d["Policy pay"], errors="coerce")
+    d["Difference"] = d["Net Pay"] - d["Policy Trip Price"]
+    old = d["Status"].astype(str)
+    approved = old.str.startswith(("Approved exception", "Allowed exception", "Matches policy", "Matches route policy", "Matches band", "Matches route", "Matches"))
+    no_policy = old.str.startswith(("No policy", "City not", "Long trip: needs", "ZERO", "No driver", "Sacramento: pay NOT"))
+    comparable = d["Policy Trip Price"].notna() & d["Net Pay"].notna()
+    equal = comparable & d["Difference"].abs().le(tol)
+    d["Status"] = np.where(no_policy | ~comparable, "NOT_VERIFIABLE", np.where(equal | approved, "COMPLIANT", "NON_COMPLIANT"))
+    d["Reason"] = np.select(
+        [d.Status.eq("COMPLIANT") & approved & ~equal, d.Status.eq("COMPLIANT"), d.Status.eq("NON_COMPLIANT"), d.Status.eq("NOT_VERIFIABLE")],
+        ["Approved exception in policy", "Net Pay equals Policy Trip Price", "Net Pay differs from Policy Trip Price", "Policy price or required route/mileage input is missing"], default="")
+    d["State"] = d["State"].map(_nm)
+    detail = d[cols].sort_values(["State", "Status", "Date", "Driver"], na_position="last").reset_index(drop=True)
+    rows = []
+    for state, g in detail.groupby("State", dropna=False):
+        non = g[g.Status == "NON_COMPLIANT"]
+        loss = non["Difference"].clip(lower=0).sum()
+        gross = g["Gross Pay"].sum(min_count=1)
+        rows.append({"State": state, "Trips checked": len(g), "Compliant": int((g.Status == "COMPLIANT").sum()),
+                     "Non-compliant": int((g.Status == "NON_COMPLIANT").sum()), "Not verifiable": int((g.Status == "NOT_VERIFIABLE").sum()),
+                     "Coverage %": (g.Status != "NOT_VERIFIABLE").mean() * 100, "Non-compliant %": (g.Status == "NON_COMPLIANT").mean() * 100,
+                     "Gross Pay": gross, "Net Pay": g["Net Pay"].sum(min_count=1), "Policy Pay": g["Policy Trip Price"].sum(min_count=1),
+                     "Difference": g["Difference"].sum(min_count=1), "Loss from non-compliance": loss,
+                     "Loss % of Gross Pay": loss / gross * 100 if gross else np.nan})
+    summary = pd.DataFrame(rows)
+    if len(summary):
+        gross = summary["Gross Pay"].sum(); loss = summary["Loss from non-compliance"].sum(); n = summary["Trips checked"].sum()
+        total = {"State": "TOTAL", "Trips checked": summary["Trips checked"].sum(), "Compliant": summary.Compliant.sum(), "Non-compliant": summary["Non-compliant"].sum(), "Not verifiable": summary["Not verifiable"].sum(),
+                 "Coverage %": (summary.Compliant.sum() + summary["Non-compliant"].sum()) / n * 100 if n else np.nan, "Non-compliant %": summary["Non-compliant"].sum() / n * 100 if n else np.nan,
+                 "Gross Pay": gross, "Net Pay": summary["Net Pay"].sum(), "Policy Pay": summary["Policy Pay"].sum(), "Difference": summary["Difference"].sum(),
+                 "Loss from non-compliance": loss, "Loss % of Gross Pay": loss / gross * 100 if gross else np.nan}
+        summary = pd.concat([summary.sort_values("Gross Pay", ascending=False), pd.DataFrame([total])], ignore_index=True)
+    gross_all = pd.to_numeric(rec.state_revenue, errors="coerce").sum(min_count=1)
+    pay_all = pd.to_numeric(rec.driver_payment, errors="coerce").sum(min_count=1)
+    actual = gross_all - pay_all if pd.notna(gross_all) and pd.notna(pay_all) else np.nan
+    loss = detail.loc[detail.Status == "NON_COMPLIANT", "Difference"].clip(lower=0).sum()
+    kpis = {"Trips": len(detail), "Compliant": int((detail.Status == "COMPLIANT").sum()), "Non-compliant": int((detail.Status == "NON_COMPLIANT").sum()), "Not verifiable": int((detail.Status == "NOT_VERIFIABLE").sum()),
+            "Loss": float(loss), "Gross Pay": gross_all, "Actual profit": actual, "Projected profit": actual + loss if pd.notna(actual) else np.nan,
+            "Actual margin %": actual / gross_all * 100 if gross_all else np.nan, "Projected margin %": (actual + loss) / gross_all * 100 if gross_all else np.nan,
+            "Loss % of Gross Pay": loss / gross_all * 100 if gross_all else np.nan}
+    return detail, summary, kpis
+
+
 def claim_tables(det):
     """Alaska-style claim for ONE state from the price-check detail: (by price, by driver). Same columns as the Alaska claim."""
     if det is None or det.empty: return pd.DataFrame(), pd.DataFrame()
