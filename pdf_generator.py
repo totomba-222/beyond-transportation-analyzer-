@@ -371,7 +371,7 @@ def _add_states(R_, rec, main=None):
     R_.p("Executive summary only: one row per state plus a TOTAL row. Trip-level rows are not included here.")
     t = SR.state_financials(rec)
     if t.empty: R_.p("No state reports uploaded."); return
-    R_.table(t[["State", "Trips", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]], "State reports: paid vs agreed revenue, profit and margin")
+    R_.table(t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]], "State reports: revenue, payments, profit and margin")
     if main is not None and len(main):
         tabs = consolidated_summary_tables(main, rec)
         p = tabs.get("providers", pd.DataFrame()).copy()
@@ -452,8 +452,8 @@ def state_three_table_report(main, rec, book=None, rate=45.0, err=None):
     if fin.empty:
         R_.p("No state-report financial records were uploaded.")
     else:
-        R_.table(fin[["State", "Trips", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]], "1. State financial summary", font=7.5,
-                 note="Paid Revenue is the original Revenue amount from the state report. Agreed Revenue uses the agreed price when available. Driver Payments include driver and monitor payments. Profit and Margin are shown under both price bases.")
+        R_.table(fin[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]], "1. State financial summary", font=7.5,
+                 note="Revenue uses the agreed price when available. Driver Payments include driver and monitor payments; Profit = Revenue minus payments; Margin = Profit divided by Revenue.")
 
     codes = [c for c in report_states(main, rec) if c not in ("Unassigned", "NEEDS REVIEW", "")]
     claim_rows, policy_rows = [], []
@@ -808,7 +808,12 @@ def state_full_report_long(code, main, rec, hist, book, rate=45.0, err=None, wee
          if has_rep else "<b>No state report was uploaded for this state yet</b>, so driver payments, profit and the differences below cannot be calculated. The estimate and the price check use earlier weeks' rates.")
     R_.section("L"); R_.h1("1. Financial performance")
     if has_rep:
-        R_.table(f[f.State == nm], "Financial performance (state report)")
+        fin_view = f[f.State == nm]
+        if code == "AK":
+            cols = ["State", "Trips", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]
+            R_.table(fin_view[cols], "Financial performance (Alaska: paid vs agreed)", note="Alaska only: the table compares the original paid price with the agreed price, including profit and margin under both prices.")
+        else:
+            R_.table(fin_view[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]], "Financial performance (state report)")
         nopay = rs[rs.state_revenue.notna() & rs.driver_payment.isna() & (rs.audit_status != "MONITOR PAYMENT")]
         if len(nopay): R_.p(f"<b>Note:</b> {len(nopay)} trips with revenue {usd(nopay.state_revenue.sum())} have no driver payment in the state report; their revenue is counted fully as profit.")
         d = FC.driver_table(rs, code).drop(columns=["Rows missing revenue/payment"], errors="ignore"); R_.table(d, "Driver performance", font=7)

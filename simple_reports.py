@@ -77,11 +77,15 @@ def state_trip_detail(rec, code):
     if "state_paid_revenue" not in d.columns: d["state_paid_revenue"] = np.nan
     if "state_agreed_price" not in d.columns: d["state_agreed_price"] = d["state_revenue"]
     out = d[["date", "driver", "trip_name", "main_miles", "main_revenue", "state_paid_revenue", "state_agreed_price", "state_revenue", "driver_payment", "profit", "margin_pct", "audit_status", "state_source"]].copy()
-    out["Profit (Paid)"] = out["state_paid_revenue"] - out["driver_payment"]
-    out["Margin % (Paid)"] = out["Profit (Paid)"] / out["state_paid_revenue"] * 100
-    out["Profit (Agreed)"] = out["state_agreed_price"] - out["driver_payment"]
-    out["Margin % (Agreed)"] = out["Profit (Agreed)"] / out["state_agreed_price"] * 100
-    out.columns = ["Date", "Driver", "Trip Name", "Miles", "First Revenue", "Paid Price", "Agreed Price", "State Revenue Used", "Driver Payment", "Profit", "Margin %", "Status", "State source", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]
+    if str(code).upper() == "AK":
+        out["Profit (Paid)"] = out["state_paid_revenue"] - out["driver_payment"]
+        out["Margin % (Paid)"] = out["Profit (Paid)"] / out["state_paid_revenue"] * 100
+        out["Profit (Agreed)"] = out["state_agreed_price"] - out["driver_payment"]
+        out["Margin % (Agreed)"] = out["Profit (Agreed)"] / out["state_agreed_price"] * 100
+        out.columns = ["Date", "Driver", "Trip Name", "Miles", "First Revenue", "Paid Price", "Agreed Price", "State Revenue Used", "Driver Payment", "Profit", "Margin %", "Status", "State source", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]
+    else:
+        out = out[["date", "driver", "trip_name", "main_miles", "main_revenue", "state_revenue", "driver_payment", "profit", "margin_pct", "audit_status", "state_source"]]
+        out.columns = ["Date", "Driver", "Trip Name", "Miles", "First Revenue", "State Revenue Used", "Driver Payment", "Profit", "Margin %", "Status", "State source"]
     return out
 
 
