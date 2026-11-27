@@ -423,6 +423,7 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
         has_rep = len(r) and "state_source" in r.columns and (r.state_source != "").any()
         rr = r[r.state_source != ""] if has_rep else r.iloc[0:0]
         net_pay = m.main_amount.sum(min_count=1) if len(m) else np.nan
+        spiff = m.spiff.sum(min_count=1) if len(m) and "spiff" in m.columns else np.nan
         policy_price = rr.state_revenue.sum(min_count=1) if len(rr) and rr.state_revenue.notna().any() else np.nan
         if pd.isna(policy_price) and len(m):
             a = RB.annotate(m, book)
@@ -446,7 +447,8 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
                 pass
         margin_diff = policy_margin - margin if pd.notna(policy_margin) and pd.notna(margin) else np.nan
         return {"Level": label, "Provider": provider or "All providers", "State": STATE_NAMES.get(state, state) if state else "All states",
-                "Drivers": int(m.driver.nunique()) if len(m) else 0, "Trips": int(len(m)), "Net pay": net_pay,
+                "Drivers": int(m.driver.nunique()) if len(m) else 0, "Trips": int(len(m)), "Miles": m.miles.sum(min_count=1) if len(m) and "miles" in m else np.nan,
+                "Net pay": net_pay, "Spiff": spiff,
                 "Price in current policy": policy_price, "Price difference": price_diff, "Driver payments": payments,
                 "Current profit": profit, "Current margin %": margin, "Profit if policy applied": policy_profit,
                 "Margin % in policy": policy_margin, "Margin difference %": margin_diff,
@@ -593,13 +595,32 @@ def _add_paypol(R_, rec, book):
 
 
 def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
-    """Summary-only report: company total, provider totals, then state totals."""
+    """Executive summary-only report: company total, provider totals, then state totals.
+
+    The charts deliberately use summary rows only; no trip-level detail is embedded.
+    """
     tabs = consolidated_summary_tables(main, rec, book, rate, err)
     R_ = Report("Consolidated Provider and State Summary", _period(main))
     R_.h1("Consolidated provider and state summary")
-    R_.p("Summary only: no trip-level detail is included. First and EverDriven are separated so provider shares and state comparisons remain clear.")
+    c = tabs["company"]
+    if len(c):
+        x = c.iloc[0]
+        R_.kpis({"Trips": x.get("Trips", np.nan), "Net pay": x.get("Net pay", np.nan),
+                 "Spiff": x.get("Spiff", np.nan), "Current profit": x.get("Current profit", np.nan),
+                 "Current margin %": x.get("Current margin %", np.nan),
+                 "Loss from not applying policy": x.get("Loss from not applying policy", np.nan)})
+    R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated so provider shares and state comparisons remain clear. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to Net pay.")
     for key, title in (("company", "All providers - company total"), ("providers", "Provider totals: First and EverDriven"), ("states", "State totals under each provider")):
         if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="Net pay = provider amount received. Current profit/margin use state-report revenue and driver payments. Policy values show the result if excess policy payments were removed.")
+    p = tabs["providers"].copy()
+    if len(p) and "Price difference" in p.columns:
+        p = p[["Provider", "Price difference"]].dropna()
+        if len(p): R_.chart(p, "Provider", ["Price difference"], "Price difference by provider (reported net pay vs current policy)")
+    s = tabs["states"].copy()
+    if len(s) and "Loss from not applying policy" in s.columns:
+        s["Label"] = s["Provider"].astype(str) + " - " + s["State"].astype(str)
+        s = s[["Label", "Loss from not applying policy"]].dropna()
+        if len(s): R_.chart(s, "Label", ["Loss from not applying policy"], "Potential lost profit from paying above policy by provider/state")
     return R_.build()
 
 

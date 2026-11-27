@@ -35,7 +35,7 @@ SYN = {
 }
 CANON_COLS = ["src_file", "src_sheet", "src_row", "provider", "role", "state_hint",
               "driver_disp", "driver", "trip_id", "date", "trip_name", "trip_key",
-              "miles", "main_amount", "revenue", "driver_pay", "gross_pay",
+              "miles", "main_amount", "revenue", "driver_pay", "gross_pay", "spiff",
               "cancelled", "flags"]
 
 
@@ -258,6 +258,9 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
         out["revenue"] = num("revenue").loc[det.index] if role == "state" else np.nan
         out["driver_pay"] = num("driver_pay").loc[det.index] if role == "state" else np.nan
         out["gross_pay"] = num("gross_pay").loc[det.index] if "gross_pay" in m else np.nan
+        # Keep Spiff separate for management review. main_amount remains the net amount
+        # actually received, so this field is informational and is never added twice.
+        out["spiff"] = num("spiff").loc[det.index] if "spiff" in m else np.nan
         out["cancelled"] = det[m["cancel"]].notna() if "cancel" in m else False
         # row-level data-quality flags (kept, never dropped)
         fl = pd.Series("", index=det.index)

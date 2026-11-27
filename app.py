@@ -303,7 +303,7 @@ elif page.startswith("3"):
 # ------------------------------------------------------------------ page 10: consolidated summary
 elif page.startswith("10"):
     st.header("Consolidated company, provider, and state summary")
-    st.caption("Summary only: no trip-level detail. The report starts with all providers, then separates First and EverDriven, followed by each state's totals.")
+    st.caption("Summary only: no trip-level detail. The report starts with all providers, then separates First and EverDriven, followed by each state's totals. Use the PDF button above for the executive-ready version with charts.")
     _sum_tabs = PG.consolidated_summary_tables(main, rec, RB.load(), ak_rate, err_price)
     st.subheader("All providers - company total")
     show(_sum_tabs["company"], title="Company consolidated summary")
@@ -311,6 +311,18 @@ elif page.startswith("10"):
     show(_sum_tabs["providers"], title="First and EverDriven totals")
     st.subheader("State totals under each provider")
     show(_sum_tabs["states"], title="State totals by provider")
+    if len(_sum_tabs["providers"]):
+        _pchart = _sum_tabs["providers"][["Provider", "Price difference"]].dropna().set_index("Provider")
+        if len(_pchart):
+            st.subheader("Price difference by provider")
+            st.bar_chart(_pchart)
+    if len(_sum_tabs["states"]):
+        _schart = _sum_tabs["states"].copy()
+        _schart["Provider / State"] = _schart["Provider"].astype(str) + " / " + _schart["State"].astype(str)
+        _schart = _schart[["Provider / State", "Loss from not applying policy"]].dropna().set_index("Provider / State")
+        if len(_schart):
+            st.subheader("Potential lost profit from paying above policy")
+            st.bar_chart(_schart)
     st.download_button("⬇️ Excel (summary only)", EG.build_workbook({"Company total": _sum_tabs["company"], "Provider totals": _sum_tabs["providers"], "State totals": _sum_tabs["states"]}), "Consolidated_Summary.xlsx", XLSX)
 
 # ------------------------------------------------------------------ page 4: weekly comparison
