@@ -378,7 +378,17 @@ def price_check(main, book, err=42.5, rate=45.0):
     Returns (summary by state, detail of trips paid BELOW contract, accepted-info dict). Alaska keeps the management rule:
     only trips paid exactly `err` against the official `rate` are claimed; other Alaska differences are listed as not claimed."""
     import ratebook as RB
-    a = RB.annotate(main, book); a["diff"] = (a.main_amount - a.exp_revenue).round(2)
+    # A duplicated upload row must never become two claims. Prefer the provider's
+    # trip ID; for rows without an ID use the stable trip signature.
+    _m = main.copy()
+    if "trip_id" in _m.columns:
+        _has_id = _m.trip_id.fillna("").astype(str).str.strip().ne("")
+        _with_id = _m[_has_id].drop_duplicates([c for c in ["provider", "trip_id"] if c in _m.columns], keep="first")
+        _no_id = _m[~_has_id]
+        _sig = [c for c in ["provider", "state", "date", "driver", "driver_disp", "trip_name", "miles", "main_amount"] if c in _no_id.columns]
+        _no_id = _no_id.drop_duplicates(_sig, keep="first") if _sig else _no_id
+        _m = pd.concat([_with_id, _no_id], ignore_index=True)
+    a = RB.annotate(_m, book); a["diff"] = (a.main_amount - a.exp_revenue).round(2)
     zero = a.main_amount.fillna(0).abs() < 0.005
     if "cancelled" in a.columns: zero = zero | a.cancelled.fillna(False).astype(bool)
     zero = zero | cancel_mask(a, "state", "main_amount")          # cancelled trips (Nebraska fee) are not price errors
@@ -419,7 +429,7 @@ def price_check(main, book, err=42.5, rate=45.0):
         return d
     det, ver = _det(claim), _det(verify)
     # Alaska: ONE number everywhere = the fixed-rule claim (price paid ends in .50, official = paid + 2.50). It does not need a known contract price.
-    ak_s, _, _, ak_det = first_rate_audit(main, rate, err=err)
+    ak_s, _, _, ak_det = first_rate_audit(_m, rate, err=err)
     if len(ak_det):
         akd = pd.DataFrame({"State": _nm("AK"), "Date": ak_det["Date"], "Driver": ak_det["Driver"], "Trip ID": ak_det["Trip ID"], "Trip Name": ak_det["Trip Name"], "Miles": ak_det["Miles"],
                             "Contract price": ak_det["Official price"], "Price source": "Alaska fixed rule", "Paid": ak_det["Price paid"], "Difference": -ak_det["Shortfall"],

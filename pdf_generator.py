@@ -104,7 +104,7 @@ def df_table(df, width, font=7):
     df = df.reset_index(drop=True)
     data = [[Paragraph(f"<b>{c}</b>", ParagraphStyle("th", fontName=FONT_BOLD, fontSize=font, textColor=colors.white, leading=font + 2)) for c in df.columns]]
     for _, r in df.iterrows():
-        data.append([Paragraph(fmt_cell(c, r[c]).replace("&", "&amp;").replace("<", "&lt;"), ParagraphStyle("td", fontName=FONT, fontSize=font, leading=font + 2,
+        data.append([Paragraph(fmt_cell(c, r[c]).replace("&", "&amp;").replace("<", "&lt;"), ParagraphStyle("td", fontName=FONT, fontSize=font, textColor=INK, leading=font + 2,
                      alignment=2 if isinstance(r[c], (int, float, np.number)) else 0)) for c in df.columns])
     lens = [max(11, max([len(str(c)) * 0.8] + [min(len(fmt_cell(c, v)), 28) for v in df[c].head(150)]) + 2) for c in df.columns]
     tot = sum(lens)
@@ -368,6 +368,7 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
 
 def _add_states(R_, rec):
     R_.h1("State reports: revenue, payments, profit and margin")
+    R_.p("Executive summary only: one row per state plus a TOTAL row. Trip-level rows are not included here; they remain available in the Excel state-details download.")
     t = SR.state_financials(rec)
     if t.empty: R_.p("No state reports uploaded."); return
     R_.table(t, "All states")
@@ -436,10 +437,14 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
     book = book if book is not None else RB.load()
     main = main.copy() if main is not None else pd.DataFrame()
     rec = rec.copy() if rec is not None else pd.DataFrame()
-    if len(main):
-        main["Provider"] = main.provider.map(SR.PROVIDER_NAMES).fillna(main.provider) if "provider" in main.columns else "Unknown"
-    if len(rec):
-        rec["Provider"] = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider) if "provider" in rec.columns else "Unknown"
+    if "provider" in main.columns:
+        main["Provider"] = main.provider.map(SR.PROVIDER_NAMES).fillna(main.provider)
+    elif "Provider" not in main.columns:
+        main["Provider"] = "Unknown"
+    if "provider" in rec.columns:
+        rec["Provider"] = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider)
+    elif "Provider" not in rec.columns:
+        rec["Provider"] = "Unknown"
 
     def row(label, provider, state, m, r):
         has_rep = len(r) and "state_source" in r.columns and (r.state_source != "").any()
@@ -451,6 +456,7 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
             a = RB.annotate(m, book)
             policy_price = a.exp_revenue.sum(min_count=1) if a.exp_revenue.notna().any() else np.nan
         price_diff = net_pay - policy_price if pd.notna(net_pay) and pd.notna(policy_price) else np.nan
+        claim = max(policy_price - net_pay, 0.0) if pd.notna(net_pay) and pd.notna(policy_price) else np.nan
         payments = rr.driver_payment.sum(min_count=1) if len(rr) else np.nan
         profit = (rr.state_revenue - rr.driver_payment).sum(min_count=1) if len(rr) and rr.state_revenue.notna().any() else np.nan
         base = rr.state_revenue.sum(min_count=1) if len(rr) else np.nan
@@ -468,10 +474,13 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
             except Exception:
                 pass
         margin_diff = policy_margin - margin if pd.notna(policy_margin) and pd.notna(margin) else np.nan
-        return {"Level": label, "Provider": provider or "All providers", "State": STATE_NAMES.get(state, state) if state else "All states",
+        return {"Level": label, "Provider": provider or "Company (First + EverDriven)", "State": STATE_NAMES.get(state, state) if state else "All states",
                 "Drivers": int(m.driver.nunique()) if len(m) else 0, "Trips": int(len(m)), "Miles": m.miles.sum(min_count=1) if len(m) and "miles" in m else np.nan,
-                "Net pay": net_pay, "Spiff": spiff,
-                "Price in current policy": policy_price, "Price difference": price_diff, "Driver payments": payments,
+                "Revenue paid by provider": net_pay, "Spiff": spiff,
+                "Expected revenue / amount to request": policy_price,
+                "Price difference (paid - expected)": price_diff,
+                "Amount to request from provider": claim,
+                "Expected driver payments": payments,
                 "Current profit": profit, "Current margin %": margin, "Profit if policy applied": policy_profit,
                 "Margin % in policy": policy_margin, "Margin difference %": margin_diff,
                 "Trips not matching policy": nonconforming, "Trips above policy": above,
@@ -627,17 +636,19 @@ def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
     c = tabs["company"]
     if len(c):
         x = c.iloc[0]
-        R_.kpis({"Trips": x.get("Trips", np.nan), "Net pay": x.get("Net pay", np.nan),
+        R_.kpis({"Trips": x.get("Trips", np.nan), "Revenue paid by provider": x.get("Revenue paid by provider", np.nan),
+                 "Amount to request from provider": x.get("Amount to request from provider", np.nan),
+                 "Expected driver payments": x.get("Expected driver payments", np.nan),
                  "Spiff": x.get("Spiff", np.nan), "Current profit": x.get("Current profit", np.nan),
                  "Current margin %": x.get("Current margin %", np.nan),
                  "Loss from not applying policy": x.get("Loss from not applying policy", np.nan)})
-    R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated so provider shares and state comparisons remain clear. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to Net pay.")
-    for key, title in (("company", "All providers - company total"), ("providers", "Provider totals: First and EverDriven"), ("states", "State totals under each provider")):
-        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="Net pay = provider amount received. Current profit/margin use state-report revenue and driver payments. Policy values show the result if excess policy payments were removed.")
+    R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated into clearly named provider reports. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to provider revenue.")
+    for key, title in (("company", "Company total - First + EverDriven"), ("providers", "Provider reports - First and EverDriven"), ("states", "State totals within each provider report")):
+        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="Revenue paid by provider = actual First/EverDriven payment. Expected revenue / amount to request = the state-report or current-policy amount. Expected driver payments = the amount paid to drivers. Amount to request from provider = positive unpaid shortfall only. Current profit = expected revenue minus driver payments; margin = profit divided by expected revenue.")
     p = tabs["providers"].copy()
-    if len(p) and "Price difference" in p.columns:
-        p = p[["Provider", "Price difference"]].dropna()
-        if len(p): R_.chart(p, "Provider", ["Price difference"], "Price difference by provider (reported net pay vs current policy)")
+    if len(p) and "Amount to request from provider" in p.columns:
+        p = p[["Provider", "Amount to request from provider"]].dropna()
+        if len(p): R_.chart(p, "Provider", ["Amount to request from provider"], "Amount to request from each provider")
     s = tabs["states"].copy()
     if len(s) and "Loss from not applying policy" in s.columns:
         s["Label"] = s["Provider"].astype(str) + " - " + s["State"].astype(str)

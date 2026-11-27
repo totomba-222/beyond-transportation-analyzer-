@@ -257,13 +257,20 @@ if page.startswith("1"):
         st.caption("The summary is grouped by state, not city. Exception detail keeps city, route, miles, Spiff, and a reason-to-review so a changed address/district or route is not mistaken for a pricing error.")
         show(_policy_prices, title="Provider price vs official policy price")
         if len(_policy_price_detail): show(_policy_price_detail, 400, title="Provider price differences vs official policy")
-    _cl_states = [x for x in pcs.State if (pcd.State == x).any()] if len(pcd) else []
+    # Claims metrics must use unique detail trips only; TOTAL is a display row, never a trip.
+    _claim_detail = pcd.copy() if pcd is not None else pd.DataFrame()
+    if len(_claim_detail) and "State" in _claim_detail.columns:
+        _claim_detail = _claim_detail[_claim_detail.State.astype(str).str.upper().ne("TOTAL")].copy()
+        _dedupe = [c for c in ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Paid", "Contract price", "Source file", "Source row"] if c in _claim_detail.columns]
+        if _dedupe:
+            _claim_detail = _claim_detail.drop_duplicates(_dedupe, keep="first").reset_index(drop=True)
+    _cl_states = sorted(_claim_detail.State.dropna().unique()) if len(_claim_detail) else []
     st.subheader("CLAIMS to First / EverDriven - trips paid below the contract price" + (": " + ", ".join(_cl_states) if _cl_states else ""))
     st.caption("Basis per trip: same route paid more in earlier weeks, same state + miles, or the Alaska fixed rule. Each state has the claim by price, by driver and trip by trip.")
-    _tot_n, _tot_amt = int((-pcd["Difference"] > 0).sum()), float(-pcd["Difference"].sum()) if len(pcd) else 0.0
+    _tot_n, _tot_amt = int((-_claim_detail["Difference"] > 0).sum()), float(-_claim_detail["Difference"].sum()) if len(_claim_detail) else 0.0
     cc = st.columns(2); cc[0].metric("Trips to claim", f"{_tot_n:,}"); cc[1].metric("Total to claim", money(_tot_amt))
-    for stn in pcs.State:
-        dd = pcd[pcd.State == stn]
+    for stn in _cl_states:
+        dd = _claim_detail[_claim_detail.State == stn]
         if dd.empty: continue
         gp, gd = SR.claim_tables(dd)
         with st.expander(f"{stn}: {len(dd):,} trips, {money(-dd['Difference'].sum())}", expanded=False):
@@ -271,7 +278,7 @@ if page.startswith("1"):
     st.subheader("Trip-by-trip detail")
     pick = st.selectbox("State", list(t.State)); d = SR.first_state_detail(main, names.get(pick, pick))
     st.caption(f"{len(d):,} trips - total {money(d['Revenue (trip price paid)'].sum())}"); show(d, 500)
-    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": pcd, "Official policy prices": _policy_prices, "Policy price detail": _policy_price_detail, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
+    sheets = {"Overall": pd.DataFrame([o]), "By provider": SR.provider_table(main), "By state and provider": SR.state_provider_table(main), "By state": t, "Price check": pcs, "Price check detail": _claim_detail, "Official policy prices": _policy_prices, "Policy price detail": _policy_price_detail, "Adjustments": res.adjustments, **({"Alaska claim": rdet, "Alaska claim by driver": rdrv} if len(rdet) else {})}
     for code in main.state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.first_state_detail(main, code)
     st.download_button("⬇️ Excel (totals + detail per state)", EG.build_workbook(sheets), "First_Report.xlsx", XLSX)
     pdf_button(f"{label} report", "first_report", lambda: PG.first_report(main, adjustments=res.adjustments, rate=ak_rate, err=err_price, with_book=True, states_with_report=set(rec[rec.state_source != ""].state), rec=rec))
@@ -290,7 +297,10 @@ elif page.startswith("2"):
     if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
     if (t["Trips missing revenue"] > 0).any(): st.warning("Some state-report trips have no revenue. They are kept, not counted as zero, and excluded from profit.")
     st.bar_chart(t.set_index("State")[["Revenue", "Driver Payments", "Profit"]])
-    pick = st.selectbox("State detail", list(t.State)); show(SR.state_trip_detail(rec, names.get(pick, pick)), 500)
+    st.caption("This page is summary-only. Trip-level detail is kept in the Excel download and can be opened below only when needed.")
+    with st.expander("Optional trip-level detail (not included in the summary report)"):
+        pick = st.selectbox("State detail", list(t.State))
+        show(SR.state_trip_detail(rec, names.get(pick, pick)), 500, title="State trip-level detail")
     sheets = {"States": t}
     for code in rec[rec.state_source != ""].state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.state_trip_detail(rec, code)
     st.download_button("⬇️ Excel (state reports)", EG.build_workbook(sheets), "State_Reports.xlsx", XLSX)
@@ -334,18 +344,18 @@ elif page.startswith("3"):
 # ------------------------------------------------------------------ page 10: consolidated summary
 elif page.startswith("10"):
     st.header("Consolidated company, provider, and state summary")
-    st.caption("Summary only: no trip-level detail. The report starts with all providers, then separates First and EverDriven, followed by each state's totals. Use the PDF button above for the executive-ready version with charts.")
+    st.caption("Company-wide financial summary. First and EverDriven are shown as separate provider reports, followed by each state's totals. The tables show revenue paid, expected driver payments, amount to request from the provider, shortfall, profit, and margin.")
     _sum_tabs = PG.consolidated_summary_tables(main, rec, RB.load(), ak_rate, err_price)
-    st.subheader("All providers - company total")
+    st.subheader("Company total - First + EverDriven")
     show(_sum_tabs["company"], title="Company consolidated summary")
-    st.subheader("Provider totals")
+    st.subheader("Provider reports - First and EverDriven")
     show(_sum_tabs["providers"], title="First and EverDriven totals")
     st.subheader("State totals under each provider")
     show(_sum_tabs["states"], title="State totals by provider")
     if len(_sum_tabs["providers"]):
-        _pchart = _sum_tabs["providers"][["Provider", "Price difference"]].dropna().set_index("Provider")
+        _pchart = _sum_tabs["providers"][["Provider", "Amount to request from provider"]].dropna().set_index("Provider")
         if len(_pchart):
-            st.subheader("Price difference by provider")
+            st.subheader("Amount to request from each provider")
             st.bar_chart(_pchart)
     if len(_sum_tabs["states"]):
         _schart = _sum_tabs["states"].copy()
