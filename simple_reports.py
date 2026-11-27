@@ -48,23 +48,40 @@ def state_financials(rec):
     r = rec[rec.state_source != ""]; rows = []
     def line(label, g):
         mon, trips = g[g.audit_status == "MONITOR PAYMENT"], g[g.audit_status != "MONITOR PAYMENT"]
-        # profit = revenue - payments over every row that has revenue (a trip with revenue but NO driver pay counts its full revenue as profit) + monitor costs
-        pr = g[g.state_revenue.notna() | (g.audit_status == "MONITOR PAYMENT")]
-        profit = (pr.state_revenue.fillna(0).sum() - pr.driver_payment.fillna(0).sum()) if len(pr) else np.nan; den = pr.state_revenue.sum(min_count=1)
-        return {"State": label, "Trips": len(trips), "Drivers": trips.driver.str.lower().nunique(), "Revenue": g.state_revenue.sum(min_count=1),
-                "Driver Payments": g.driver_payment.sum(min_count=1), "Monitor payments": mon.driver_payment.sum(),
-                "Profit": profit, "Margin %": profit / den * 100 if len(pr) and den else np.nan,
+        agreed_revenue = g.state_revenue.sum(min_count=1)
+        if "state_paid_revenue" in g.columns:
+            paid_series = g.state_paid_revenue.where(g.state_paid_revenue.notna(), g.state_revenue)
+        else:
+            paid_series = g.state_revenue
+        paid_revenue = paid_series.sum(min_count=1)
+        payments = g.driver_payment.sum(min_count=1)
+        profit_paid = paid_revenue - payments if pd.notna(paid_revenue) and pd.notna(payments) else np.nan
+        margin_paid = profit_paid / paid_revenue * 100 if pd.notna(profit_paid) and paid_revenue else np.nan
+        # All recorded driver/monitor payments are costs, including rows where
+        # the state report has no revenue. Missing revenue remains n/a; it is
+        # never replaced with zero, but known costs must not disappear.
+        profit = agreed_revenue - payments if pd.notna(agreed_revenue) and pd.notna(payments) else np.nan
+        margin_agreed = profit / agreed_revenue * 100 if pd.notna(profit) and agreed_revenue else np.nan
+        return {"State": label, "Trips": len(trips), "Drivers": trips.driver.str.lower().nunique(), "Revenue": agreed_revenue,
+                "Paid Revenue": paid_revenue, "Agreed Revenue": agreed_revenue, "Driver Payments": payments, "Monitor payments": mon.driver_payment.sum(),
+                "Profit (Paid)": profit_paid, "Margin % (Paid)": margin_paid, "Profit": profit, "Margin %": margin_agreed, "Profit (Agreed)": profit, "Margin % (Agreed)": margin_agreed,
                 "Trips missing revenue": int(trips.state_revenue.isna().sum())}
     for code, g in r.groupby("state"): rows.append(line(_nm(code), g))
     if not rows:
-        return pd.DataFrame(columns=["State", "Trips", "Drivers", "Revenue", "Driver Payments", "Monitor payments", "Profit", "Margin %", "Trips missing revenue"])
+        return pd.DataFrame(columns=["State", "Trips", "Drivers", "Revenue", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Monitor payments", "Profit (Paid)", "Margin % (Paid)", "Profit", "Margin %", "Profit (Agreed)", "Margin % (Agreed)", "Trips missing revenue"])
     return pd.DataFrame(rows).sort_values("Revenue", ascending=False).reset_index(drop=True)
 
 
 def state_trip_detail(rec, code):
     d = rec[(rec.state == code) & (rec.state_source != "")].sort_values(["driver", "date"])
-    out = d[["date", "driver", "trip_name", "main_miles", "main_revenue", "state_revenue", "driver_payment", "profit", "margin_pct", "audit_status", "state_source"]].copy()
-    out.columns = ["Date", "Driver", "Trip Name", "Miles", "First Revenue", "State Revenue", "Driver Payment", "Profit", "Margin %", "Status", "State source"]
+    if "state_paid_revenue" not in d.columns: d["state_paid_revenue"] = np.nan
+    if "state_agreed_price" not in d.columns: d["state_agreed_price"] = d["state_revenue"]
+    out = d[["date", "driver", "trip_name", "main_miles", "main_revenue", "state_paid_revenue", "state_agreed_price", "state_revenue", "driver_payment", "profit", "margin_pct", "audit_status", "state_source"]].copy()
+    out["Profit (Paid)"] = out["state_paid_revenue"] - out["driver_payment"]
+    out["Margin % (Paid)"] = out["Profit (Paid)"] / out["state_paid_revenue"] * 100
+    out["Profit (Agreed)"] = out["state_agreed_price"] - out["driver_payment"]
+    out["Margin % (Agreed)"] = out["Profit (Agreed)"] / out["state_agreed_price"] * 100
+    out.columns = ["Date", "Driver", "Trip Name", "Miles", "First Revenue", "Paid Price", "Agreed Price", "State Revenue Used", "Driver Payment", "Profit", "Margin %", "Status", "State source", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)", "Margin % (Agreed)"]
     return out
 
 
@@ -128,7 +145,21 @@ def ensure_total(df, label_col=None):
         if pd.api.types.is_numeric_dtype(df[c]):
             lc = str(c).lower()
             if "%" in lc:
-                row[c] = 100.0 if lc.endswith("%") or "share" in lc else np.nan
+                # Financial margin totals are weighted totals, not 100%.
+                if "margin % (paid)" == lc and "Profit (Paid)" in df.columns and "Paid Revenue" in df.columns:
+                    den = pd.to_numeric(df["Paid Revenue"], errors="coerce").sum(min_count=1)
+                    num = pd.to_numeric(df["Profit (Paid)"], errors="coerce").sum(min_count=1)
+                    row[c] = num / den * 100 if pd.notna(num) and den else np.nan
+                elif "margin % (agreed)" == lc and "Profit (Agreed)" in df.columns and "Agreed Revenue" in df.columns:
+                    den = pd.to_numeric(df["Agreed Revenue"], errors="coerce").sum(min_count=1)
+                    num = pd.to_numeric(df["Profit (Agreed)"], errors="coerce").sum(min_count=1)
+                    row[c] = num / den * 100 if pd.notna(num) and den else np.nan
+                elif lc == "margin %" and "Profit" in df.columns and "Revenue" in df.columns:
+                    den = pd.to_numeric(df["Revenue"], errors="coerce").sum(min_count=1)
+                    num = pd.to_numeric(df["Profit"], errors="coerce").sum(min_count=1)
+                    row[c] = num / den * 100 if pd.notna(num) and den else np.nan
+                else:
+                    row[c] = 100.0 if lc.endswith("%") or "share" in lc else np.nan
             else:
                 row[c] = df[c].sum(min_count=1)
     return pd.concat([df.reset_index(drop=True), pd.DataFrame([row])], ignore_index=True)

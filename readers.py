@@ -30,12 +30,13 @@ SYN = {
     "deduction": {"deduction", "deductions"},
     "spiff": {"spiff"},
     "revenue": {"revenue", "contract", "contractprice", "contractrevenue", "tripprice", "price", "totalrevenue"},
+    "agreed_price": {"agreedprice", "agreed", "approvedprice", "approvedtripprice", "agreedtripprice"},
     "driver_pay": {"payment", "pay", "driverpay", "driverpayment", "driverpayments", "amount"},
     "cancel": {"cancellationreason", "cancelreason"},
 }
 CANON_COLS = ["src_file", "src_sheet", "src_row", "provider", "role", "state_hint",
               "driver_disp", "driver", "trip_id", "date", "trip_name", "trip_key",
-              "miles", "main_amount", "revenue", "driver_pay", "gross_pay", "spiff",
+              "miles", "main_amount", "revenue", "paid_revenue", "agreed_price", "driver_pay", "gross_pay", "spiff",
               "cancelled", "flags"]
 
 
@@ -205,7 +206,7 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
         for idx in body.index[is_tot | (~has_driver & any_money)]:
             kind = "TOTAL" if _old_total[idx] else "SUBTOTAL/UNLABELED"      # extra detected totals / per-driver subtotals are excluded but not compared with the whole-sheet sum
             ctrl.append({"src_file": filename, "src_sheet": sheet, "src_row": idx + 1, "kind": kind,
-                         "declared_revenue": to_number(body.at[idx, m.get("main_amount") or m.get("revenue")]) if (m.get("main_amount") or m.get("revenue")) else np.nan,
+                         "declared_revenue": to_number(body.at[idx, m.get("agreed_price") or m.get("main_amount") or m.get("revenue")]) if (m.get("agreed_price") or m.get("main_amount") or m.get("revenue")) else np.nan,
                          "declared_driver_pay": to_number(body.at[idx, m["driver_pay"]]) if "driver_pay" in m else np.nan,
                          "declared_miles": to_number(body.at[idx, m["miles"]]) if "miles" in m else np.nan,
                          "block_start_row": None})
@@ -255,7 +256,12 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
         out["trip_key"] = out["trip_name"].map(norm_trip)
         out["miles"] = num("miles").loc[det.index]
         out["main_amount"] = num("main_amount").loc[det.index] if role == "main" else np.nan
-        out["revenue"] = num("revenue").loc[det.index] if role == "state" else np.nan
+        out["paid_revenue"] = num("revenue").loc[det.index] if role == "state" else np.nan
+        out["agreed_price"] = num("agreed_price").loc[det.index] if role == "state" and "agreed_price" in m else np.nan
+        # For state reports, the agreed price is the financial revenue used by
+        # reconciliation and all summaries. The original Revenue column stays
+        # available as paid_revenue for the Alaska state detail table.
+        out["revenue"] = out["agreed_price"].where(out["agreed_price"].notna(), out["paid_revenue"]) if role == "state" else np.nan
         out["driver_pay"] = num("driver_pay").loc[det.index] if role == "state" else np.nan
         out["gross_pay"] = num("gross_pay").loc[det.index] if "gross_pay" in m else np.nan
         # Keep Spiff separate for management review. main_amount remains the net amount
@@ -270,7 +276,7 @@ def read_report(data: bytes, filename: str, role: str = "main", overrides: dict 
         if role == "main":
             add(out["main_amount"].isna(), "MISSING AMOUNT")
         else:
-            add(out["revenue"].isna(), "MISSING REVENUE"); add(out["driver_pay"].isna(), "MISSING DRIVER PAYMENT")
+            add(out["revenue"].isna(), "MISSING AGREED/REVENUE"); add(out["driver_pay"].isna(), "MISSING DRIVER PAYMENT")
         if "date" in m:
             raw_has = det[m["date"]].notna()
             add(raw_has & out["date"].isna(), "UNPARSEABLE DATE"); add(~raw_has, "MISSING DATE")

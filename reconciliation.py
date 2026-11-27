@@ -65,7 +65,10 @@ def reconcile(main: pd.DataFrame, state: pd.DataFrame, settings=None) -> pd.Data
                 "date": (m.date if m is not None else s.date), "trip_name": (m.trip_name if m is not None else s.trip_name),
                 "main_miles": m.miles if m is not None else np.nan, "state_miles": s.miles if s is not None else np.nan,
                 "main_revenue": m.main_amount if m is not None else np.nan,
-                "state_revenue": s.revenue if s is not None else np.nan, "driver_payment": s.driver_pay if s is not None else np.nan,
+                "state_revenue": s.revenue if s is not None else np.nan,
+                "state_paid_revenue": s.paid_revenue if s is not None and "paid_revenue" in s else np.nan,
+                "state_agreed_price": s.agreed_price if s is not None and "agreed_price" in s else (s.revenue if s is not None else np.nan),
+                "driver_payment": s.driver_pay if s is not None else np.nan,
                 "main_source": f"{m.src_file}#{m.src_sheet}!{m.src_row}" if m is not None else "",
                 "state_source": f"{s.src_file}#{s.src_sheet}!{s.src_row}" if s is not None else "",
                 "main_flags": m["flags"] if m is not None else "", "state_flags": s["flags"] if s is not None else ""}
@@ -136,7 +139,7 @@ def reconcile_all(main, state_records, settings=None):
 
 
 REC_COLS = ["provider", "state", "driver", "main_trip_id", "state_trip_id", "date", "trip_name", "main_miles", "state_miles", "main_revenue",
-            "state_revenue", "driver_payment", "main_source", "state_source", "main_flags", "state_flags", "match_tier", "confidence",
+            "state_revenue", "state_paid_revenue", "state_agreed_price", "driver_payment", "main_source", "state_source", "main_flags", "state_flags", "match_tier", "confidence",
             "revenue_difference", "profit", "margin_pct", "audit_status", "notes"]
 _TXT = {"provider", "main_trip_id", "state_trip_id", "main_source", "state_source", "main_flags", "state_flags", "match_tier", "confidence", "notes", "driver", "trip_name"}
 
