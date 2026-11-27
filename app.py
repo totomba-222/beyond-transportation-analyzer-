@@ -222,8 +222,8 @@ if page.startswith("1"):
     show(pcs, title="Price check against contract prices")
     _policy_prices, _policy_price_detail = PP.price_list_check(main)
     if len(_policy_prices):
-        st.subheader("Provider price vs official policy price")
-        st.caption("This compares the amount paid by First/EverDriven with the official contracted price or approved state pricing rule. It is separate from reconciliation with the state report.")
+        st.subheader("Provider price vs official policy price (by state)")
+        st.caption("The summary is grouped by state, not city. Exception detail keeps city, route, miles, Spiff, and a reason-to-review so a changed address/district or route is not mistaken for a pricing error.")
         show(_policy_prices, title="Provider price vs official policy price")
         if len(_policy_price_detail): show(_policy_price_detail, 400, title="Provider price differences vs official policy")
     _cl_states = [x for x in pcs.State if (pcd.State == x).any()] if len(pcd) else []

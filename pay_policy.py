@@ -205,7 +205,11 @@ def band_check(rec, book=None):
 
 
 def price_list_check(main):
-    """Price First paid per trip (N.CA) vs the price list (gross) of the same route. Returns (summary, detail of trips not at list price)."""
+    """Compare provider price with official policy, summarized by state.
+
+    City remains in exception detail because N.CA policy is maintained by city;
+    the management summary is never split into city totals.
+    """
     m = main[(main.state == STATE) & main.main_amount.notna() & (main.main_amount.abs() > TOL) & main.trip_name.fillna("").ne("")]
     rows = []
     for t in m.itertuples():
@@ -214,7 +218,7 @@ def price_list_check(main):
         g = [float(x) for x in info.get("gross", [])]
         if not g: continue
         st = "At list price" if any(abs(t.main_amount - x) < TOL for x in g) else ("BELOW list price" if t.main_amount < min(g) else "ABOVE list price")
-        rows.append({"City": city, "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Paid by provider": t.main_amount, "List price": "/".join(f"{x:g}" for x in g), "Status": st,
+        rows.append({"State": t.state, "City": city, "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Miles": t.miles, "Paid by provider": t.main_amount, "List price": "/".join(f"{x:g}" for x in g), "Status": st,
                      "Shortfall": (min(g) - t.main_amount) if st.startswith("BELOW") else 0.0})
     spec = FORMULA_STATES["NM"]
     for t in main[(main.state == "NM") & main.main_amount.notna() & (main.main_amount.abs() > TOL)].itertuples():
@@ -222,22 +226,28 @@ def price_list_check(main):
         if pd.isna(exp): continue
         diff = t.main_amount - exp; ok = abs(diff) < TOL or (tail and abs(diff) <= REV_TOL)
         st = "At list price" if ok else ("BELOW list price" if diff < 0 else "ABOVE list price")
-        rows.append({"City": spec["label"], "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Paid by provider": t.main_amount, "List price": f"{exp:g}", "Status": st,
+        rows.append({"State": t.state, "City": spec["label"], "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Miles": t.miles, "Paid by provider": t.main_amount, "List price": f"{exp:g}", "Status": st,
                      "Shortfall": -diff if st.startswith("BELOW") else 0.0})
     ne = FORMULA_STATES["NE"]
     for t in main[(main.state == "NE") & main.main_amount.notna() & (main.main_amount.abs() > TOL)].itertuples():
         if _cancel_fee("NE", t.main_amount): continue          # cancelled trip: the provider pays its fee, not the list price
         diff = t.main_amount - ne["rev"][0][2]; st = "At list price" if abs(diff) < TOL else ("BELOW list price" if diff < 0 else "ABOVE list price")
-        rows.append({"City": ne["label"], "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Paid by provider": t.main_amount, "List price": f"{ne['rev'][0][2]:g}", "Status": st,
+        rows.append({"State": t.state, "City": ne["label"], "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Miles": t.miles, "Paid by provider": t.main_amount, "List price": f"{ne['rev'][0][2]:g}", "Status": st,
                      "Shortfall": -diff if st.startswith("BELOW") else 0.0})
     for t in main[(main.state == "KS") & main.main_amount.notna() & (main.main_amount.abs() > TOL) & main.miles.notna()].itertuples():
         exp = ks_net_price(t.miles); diff = t.main_amount - exp
         st = "At list price" if abs(diff) <= 0.03 else ("BELOW list price" if diff < 0 else "ABOVE list price")
-        rows.append({"City": "Kansas", "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Paid by provider": t.main_amount, "List price": f"{exp:.2f}", "Status": st,
+        rows.append({"State": t.state, "City": "Kansas", "Date": t.date, "Driver": t.driver_disp, "Trip Name": t.trip_name, "Miles": t.miles, "Paid by provider": t.main_amount, "List price": f"{exp:.2f}", "Status": st,
                      "Shortfall": -diff if st.startswith("BELOW") else 0.0})
     d = pd.DataFrame(rows)
-    if d.empty: return pd.DataFrame(columns=["City", "Trips", "At list price", "Below list", "Above list", "Shortfall"]), d
-    s = d.groupby("City").agg(Trips=("Status", "size"), **{"At list price": ("Status", lambda x: (x == "At list price").sum()), "Below list": ("Status", lambda x: x.str.startswith("BELOW").sum()),
+    if d.empty: return pd.DataFrame(columns=["State", "Trips", "At list price", "Below list", "Above list", "Shortfall"]), d
+    d["Spiff"] = np.nan
+    if "spiff" in main.columns:
+        # Spiff is shown as a separate audit field; it is not added to the paid amount again.
+        sp = main.set_index(["state", "date", "driver_disp", "trip_name"], drop=False)["spiff"] if len(main) else pd.Series(dtype=float)
+        d["Spiff"] = [sp.get((r.State, r.Date, r.Driver, r["Trip Name"]), np.nan) for _, r in d.iterrows()]
+    d["Reason to review"] = d["State"].map({"N.CA": "Route/city list: verify address/district and current miles before claiming", "NM": "Mileage formula: verify current miles and route change", "NE": "Flat policy: review negotiated exception or cancellation", "KS": "Mileage formula: verify current miles and route change"}).fillna("Verify route, miles, and any negotiated Spiff")
+    s = d.groupby("State").agg(Trips=("Status", "size"), **{"At list price": ("Status", lambda x: (x == "At list price").sum()), "Below list": ("Status", lambda x: x.str.startswith("BELOW").sum()),
                                                             "Above list": ("Status", lambda x: x.str.startswith("ABOVE").sum()), "Shortfall": ("Shortfall", "sum")}).reset_index()
     return s, d[d.Status != "At list price"].reset_index(drop=True)
 

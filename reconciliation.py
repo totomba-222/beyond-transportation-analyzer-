@@ -79,7 +79,10 @@ def reconcile(main: pd.DataFrame, state: pd.DataFrame, settings=None) -> pd.Data
         note = []
         if pd.isna(s.revenue): status = "NEEDS MANUAL REVIEW"; note.append("state revenue missing")
         elif pd.isna(m.main_amount): status = "NEEDS MANUAL REVIEW"; note.append("main amount missing")
-        elif abs(rd) > S["revenue_tolerance"]: status = "REVENUE MISMATCH"
+        elif abs(rd) > S["revenue_tolerance"]:
+            status = "REVENUE MISMATCH"
+            if pd.notna(m.miles) and pd.notna(s.miles) and abs(m.miles - s.miles) > S["mileage_tolerance"]:
+                note.append(f"mileage changed: provider {m.miles:g} vs state {s.miles:g}; verify address/district/route and negotiated Spiff")
         elif pd.notna(m.miles) and pd.notna(s.miles) and abs(m.miles - s.miles) > S["mileage_tolerance"]: status = "MILEAGE MISMATCH"
         elif pd.notna(s.driver_pay) and pd.notna(s.revenue) and s.driver_pay > s.revenue + S["payment_tolerance"]:
             status = "PAYMENT MISMATCH"; note.append("driver payment exceeds state revenue")

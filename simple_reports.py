@@ -360,8 +360,20 @@ def price_check(main, book, err=42.5, rate=45.0):
     verify = borrowed
     def _det(x):
         d = x.sort_values(["state", "driver", "date"])[["state", "date", "driver_disp", "trip_id", "trip_name", "miles", "exp_revenue", "exp_rev_src", "main_amount", "diff", "src_file", "src_row"]].copy()
+        def explain(r):
+            src = str(r.exp_rev_src).lower()
+            if src == "miles":
+                return "Same-state mileage-band estimate; verify route/district/address change"
+            if src == "route":
+                e = book.get("routes", {}).get(f"{r.state}|{route_key(r.trip_name)}", {})
+                ref = e.get("mi") if isinstance(e, dict) else None
+                if pd.notna(ref) and pd.notna(r.miles) and abs(float(r.miles) - float(ref)) > 0.51:
+                    return f"Same route history, mileage changed ({float(ref):g} reference vs {float(r.miles):g} current)"
+                return "Same route/mileage basis; provider price differs"
+            return "No route/mileage basis available"
+        d["Explanation"] = [explain(r) for r in d.itertuples()]
         d["state"] = d.state.map(_nm)
-        d.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Contract price", "Price source", "Paid", "Difference", "Source file", "Source row"]
+        d.columns = ["State", "Date", "Driver", "Trip ID", "Trip Name", "Miles", "Contract price", "Price source", "Paid", "Difference", "Source file", "Source row", "Explanation"]
         return d
     det, ver = _det(claim), _det(verify)
     # Alaska: ONE number everywhere = the fixed-rule claim (price paid ends in .50, official = paid + 2.50). It does not need a known contract price.
