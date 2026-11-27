@@ -302,10 +302,9 @@ elif page.startswith("2"):
         st.info("Upload the state reports in the sidebar to see ACTUAL revenue, payments and profit.")
         if len(_est): st.subheader("ESTIMATED financial performance (no state report yet)"); st.caption("Estimate, not actual: driver payments come from earlier weeks' pay rates."); show(_est)
         st.stop()
-    t = SR.state_financials(rec); show(t)
+    t = SR.state_financials(rec); show(t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]])
     if len(_est): st.subheader("ESTIMATED performance for states without a state report"); st.caption("Estimate, not actual: not included in the table above."); show(_est)
     if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
-    if (t["Trips missing revenue"] > 0).any(): st.warning("Some state-report trips have no revenue. They are kept, not counted as zero, and excluded from profit.")
     st.bar_chart(t.set_index("State")[["Revenue", "Driver Payments", "Profit"]])
     st.caption("This page is summary-only. Trip-level detail is kept in the Excel download and can be opened below only when needed.")
     with st.expander("Optional trip-level detail (not included in the summary report)"):
@@ -314,7 +313,7 @@ elif page.startswith("2"):
     sheets = {"States": t}
     for code in rec[rec.state_source != ""].state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.state_trip_detail(rec, code)
     st.download_button("⬇️ Excel (state reports)", EG.build_workbook(sheets), "State_Reports.xlsx", XLSX)
-    pdf_button("State report", "states", lambda: PG.states_financial_report(rec))
+    pdf_button("State Financial Report - 3 tables", "states", lambda: PG.states_financial_report(rec, main))
 
 # ------------------------------------------------------------------ page 3
 elif page.startswith("3"):

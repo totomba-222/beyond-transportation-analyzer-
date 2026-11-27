@@ -56,6 +56,8 @@ def state_financials(rec):
                 "Profit": profit, "Margin %": profit / den * 100 if len(pr) and den else np.nan,
                 "Trips missing revenue": int(trips.state_revenue.isna().sum())}
     for code, g in r.groupby("state"): rows.append(line(_nm(code), g))
+    if not rows:
+        return pd.DataFrame(columns=["State", "Trips", "Drivers", "Revenue", "Driver Payments", "Monitor payments", "Profit", "Margin %", "Trips missing revenue"])
     return pd.DataFrame(rows).sort_values("Revenue", ascending=False).reset_index(drop=True)
 
 

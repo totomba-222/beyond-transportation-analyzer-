@@ -366,14 +366,39 @@ def _add_first(R_, main, label, adjustments=None, rate=None, err=None, with_book
                      "They are shown as 'Unassigned' - upload the state reports or assign the drivers in the app.")
 
 
-def _add_states(R_, rec):
+def _add_states(R_, rec, main=None):
     R_.h1("State reports: revenue, payments, profit and margin")
-    R_.p("Executive summary only: one row per state plus a TOTAL row. Trip-level rows are not included here; they remain available in the Excel state-details download.")
+    R_.p("Executive summary only: one row per state plus a TOTAL row. Trip-level rows are not included here.")
     t = SR.state_financials(rec)
     if t.empty: R_.p("No state reports uploaded."); return
-    R_.table(t, "All states")
+    R_.table(t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]], "State reports: revenue, payments, profit and margin")
+    if main is not None and len(main):
+        tabs = consolidated_summary_tables(main, rec)
+        p = tabs.get("providers", pd.DataFrame()).copy()
+        if len(p):
+            keep = [c for c in ["Provider", "Trips", "Revenue", "Driver payments", "Profit", "Margin %"] if c in p.columns]
+            R_.table(p[keep], "Totals by provider")
+        s = tabs.get("states", pd.DataFrame()).copy()
+        if len(s):
+            keep = [c for c in ["Provider", "State", "Trips", "Revenue", "Driver payments", "Profit", "Margin %"] if c in s.columns]
+            R_.table(s[keep], "Totals by state")
+    # A simple share table: each state's share of the state-report totals.
+    # It is calculated from the same rows as Table 1, so the denominators are
+    # auditable and the three share columns each total 100%.
+    share = t[["State", "Trips", "Revenue", "Profit"]].copy()
+    trips_total = pd.to_numeric(share["Trips"], errors="coerce").sum()
+    revenue_total = pd.to_numeric(share["Revenue"], errors="coerce").sum(min_count=1)
+    profit_total = pd.to_numeric(share["Profit"], errors="coerce").sum(min_count=1)
+    share["Trips % of total"] = share["Trips"] / trips_total * 100 if trips_total else np.nan
+    share["Revenue % of total"] = share["Revenue"] / revenue_total * 100 if revenue_total else np.nan
+    share["Profit % of total"] = share["Profit"] / profit_total * 100 if profit_total else np.nan
+    share = share[["State", "Trips % of total", "Revenue % of total", "Profit % of total"]]
+    share = pd.concat([share, pd.DataFrame([{"State": "TOTAL", "Trips % of total": 100.0 if trips_total else np.nan,
+                                             "Revenue % of total": 100.0 if pd.notna(revenue_total) and revenue_total else np.nan,
+                                             "Profit % of total": 100.0 if pd.notna(profit_total) and profit_total else np.nan}])], ignore_index=True)
+    R_.table(share, "Shares by state: trips, revenue and profit", font=7.5,
+             note="Each percentage uses the corresponding total in the first table. The TOTAL row is a control check and must equal 100%.")
     if t["Monitor payments"].sum() > 0: R_.p("Monitor (MO) payments are costs: they are included in Driver Payments and in Profit; monitors have no trip revenue of their own.")
-    R_.chart(t[t.State != "TOTAL"], "State", ["Revenue", "Driver Payments", "Profit"], "Revenue, driver payments and profit by state")
 
 
 def _add_disc(R_, rec, rate=45.0, err=None):
@@ -404,8 +429,8 @@ def first_report_long(main, label=None, adjustments=None, rate=None, err=None, w
     R_ = Report(f"{label} Report", _period(main)); _add_first(R_, main, label, adjustments, rate, err, with_book, states_with_report); return R_.build()
 
 
-def states_financial_report(rec):
-    R_ = Report("State Financial Report", _period(rec)); _add_states(R_, rec); return R_.build()
+def states_financial_report(rec, main=None):
+    R_ = Report("State Financial Report", _period(rec)); _add_states(R_, rec, main); return R_.build()
 
 
 def state_three_table_report(main, rec, book=None, rate=45.0, err=None):
