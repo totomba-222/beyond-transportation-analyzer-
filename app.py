@@ -28,11 +28,20 @@ st.markdown("""
 :root{--navy:#153B5B;--teal:#0F766E;--gold:#D39B2A}
 .main .block-container{padding-top:2rem;max-width:1500px}
 h1,h2,h3{color:var(--navy)!important;letter-spacing:-.02em}
+[data-testid='stMetric']{color:#153B5B!important}
+[data-testid='stMetricLabel'],[data-testid='stMetricLabel'] *{color:#35546d!important;opacity:1!important;font-weight:600!important}
+[data-testid='stMetricValue'],[data-testid='stMetricValue'] *{color:#153B5B!important;opacity:1!important;font-weight:700!important}
+[data-testid='stMetricDelta'],[data-testid='stMetricDelta'] *{opacity:1!important}
 [data-testid='stMetric']{background:linear-gradient(135deg,#f7fafc,#eef5f7);border:1px solid #d9e4ea;border-left:4px solid var(--teal);padding:12px 14px;border-radius:10px;box-shadow:0 2px 8px rgba(21,59,91,.06)}
 [data-testid='stDataFrame']{border:1px solid #d9e4ea;border-radius:10px;overflow:hidden}
 section[data-testid='stSidebar']{background:linear-gradient(180deg,#153B5B 0%,#1d4d6f 100%)}
 section[data-testid='stSidebar'] *{color:white}
 .stButton>button,.stDownloadButton>button{border-radius:8px;border:1px solid #b8d5d2;font-weight:600}
+@media (prefers-color-scheme: dark){
+  h1,h2,h3{color:#8ed0ee!important}
+  .main .block-container p,.main .block-container label,.main .block-container [data-testid='stCaptionContainer']{color:#d7e5ed!important}
+  .main .block-container [data-testid='stExpander'] summary{color:#d7e5ed!important}
+}
 </style>
 """, unsafe_allow_html=True)
 
