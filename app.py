@@ -231,6 +231,7 @@ with st.sidebar:
     if has_state: pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
     pdf_button("MASTER report (everything in one file)", "master", lambda: PG.master_report(main, rec, hist, RB.load(), rate=ak_rate, err=err_price, adjustments=res.adjustments))
     pdf_button("Consolidated summary (company / provider / state)", "consolidated_summary", lambda: PG.consolidated_summary_report(main, rec, RB.load(), ak_rate, err_price))
+    if has_state: pdf_button("State report - 3 tables", "state_three_tables", lambda: PG.state_three_table_report(main, rec, RB.load(), ak_rate, err_price))
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
@@ -354,6 +355,8 @@ elif page.startswith("3"):
 elif page.startswith("10"):
     st.header("Consolidated company, provider, and state summary")
     st.caption("Company-wide financial summary. First and EverDriven are separate provider reports. Each state row shows trips, revenue, driver payments, profit, margin, amount to request, and the state's trip/revenue share of its provider total. Weekly comparisons are available in the Weekly comparison report.")
+    if has_state:
+        pdf_button("State report - exactly 3 tables", "state_three_tables_page", lambda: PG.state_three_table_report(main, rec, RB.load(), ak_rate, err_price))
     _sum_tabs = PG.consolidated_summary_tables(main, rec, RB.load(), ak_rate, err_price)
     st.subheader("Company total - First + EverDriven")
     show(_sum_tabs["company"], title="Company consolidated summary")
