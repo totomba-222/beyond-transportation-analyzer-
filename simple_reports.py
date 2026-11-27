@@ -68,8 +68,33 @@ def state_financials(rec):
                 "Trips missing revenue": int(trips.state_revenue.isna().sum())}
     for code, g in r.groupby("state"): rows.append(line(_nm(code), g))
     if not rows:
-        return pd.DataFrame(columns=["State", "Trips", "Drivers", "Revenue", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Monitor payments", "Profit (Paid)", "Margin % (Paid)", "Profit", "Margin %", "Profit (Agreed)", "Margin % (Agreed)", "Trips missing revenue"])
+        return pd.DataFrame(columns=["State", "Trips", "Revenue", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Monitor payments", "Profit (Paid)", "Margin % (Paid)", "Profit", "Margin %", "Profit (Agreed)", "Margin % (Agreed)", "Trips missing revenue"])
     return pd.DataFrame(rows).sort_values("Revenue", ascending=False).reset_index(drop=True)
+
+
+def state_share_table(rec):
+    """State shares calculated from the agreed-price financial rows.
+
+    The denominator is the same state-report data shown in ``state_financials``;
+    monitor-only rows are not counted as trips.  The TOTAL row is a control
+    check and is never included in the denominator.
+    """
+    fin = state_financials(rec)
+    cols = ["State", "Trips % of total", "Revenue % of total", "Profit % of total"]
+    if fin.empty:
+        return pd.DataFrame(columns=cols)
+    trips = pd.to_numeric(fin["Trips"], errors="coerce").sum(min_count=1)
+    revenue = pd.to_numeric(fin["Revenue"], errors="coerce").sum(min_count=1)
+    profit = pd.to_numeric(fin["Profit"], errors="coerce").sum(min_count=1)
+    out = fin[["State", "Trips", "Revenue", "Profit"]].copy()
+    out["Trips % of total"] = out["Trips"] / trips * 100 if pd.notna(trips) and trips else np.nan
+    out["Revenue % of total"] = out["Revenue"] / revenue * 100 if pd.notna(revenue) and revenue else np.nan
+    out["Profit % of total"] = out["Profit"] / profit * 100 if pd.notna(profit) and profit else np.nan
+    out = out[cols]
+    total = {"State": "TOTAL", "Trips % of total": 100.0 if pd.notna(trips) and trips else np.nan,
+             "Revenue % of total": 100.0 if pd.notna(revenue) and revenue else np.nan,
+             "Profit % of total": 100.0 if pd.notna(profit) and profit else np.nan}
+    return pd.concat([out, pd.DataFrame([total])], ignore_index=True)
 
 
 def state_trip_detail(rec, code):

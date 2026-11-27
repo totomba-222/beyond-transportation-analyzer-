@@ -382,20 +382,8 @@ def _add_states(R_, rec, main=None):
         if len(s):
             keep = [c for c in ["Provider", "State", "Trips", "Revenue", "Driver payments", "Profit", "Margin %"] if c in s.columns]
             R_.table(s[keep], "Totals by state")
-    # A simple share table: each state's share of the state-report totals.
-    # It is calculated from the same rows as Table 1, so the denominators are
-    # auditable and the three share columns each total 100%.
-    share = t[["State", "Trips", "Revenue", "Profit"]].copy()
-    trips_total = pd.to_numeric(share["Trips"], errors="coerce").sum()
-    revenue_total = pd.to_numeric(share["Revenue"], errors="coerce").sum(min_count=1)
-    profit_total = pd.to_numeric(share["Profit"], errors="coerce").sum(min_count=1)
-    share["Trips % of total"] = share["Trips"] / trips_total * 100 if trips_total else np.nan
-    share["Revenue % of total"] = share["Revenue"] / revenue_total * 100 if revenue_total else np.nan
-    share["Profit % of total"] = share["Profit"] / profit_total * 100 if profit_total else np.nan
-    share = share[["State", "Trips % of total", "Revenue % of total", "Profit % of total"]]
-    share = pd.concat([share, pd.DataFrame([{"State": "TOTAL", "Trips % of total": 100.0 if trips_total else np.nan,
-                                             "Revenue % of total": 100.0 if pd.notna(revenue_total) and revenue_total else np.nan,
-                                             "Profit % of total": 100.0 if pd.notna(profit_total) and profit_total else np.nan}])], ignore_index=True)
+    # Keep the UI, Excel and PDF on one source of truth for state shares.
+    share = SR.state_share_table(rec)
     R_.table(share, "Shares by state: trips, revenue and profit", font=7.5,
              note="Each percentage uses the corresponding total in the first table. The TOTAL row is a control check and must equal 100%.")
     if t["Monitor payments"].sum() > 0: R_.p("Monitor (MO) payments are costs: they are included in Driver Payments and in Profit; monitors have no trip revenue of their own.")

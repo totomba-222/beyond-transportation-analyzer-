@@ -302,7 +302,12 @@ elif page.startswith("2"):
         st.info("Upload the state reports in the sidebar to see ACTUAL revenue, payments and profit.")
         if len(_est): st.subheader("ESTIMATED financial performance (no state report yet)"); st.caption("Estimate, not actual: driver payments come from earlier weeks' pay rates."); show(_est)
         st.stop()
-    t = SR.state_financials(rec); show(t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]])
+    t = SR.state_financials(rec)
+    show(t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]])
+    st.subheader("State shares of total trips, revenue and profit")
+    st.caption("Percentages use the same agreed-price state-report rows above. TOTAL is a control row and should equal 100% in each column.")
+    shares = SR.state_share_table(rec)
+    show(shares, title="State shares of total trips, revenue and profit")
     if len(_est): st.subheader("ESTIMATED performance for states without a state report"); st.caption("Estimate, not actual: not included in the table above."); show(_est)
     if t["Monitor payments"].sum() > 0: st.caption("Monitor (MO) payments are costs: included in Driver Payments and Profit; monitors have no trip revenue of their own.")
     st.bar_chart(t.set_index("State")[["Revenue", "Driver Payments", "Profit"]])
@@ -312,7 +317,8 @@ elif page.startswith("2"):
         show(SR.state_trip_detail(rec, names.get(pick, pick)), 500, title="State trip-level detail")
     # The general state summary stays on the agreed-price financial view;
     # Alaska's paid/agreed comparison is available only in its state detail.
-    sheets = {"States": t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]]}
+    sheets = {"States": t[["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]],
+              "State shares": shares}
     for code in rec[rec.state_source != ""].state.unique(): sheets[STATE_NAMES.get(code, code)[:28]] = SR.state_trip_detail(rec, code)
     st.download_button("⬇️ Excel (state reports)", EG.build_workbook(sheets), "State_Reports.xlsx", XLSX)
     pdf_button("State Financial Report - 3 tables", "states", lambda: PG.states_financial_report(rec, main))
