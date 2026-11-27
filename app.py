@@ -92,7 +92,7 @@ def pdf_button(label, key, fn):
 
 
 st.title("Beyond Transportation | Financial & Operations Audit")
-st.caption("Professional audit dashboard | لوحة مراجعة مالية وتشغيلية احترافية")
+st.caption("Professional financial and operations audit dashboard")
 ss = st.session_state; ss.setdefault("overrides", {}); ss.setdefault("colmap", {}); ss.setdefault("editable_map", {})
 with st.sidebar:
     st.subheader("1) First / EverDriven reports")

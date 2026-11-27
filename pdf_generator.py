@@ -66,28 +66,8 @@ EXPLAIN = [
 ]
 
 
-AR_LABELS = {
-    "Financial & Operations Audit Report": "تقرير المراجعة المالية والتشغيلية",
-    "Executive summary": "الملخص التنفيذي",
-    "Overall and by state": "الإجمالي حسب الولاية",
-    "State reports: revenue, payments, profit and margin": "تقارير الولايات: الإيرادات والمدفوعات والربح والهامش",
-    "Price check against contract prices (rate book)": "مراجعة الأسعار مقابل أسعار العقد",
-    "Provider price vs official policy price (by state)": "سعر المزود مقابل السعر الرسمي للسياسة حسب الولاية",
-    "Summary by state": "ملخص حسب الولاية",
-    "Totals by state": "الإجماليات حسب الولاية",
-    "Totals by provider": "الإجماليات حسب المزود",
-    "Exceptions and discrepancies": "الاستثناءات والفروقات",
-    "Driver pay policy review": "مراجعة سياسة أجور السائقين",
-    "Weekly performance comparison": "مقارنة الأداء الأسبوعي",
-    "Monthly performance comparison": "مقارنة الأداء الشهري",
-}
-
 def bi_label(text):
-    text = str(text or "")
-    for en, ar in AR_LABELS.items():
-        if en.lower() in text.lower():
-            return f"{text} | {ar}"
-    return text
+    return str(text or "")
 
 
 def explain_for(title):
@@ -164,7 +144,7 @@ class Report:
         c.setFillColor(colors.white); c.setFont(FONT_BOLD, 10); c.drawString(12 * mm, h - 8 * mm, BRAND)
         c.setFont(FONT, 7.5); c.drawString(12 * mm, h - 13 * mm, bi_label(self.subtitle) + f"  |  Period: {self.period}")
         c.setStrokeColor(TEAL); c.setLineWidth(1.2); c.line(12 * mm, 11 * mm, w - 12 * mm, 11 * mm)
-        c.setFillColor(MUTED); c.setFont(FONT, 6.8); c.drawString(12 * mm, 6.5 * mm, f"{BRAND} | generated {self.generated} | USD | سري للاستخدام الداخلي")
+        c.setFillColor(MUTED); c.setFont(FONT, 6.8); c.drawString(12 * mm, 6.5 * mm, f"{BRAND} | generated {self.generated} | USD | Internal use")
         c.drawRightString(w - 12 * mm, 6.5 * mm, f"Page {doc.page}"); c.restoreState()
 
     def portrait(self):
