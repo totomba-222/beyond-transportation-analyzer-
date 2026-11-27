@@ -16,20 +16,31 @@ import pay_policy as PP
 import simple_reports as SR
 from config import DEFAULT_SETTINGS, STATE_NAMES
 
-st.set_page_config(page_title="Hatem's B.T. Analyzer", page_icon="🚐", layout="wide")
+st.set_page_config(page_title="Beyond Transportation | Audit Dashboard", page_icon="🚐", layout="wide")
 MONEY_K = ("revenue", "payment", "profit", "difference", "paid")
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 _TBL = [0]
-st.markdown("<style>[data-testid='stElementToolbar']{display:none !important}</style>", unsafe_allow_html=True)   # no CSV download icon: tables are downloaded as PDF
+st.markdown("""
+<style>
+[data-testid='stElementToolbar']{display:none !important}
+:root{--navy:#153B5B;--teal:#0F766E;--gold:#D39B2A}
+.main .block-container{padding-top:2rem;max-width:1500px}
+h1,h2,h3{color:var(--navy)!important;letter-spacing:-.02em}
+[data-testid='stMetric']{background:linear-gradient(135deg,#f7fafc,#eef5f7);border:1px solid #d9e4ea;border-left:4px solid var(--teal);padding:12px 14px;border-radius:10px;box-shadow:0 2px 8px rgba(21,59,91,.06)}
+[data-testid='stDataFrame']{border:1px solid #d9e4ea;border-radius:10px;overflow:hidden}
+section[data-testid='stSidebar']{background:linear-gradient(180deg,#153B5B 0%,#1d4d6f 100%)}
+section[data-testid='stSidebar'] *{color:white}
+.stButton>button,.stDownloadButton>button{border-radius:8px;border:1px solid #b8d5d2;font-weight:600}
+</style>
+""", unsafe_allow_html=True)
 
 
 def show(df, height=None, title=None):
+    # Keep TOTAL rows and add one when a numeric report has none. Totals are never detail trips.
     if df is not None and len(df):
-        labels = df.astype(object).apply(lambda col: col.map(lambda v: str(v).strip().lower()))
-        total_rows = labels.apply(lambda col: col.str.match(r"^(grand\s+|sub\s*)?total(\b|\s*\()", na=False)).any(axis=1)
-        df = df.loc[~total_rows].reset_index(drop=True)
+        df = SR.ensure_total(df)
     if df is None or len(df) == 0:
         st.info("No records."); return
     cfg = {}
@@ -61,7 +72,8 @@ def pdf_button(label, key, fn):
         st.download_button(f"⬇️ Download PDF: {label}", st.session_state[f"pdf_{key}"], f"{key}.pdf", "application/pdf", key=f"dl_{key}")
 
 
-st.title("Hatem's B.T. Analyzer")
+st.title("Beyond Transportation | Financial & Operations Audit")
+st.caption("Professional audit dashboard | لوحة مراجعة مالية وتشغيلية احترافية")
 ss = st.session_state; ss.setdefault("overrides", {}); ss.setdefault("colmap", {}); ss.setdefault("editable_map", {})
 with st.sidebar:
     st.subheader("1) First / EverDriven reports")

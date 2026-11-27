@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.units import mm
 from reportlab.platypus import (KeepTogether, BaseDocTemplate, Frame, Image, LongTable, NextPageTemplate, PageBreak,
                                 PageTemplate, Paragraph, Spacer, TableStyle)
@@ -18,12 +20,19 @@ import financial_calculations as F, weekly_reports as W, monthly_reports as M
 from config import STATE_NAMES
 
 BRAND, TITLE = "Beyond Transportation", "Beyond Transportation – Financial & Operations Audit Report"
-NAVY, GREY = colors.HexColor("#1F3A5F"), colors.HexColor("#F2F5F9")
+NAVY, TEAL, GOLD = colors.HexColor("#153B5B"), colors.HexColor("#0F766E"), colors.HexColor("#D39B2A")
+INK, MUTED, GREY = colors.HexColor("#172B4D"), colors.HexColor("#52606D"), colors.HexColor("#F4F7FA")
+try:
+    pdfmetrics.registerFont(TTFont("BT-Regular", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+    pdfmetrics.registerFont(TTFont("BT-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+except Exception:
+    pass
+FONT, FONT_BOLD = ("BT-Regular", "BT-Bold") if "BT-Regular" in pdfmetrics.getRegisteredFontNames() else ("Helvetica", "Helvetica-Bold")
 SS = getSampleStyleSheet()
-H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName="Helvetica-Bold", fontSize=15, textColor=NAVY, spaceAfter=6)
-H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, spaceBefore=8, spaceAfter=4)
-EXP = ParagraphStyle("exp", fontName="Helvetica", fontSize=7.5, leading=9.5, textColor=colors.HexColor("#4B5563"))
-BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName="Helvetica", fontSize=8.5, leading=11)
+H1 = ParagraphStyle("h1", parent=SS["Heading1"], fontName=FONT_BOLD, fontSize=16, leading=20, textColor=NAVY, spaceBefore=8, spaceAfter=8)
+H2 = ParagraphStyle("h2", parent=SS["Heading2"], fontName=FONT_BOLD, fontSize=11, leading=14, textColor=NAVY, spaceBefore=10, spaceAfter=5)
+EXP = ParagraphStyle("exp", fontName=FONT, fontSize=7.5, leading=10, textColor=MUTED, spaceAfter=4)
+BODY = ParagraphStyle("b", parent=SS["BodyText"], fontName=FONT, fontSize=8.5, leading=12, textColor=INK)
 MONEY_K = ("revenue", "payment", "profit", "difference", "shortfall", "owed", "expected", "actual", "cost", "spent", "price", "paid", "adjust", "pay", "short", "total")
 
 EXPLAIN = [
@@ -55,6 +64,30 @@ EXPLAIN = [
     ("=State by month", "The same monthly figures for each state."),
     ("=By state", "Each state's trips, revenue, profit and margin for the periods compared; the % columns show the change between them."),
 ]
+
+
+AR_LABELS = {
+    "Financial & Operations Audit Report": "تقرير المراجعة المالية والتشغيلية",
+    "Executive summary": "الملخص التنفيذي",
+    "Overall and by state": "الإجمالي حسب الولاية",
+    "State reports: revenue, payments, profit and margin": "تقارير الولايات: الإيرادات والمدفوعات والربح والهامش",
+    "Price check against contract prices (rate book)": "مراجعة الأسعار مقابل أسعار العقد",
+    "Provider price vs official policy price (by state)": "سعر المزود مقابل السعر الرسمي للسياسة حسب الولاية",
+    "Summary by state": "ملخص حسب الولاية",
+    "Totals by state": "الإجماليات حسب الولاية",
+    "Totals by provider": "الإجماليات حسب المزود",
+    "Exceptions and discrepancies": "الاستثناءات والفروقات",
+    "Driver pay policy review": "مراجعة سياسة أجور السائقين",
+    "Weekly performance comparison": "مقارنة الأداء الأسبوعي",
+    "Monthly performance comparison": "مقارنة الأداء الشهري",
+}
+
+def bi_label(text):
+    text = str(text or "")
+    for en, ar in AR_LABELS.items():
+        if en.lower() in text.lower():
+            return f"{text} | {ar}"
+    return text
 
 
 def explain_for(title):
@@ -89,16 +122,20 @@ def fmt_cell(col, v):
 
 def df_table(df, width, font=7):
     df = df.reset_index(drop=True)
-    data = [[Paragraph(f"<b>{c}</b>", ParagraphStyle("th", fontName="Helvetica-Bold", fontSize=font, textColor=colors.white, leading=font + 2)) for c in df.columns]]
+    data = [[Paragraph(f"<b>{c}</b>", ParagraphStyle("th", fontName=FONT_BOLD, fontSize=font, textColor=colors.white, leading=font + 2)) for c in df.columns]]
     for _, r in df.iterrows():
-        data.append([Paragraph(fmt_cell(c, r[c]).replace("&", "&amp;").replace("<", "&lt;"), ParagraphStyle("td", fontName="Helvetica", fontSize=font, leading=font + 2,
+        data.append([Paragraph(fmt_cell(c, r[c]).replace("&", "&amp;").replace("<", "&lt;"), ParagraphStyle("td", fontName=FONT, fontSize=font, leading=font + 2,
                      alignment=2 if isinstance(r[c], (int, float, np.number)) else 0)) for c in df.columns])
     lens = [max(11, max([len(str(c)) * 0.8] + [min(len(fmt_cell(c, v)), 28) for v in df[c].head(150)]) + 2) for c in df.columns]
     tot = sum(lens)
     t = LongTable(data, colWidths=[width * l / tot for l in lens], repeatRows=1)
-    st = [("BACKGROUND", (0, 0), (-1, 0), NAVY), ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#C9D1DC")),
-          ("VALIGN", (0, 0), (-1, -1), "TOP"), ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    st = [("BACKGROUND", (0, 0), (-1, 0), NAVY), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+          ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CBD5E1")), ("VALIGN", (0, 0), (-1, -1), "TOP"),
+          ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
           ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GREY])]
+    if len(df):
+        st += [("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E5EEF5")),
+               ("TEXTCOLOR", (0, -1), (-1, -1), NAVY), ("LINEABOVE", (0, -1), (-1, -1), 1.0, TEAL)]
     t.setStyle(TableStyle(st))
     return t
 
@@ -107,7 +144,7 @@ def _chart(df, x, ys, title):
     if df.empty:
         return None
     fig, ax = plt.subplots(figsize=(7.5, 2.8)); d = df.set_index(x)[ys]
-    d.plot(kind="bar", ax=ax, color=["#1F3A5F", "#2E8B57", "#C9A227"][:len(ys)], width=0.75)
+    d.plot(kind="bar", ax=ax, color=["#153B5B", "#0F766E", "#D39B2A"][:len(ys)], width=0.75)
     ax.set_title(title, fontsize=9); ax.set_xlabel(""); ax.tick_params(labelsize=7); ax.legend(fontsize=7)
     ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"${v:,.0f}"))
     plt.xticks(rotation=20); plt.tight_layout(); b = io.BytesIO(); fig.savefig(b, format="png", dpi=160); plt.close(fig); b.seek(0)
@@ -122,12 +159,13 @@ class Report:
 
     def _deco(self, c, doc):
         w, h = c._pagesize
-        c.saveState(); c.setFillColor(NAVY); c.rect(0, h - 16 * mm, w, 16 * mm, fill=1, stroke=0)
-        c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 10); c.drawString(12 * mm, h - 8 * mm, TITLE)
-        c.setFont("Helvetica", 8); c.drawString(12 * mm, h - 12.5 * mm, f"{self.subtitle}  |  Period: {self.period}")
-        c.setFillColor(colors.grey); c.setFont("Helvetica", 7)
-        c.drawString(12 * mm, 7 * mm, f"{BRAND} - generated {self.generated} - all amounts in USD")
-        c.drawRightString(w - 12 * mm, 7 * mm, f"Page {doc.page}"); c.restoreState()
+        c.saveState(); c.setFillColor(NAVY); c.rect(0, h - 19 * mm, w, 19 * mm, fill=1, stroke=0)
+        c.setFillColor(GOLD); c.rect(0, h - 19 * mm, 5 * mm, 19 * mm, fill=1, stroke=0)
+        c.setFillColor(colors.white); c.setFont(FONT_BOLD, 10); c.drawString(12 * mm, h - 8 * mm, BRAND)
+        c.setFont(FONT, 7.5); c.drawString(12 * mm, h - 13 * mm, bi_label(self.subtitle) + f"  |  Period: {self.period}")
+        c.setStrokeColor(TEAL); c.setLineWidth(1.2); c.line(12 * mm, 11 * mm, w - 12 * mm, 11 * mm)
+        c.setFillColor(MUTED); c.setFont(FONT, 6.8); c.drawString(12 * mm, 6.5 * mm, f"{BRAND} | generated {self.generated} | USD | سري للاستخدام الداخلي")
+        c.drawRightString(w - 12 * mm, 6.5 * mm, f"Page {doc.page}"); c.restoreState()
 
     def portrait(self):
         if self.mode != "P": self.story += [NextPageTemplate("P"), PageBreak()]; self.mode = "P"
@@ -144,8 +182,8 @@ class Report:
 
     def section(self, mode):
         self.story += [NextPageTemplate(mode), PageBreak()]; self.mode = mode
-    def h1(self, t): self.story.append(Paragraph(t, H1))
-    def h2(self, t): self.story.append(Paragraph(t, H2))
+    def h1(self, t): self.story.append(Paragraph(bi_label(t), H1))
+    def h2(self, t): self.story.append(Paragraph(bi_label(t), H2))
     def p(self, t): self.story.append(Paragraph(t, BODY))
     def kpis(self, d):
         rows = [[k, fmt_cell(k, v)] for k, v in d.items()]
@@ -155,6 +193,8 @@ class Report:
         (self.land if wide else self.portrait)()
         if title: self.h2(title)
         if df is None or len(df) == 0: self.p("No records in this scope."); return
+        # Every numeric report table ends with a visible TOTAL row; percentages are not summed.
+        df = SR.ensure_total(df)
         self.story.append(df_table(df, self.width, font or (6.5 if len(df.columns) > 9 else 7.5)))
         txt = note if note is not None else explain_for(title)
         if txt: self.story += [Spacer(1, 2), Paragraph("<i>What this table shows:</i> " + txt, EXP), Spacer(1, 4)]

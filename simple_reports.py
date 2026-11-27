@@ -27,6 +27,10 @@ def first_state_table(main):
     g["State"] = g.state.map(_nm); g["Revenue/Trip"] = g.Revenue / g.Trips
     g["Trips %"] = g.Trips / g.Trips.sum() * 100; g["Revenue %"] = g.Revenue / g.Revenue.sum() * 100
     g = g.sort_values("Revenue", ascending=False)[["State", "Trips", "Drivers", "Miles", "Revenue", "Revenue/Trip", "Trips %", "Revenue %"]]
+    g = _with_total(g, "State", ["Trips", "Drivers", "Miles", "Revenue"])
+    if len(g):
+        i = g.index[-1]; g.loc[i, "Revenue/Trip"] = g.loc[i, "Revenue"] / g.loc[i, "Trips"] if g.loc[i, "Trips"] else np.nan
+        g.loc[i, "Trips %"], g.loc[i, "Revenue %"] = 100.0, 100.0
     return g.reset_index(drop=True)
 
 
@@ -94,8 +98,38 @@ def share_figure(t, cols=("Trips", "Revenue", "Profit")):
     plt.tight_layout(); return fig
 
 
+def _has_total(df, label_col=None):
+    if df is None or df.empty: return False
+    col = label_col or df.columns[0]
+    return df[col].astype(str).str.strip().str.upper().isin(["TOTAL", "GRAND TOTAL"]).any()
+
+
 def _with_total(df, label_col, sums):
-    return df.reset_index(drop=True)
+    """Append one auditable TOTAL row without treating it as a detail record."""
+    if df is None or df.empty or _has_total(df, label_col):
+        return df.reset_index(drop=True) if df is not None else df
+    row = {c: np.nan for c in df.columns}; row[label_col] = "TOTAL"
+    for c in sums:
+        if c in df.columns:
+            row[c] = df[c].sum(min_count=1)
+    return pd.concat([df.reset_index(drop=True), pd.DataFrame([row])], ignore_index=True)
+
+
+def ensure_total(df, label_col=None):
+    """Add a total to any displayed numeric table; percentage columns are left n/a unless already calculated."""
+    if df is None or len(df) == 0: return df
+    label_col = label_col or df.columns[0]
+    if _has_total(df, label_col): return df.reset_index(drop=True)
+    row = {c: np.nan for c in df.columns}; row[label_col] = "TOTAL"
+    for c in df.columns:
+        if c == label_col: continue
+        if pd.api.types.is_numeric_dtype(df[c]):
+            lc = str(c).lower()
+            if "%" in lc:
+                row[c] = 100.0 if lc.endswith("%") or "share" in lc else np.nan
+            else:
+                row[c] = df[c].sum(min_count=1)
+    return pd.concat([df.reset_index(drop=True), pd.DataFrame([row])], ignore_index=True)
 
 
 def discrepancy_sections(rec, code):
@@ -141,7 +175,11 @@ def state_only_by_driver(rec, code):
 
 
 def _tot(df, trips_col="Trips", sum_cols=()):
-    return df.reset_index(drop=True)
+    if df is None or df.empty:
+        return df.reset_index(drop=True) if df is not None else df
+    # Use the first descriptive column as the label (usually Trips is not the first column).
+    label = next((c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])), df.columns[0])
+    return _with_total(df, label, [trips_col, *sum_cols])
 
 
 def claim_split(rec, code, rate=45.0, err=None):
@@ -252,6 +290,9 @@ def provider_table(main):
         Trips=("main_amount", "size"), Drivers=("driver", "nunique"), Miles=("miles", "sum"), Revenue=("main_amount", lambda s: s.sum(min_count=1))).reset_index()
     g["Revenue/Trip"] = g.Revenue / g.Trips; g["Revenue %"] = g.Revenue / g.Revenue.sum() * 100
     g = g.set_index("Provider").loc[_order(g.Provider)].reset_index()
+    g = _with_total(g, "Provider", ["Trips", "Drivers", "Miles", "Revenue"])
+    if len(g):
+        i = g.index[-1]; g.loc[i, "Revenue/Trip"] = g.loc[i, "Revenue"] / g.loc[i, "Trips"] if g.loc[i, "Trips"] else np.nan; g.loc[i, "Revenue %"] = 100.0
     return g.reset_index(drop=True)
 
 
@@ -263,7 +304,8 @@ def state_provider_table(main):
         for p in provs:
             gp = g[g.P == p]; row[f"{p} Trips"] = len(gp); row[f"{p} Revenue"] = gp.main_amount.sum()
         row["Total Trips"] = len(g); row["Total Revenue"] = g.main_amount.sum(min_count=1); rows.append(row)
-    return pd.DataFrame(rows).sort_values("Total Revenue", ascending=False).reset_index(drop=True)
+    out = pd.DataFrame(rows).sort_values("Total Revenue", ascending=False).reset_index(drop=True)
+    return _with_total(out, "State", [c for c in out.columns if c != "State"])
 
 
 def revenue_bridge(rec, rate=45.0, err=None):
@@ -392,7 +434,21 @@ def price_check(main, book, err=42.5, rate=45.0):
             nu, su, nv, sv = len(u), (-u["diff"].sum() if len(u) else 0.0), len(v), (-v["diff"].sum() if len(v) else 0.0)
         rows.append({"State": _nm(code), "Trips": len(g), "Trips with a known contract price": len(k), "Coverage %": len(k) / len(g) * 100 if len(g) else np.nan,
                      "Trips paid below contract price": nu, "Total shortfall": su})
-    t = pd.DataFrame(rows).sort_values("Trips", ascending=False).reset_index(drop=True)
+    # Start from every state in the uploaded provider report; filtering zero/cancelled rows
+    # must not make an uploaded state disappear from the by-state report.
+    state_codes = [x for x in main.state.dropna().unique() if str(x) not in ("Unassigned", "NEEDS REVIEW")]
+    by_state = {r["State"]: r for r in rows}
+    for code in state_codes:
+        label = _nm(code); eligible = int((a.state == code).sum()); matched = int((known.state == code).sum())
+        if label not in by_state:
+            by_state[label] = {"State": label, "Trips": eligible, "Trips with a known contract price": matched,
+                               "Coverage %": matched / eligible * 100 if eligible else np.nan,
+                               "Trips paid below contract price": 0, "Total shortfall": 0.0}
+    t = pd.DataFrame(list(by_state.values())).sort_values("Trips", ascending=False).reset_index(drop=True)
+    total = {"State":"TOTAL", "Trips":int(t.Trips.sum()), "Trips with a known contract price":int(t["Trips with a known contract price"].sum()),
+             "Coverage %":t["Trips with a known contract price"].sum() / t.Trips.sum() * 100 if t.Trips.sum() else np.nan,
+             "Trips paid below contract price":int(t["Trips paid below contract price"].sum()), "Total shortfall":t["Total shortfall"].sum()}
+    t = pd.concat([t, pd.DataFrame([total])], ignore_index=True)
     return t, det, {"accepted_trips": len(verify), "accepted_amount": -verify["diff"].sum() if len(verify) else 0.0, "verify": ver}
 
 
@@ -444,7 +500,11 @@ def pay_check(rec, book, tol=0.005):
                      "Trips paid above policy": len(o), "Total excess pay": o.excess.sum(), "Trips paid above trip revenue": len(l),
                      "Their loss": (l.driver_payment - l.state_revenue).sum()})
     t = pd.DataFrame(rows, columns=["State", "Trips with driver pay", "Trips with a pay policy", "Coverage %", "Trips paid above policy", "Total excess pay", "Trips paid above trip revenue", "Their loss"])
-    t = t.sort_values("Trips with driver pay", ascending=False).reset_index(drop=True)
+    total = {"State":"TOTAL", "Trips with driver pay":t["Trips with driver pay"].sum(), "Trips with a pay policy":t["Trips with a pay policy"].sum(),
+             "Coverage %": t["Trips with a pay policy"].sum() / t["Trips with driver pay"].sum() * 100 if t["Trips with driver pay"].sum() else np.nan,
+             "Trips paid above policy":t["Trips paid above policy"].sum(), "Total excess pay":t["Total excess pay"].sum(),
+             "Trips paid above trip revenue":t["Trips paid above trip revenue"].sum(), "Their loss":t["Their loss"].sum()}
+    t = pd.concat([t.sort_values("Trips with driver pay", ascending=False).reset_index(drop=True), pd.DataFrame([total])], ignore_index=True)
     cols = ["state", "date", "driver", "trip_name", "main_miles", "state_revenue", "driver_payment", "policy", "excess", "match_tier", "state_source"]
     names = ["State", "Date", "Driver", "Trip Name", "Miles", "Trip revenue", "Driver pay", "Pay policy", "Excess pay", "Trip matched by", "State source"]
     mk = lambda d: d.sort_values(["state", "excess"], ascending=[True, False])[cols].rename(columns=dict(zip(cols, names))).assign(State=lambda x: x.State.map(_nm)).reset_index(drop=True)

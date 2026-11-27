@@ -249,6 +249,23 @@ def price_list_check(main):
     d["Reason to review"] = d["State"].map({"N.CA": "Route/city list: verify address/district and current miles before claiming", "NM": "Mileage formula: verify current miles and route change", "NE": "Flat policy: review negotiated exception or cancellation", "KS": "Mileage formula: verify current miles and route change"}).fillna("Verify route, miles, and any negotiated Spiff")
     s = d.groupby("State").agg(Trips=("Status", "size"), **{"At list price": ("Status", lambda x: (x == "At list price").sum()), "Below list": ("Status", lambda x: x.str.startswith("BELOW").sum()),
                                                             "Above list": ("Status", lambda x: x.str.startswith("ABOVE").sum()), "Shortfall": ("Shortfall", "sum")}).reset_index()
+    # Coverage is not compliance: it is the share of eligible uploaded trips for which
+    # an official list price could be determined. Keep every uploaded state visible.
+    eligible = main[main.main_amount.notna() & (main.main_amount.abs() > TOL) & main.trip_name.fillna("").ne("")].groupby("state").size()
+    s["Trips with known official price"] = s["Trips"]
+    all_states = [x for x in main.state.dropna().unique() if str(x) not in ("Unassigned", "NEEDS REVIEW")]
+    for code in all_states:
+        if code not in set(s.State):
+            s = pd.concat([s, pd.DataFrame([{"State": code, "Trips": 0, "At list price": 0, "Below list": 0, "Above list": 0, "Shortfall": 0.0, "Trips with known official price": 0}])], ignore_index=True)
+        elif code in eligible.index:
+            s.loc[s.State == code, "Trips"] = int(eligible.loc[code])
+    s["Trips with known official price"] = s["State"].map(d.groupby("State").size()).fillna(0).astype(int)
+    s["Coverage %"] = s["Trips with known official price"] / s["Trips"].replace(0, np.nan) * 100
+    s = s[["State", "Trips", "Trips with known official price", "Coverage %", "At list price", "Below list", "Above list", "Shortfall"]].sort_values("Trips", ascending=False).reset_index(drop=True)
+    total = {"State":"TOTAL", "Trips":int(s.Trips.sum()), "Trips with known official price":int(s["Trips with known official price"].sum()),
+             "Coverage %":s["Trips with known official price"].sum() / s.Trips.sum() * 100 if s.Trips.sum() else np.nan,
+             "At list price":int(s["At list price"].sum()), "Below list":int(s["Below list"].sum()), "Above list":int(s["Above list"].sum()), "Shortfall":s.Shortfall.sum()}
+    s = pd.concat([s, pd.DataFrame([total])], ignore_index=True)
     return s, d[d.Status != "At list price"].reset_index(drop=True)
 
 
