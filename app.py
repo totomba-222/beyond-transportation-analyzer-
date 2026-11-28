@@ -65,9 +65,9 @@ def _display_total(df):
     return pd.concat([df.reset_index(drop=True), pd.DataFrame([row])], ignore_index=True)
 
 
-def show(df, height=None, title=None):
+def show(df, height=None, title=None, add_total=True):
     # Keep TOTAL rows and add one when a numeric report has none. Totals are never detail trips.
-    if df is not None and len(df):
+    if add_total and df is not None and len(df):
         df = _display_total(df)
     if df is None or len(df) == 0:
         st.info("No records."); return
@@ -225,25 +225,38 @@ except Exception as e:
     st.sidebar.warning(f"Weekly history could not be saved automatically: {e}")
 st.sidebar.caption("The app saves weekly totals during normal reruns. For reliable retention after a cloud restart or redeploy, download weekly_history.csv and upload it again next week.")
 st.sidebar.download_button("⬇️ Download weekly history (CSV)", HI.to_csv(hist), "weekly_history.csv", "text/csv")
-page = st.sidebar.radio("Report", [f"1) {SR.provider_label(main)} report", "2) State reports (revenue, payments, profit)", "3) Discrepancy report", "4) Weekly comparison", "5) Monthly report", "6) Monthly comparison", "7) Driver pay policy review", "8) Full report per state", "9) Driver report", "10) Consolidated summary"])
+_state_codes = sorted(rec.loc[rec.state_source != "", "state"].dropna().unique()) if len(rec) and "state_source" in rec.columns else []
+_state_labels = {f"{i + 3}) {STATE_NAMES.get(code, code)} state report": code for i, code in enumerate(_state_codes)}
+_consolidated_label = f"{len(_state_labels) + 3}) Consolidated state summary"
+_general_labels = {
+    "discrepancy": f"{len(_state_labels) + 4}) Discrepancy report",
+    "weekly": f"{len(_state_labels) + 5}) Weekly comparison",
+    "monthly": f"{len(_state_labels) + 6}) Monthly report",
+    "monthly_cmp": f"{len(_state_labels) + 7}) Monthly comparison",
+    "policy": f"{len(_state_labels) + 8}) Driver pay policy review",
+    "driver": f"{len(_state_labels) + 9}) Driver report",
+}
+_report_options = ["1) First report", "2) EverDriven report", *_state_labels.keys(), _consolidated_label, *_general_labels.values()]
+page = st.sidebar.radio("Report", _report_options)
 with st.sidebar:
     st.divider()
     if has_state: pdf_button("Combined report (all 3)", "combined", lambda: PG.combined_report(main, rec, rate=ak_rate, adjustments=res.adjustments, err=err_price))
     pdf_button("MASTER report (everything in one file)", "master", lambda: PG.master_report(main, rec, hist, RB.load(), rate=ak_rate, err=err_price, adjustments=res.adjustments))
-    pdf_button("Consolidated summary (company / provider / state)", "consolidated_summary", lambda: PG.consolidated_summary_report(main, rec, RB.load(), ak_rate, err_price))
-    if has_state: pdf_button("State report - 3 tables", "state_three_tables", lambda: PG.state_three_table_report(main, rec, RB.load(), ak_rate, err_price))
-    if has_state:
-        st.caption("Individual state reports")
-        for _code in sorted(rec[rec.state_source != ""].state.dropna().unique()):
-            _state_name = STATE_NAMES.get(_code, _code)
-            pdf_button(f"{_state_name} state report", f"state_{_code.replace('.', '_')}",
-                       lambda c=_code: PG.state_full_report_long(c, main, rec, hist, RB.load(), rate=ak_rate, err=err_price))
+    st.caption("Select a report above to preview it in the main workspace, then use its download button.")
 names = {v: k for k, v in STATE_NAMES.items()}
 
 # ------------------------------------------------------------------ page 1
-if page.startswith("1"):
+if page in ("1) First report", "2) EverDriven report"):
+    _provider_view = "First" if page.startswith("1)") else "EverDriven"
+    _main_all, _rec_all = main, rec
+    _main_provider = _main_all.provider.map(SR.PROVIDER_NAMES).fillna(_main_all.provider).astype(str).str.casefold()
+    _rec_provider = rec.provider.map(SR.PROVIDER_NAMES).fillna(rec.provider).astype(str) if "provider" in rec.columns else pd.Series("", index=rec.index)
+    _rec_provider = _rec_provider.where(_rec_provider.str.strip().ne(""), rec.state.map(PG.provider_of) if "state" in rec.columns else _rec_provider).astype(str).str.casefold()
+    main = _main_all[_main_provider == _provider_view.casefold()].copy()
+    rec = _rec_all[_rec_provider == _provider_view.casefold()].copy()
+    has_state = bool(len(rec) and (rec.state_source != "").any())
     label = SR.provider_label(main)
-    st.header(f"{label} report")
+    st.header(f"{_provider_view} report")
     o = SR.first_overview(main, res.adjustments); c = st.columns(6 if "Adjustments" in o else 4)
     c[0].metric("Total trips", f"{o['Trips']:,}"); c[1].metric("Total revenue", money(o["Revenue"])); c[2].metric("Drivers", f"{o['Drivers']:,}"); c[3].metric("Miles", f"{o['Miles']:,.0f}")
     if "Adjustments" in o:
@@ -324,7 +337,14 @@ elif page.startswith("2"):
     pdf_button("State Financial Report - 3 tables", "states", lambda: PG.states_financial_report(rec, main))
 
 # ------------------------------------------------------------------ page 3
-elif page.startswith("3"):
+elif page in _state_labels:
+    st.header(f"{STATE_NAMES.get(_state_labels[page], _state_labels[page])} state report")
+    st.caption("This report is displayed in the application first. The compact PDF download is available after the preview.")
+    import state_view as SV
+    _selected_state = _state_labels[page]
+    SV.render(_selected_state, main, rec, hist, RB.load(), ak_rate, err_price, show)
+
+elif page == _general_labels["discrepancy"]:
     st.header("Differences between First and the state reports")
     if not has_state: st.info("Upload the state reports to see the differences."); st.stop()
     n_acc, amt_acc = SR.accepted_summary(rec)
@@ -359,18 +379,25 @@ elif page.startswith("3"):
 
 
 # ------------------------------------------------------------------ page 10: consolidated summary
-elif page.startswith("10"):
+elif page == _consolidated_label:
     st.header("Consolidated company, provider, and state summary")
     st.caption("Company-wide financial summary. First and EverDriven are separate provider reports. Each state row shows trips, revenue, driver payments, profit, margin, amount to request, and the state's trip/revenue share of its provider total. Weekly comparisons are available in the Weekly comparison report.")
     if has_state:
         pdf_button("State report - exactly 3 tables", "state_three_tables_page", lambda: PG.state_three_table_report(main, rec, RB.load(), ak_rate, err_price))
     _sum_tabs = PG.consolidated_summary_tables(main, rec, RB.load(), ak_rate, err_price)
     st.subheader("Company total - First + EverDriven")
+    st.subheader("First and EverDriven consolidated totals")
+    st.caption("Exactly two provider rows: one for First and one for EverDriven. Company totals are shown below the provider table.")
+    show(_sum_tabs["providers"].head(2), title="First and EverDriven totals", add_total=False)
+    st.subheader("Company total - First + EverDriven")
     show(_sum_tabs["company"], title="Company consolidated summary")
-    st.subheader("Provider reports - First and EverDriven")
-    show(_sum_tabs["providers"], title="First and EverDriven totals")
     st.subheader("State totals under each provider")
-    show(_sum_tabs["states"], title="State totals by provider")
+    _state_summary = _sum_tabs["states"].copy()
+    if len(_state_summary):
+        _state_summary["Trips % of total"] = _state_summary["Trips"] / _state_summary["Trips"].sum() * 100
+        _state_summary["Revenue % of total"] = _state_summary["Revenue"] / _state_summary["Revenue"].sum() * 100
+        _state_summary["Profit % of total"] = _state_summary["Profit"] / _state_summary["Profit"].sum() * 100
+    show(_state_summary, title="State totals and shares of company totals")
     if len(_sum_tabs["providers"]):
         _pchart = _sum_tabs["providers"][["Provider", "Amount to request from provider"]].dropna().set_index("Provider")
         if len(_pchart):
@@ -383,10 +410,10 @@ elif page.startswith("10"):
         if len(_schart):
             st.subheader("Potential lost profit from paying above policy")
             st.bar_chart(_schart)
-    st.download_button("⬇️ Excel (summary only)", EG.build_workbook({"Company total": _sum_tabs["company"], "Provider totals": _sum_tabs["providers"], "State totals": _sum_tabs["states"]}), "Consolidated_Summary.xlsx", XLSX)
+    st.download_button("⬇️ Excel (summary only)", EG.build_workbook({"Company total": _sum_tabs["company"], "Provider totals": _sum_tabs["providers"].head(2), "State totals": _state_summary}), "Consolidated_Summary.xlsx", XLSX)
 
 # ------------------------------------------------------------------ page 4: weekly comparison
-elif page.startswith("4"):
+elif page == _general_labels["weekly"]:
     st.header("Weekly comparison")
     st.caption("Previous weeks come from the history CSV you upload in the sidebar plus this session. Revenue = paid by First / EverDriven; payments, profit and margin exist only for states with a state report.")
     ws = HI.weeks(hist)
@@ -407,7 +434,7 @@ elif page.startswith("4"):
     pdf_button("Weekly comparison report", "weekly_cmp", lambda: PG.weekly_comparison_report(hist, wk))
 
 # ------------------------------------------------------------------ page 5: monthly report
-elif page.startswith("5"):
+elif page == _general_labels["monthly"]:
     st.header("Monthly report")
     mt_ = HI.monthly_table(hist)
     if mt_.empty: st.info("No dated trips."); st.stop()
@@ -419,7 +446,7 @@ elif page.startswith("5"):
     pdf_button("Monthly report", "monthly", lambda: PG.monthly_report_pdf(hist))
 
 # ------------------------------------------------------------------ page 6: monthly comparison
-elif page.startswith("6"):
+elif page == _general_labels["monthly_cmp"]:
     st.header("Monthly comparison")
     months = sorted(hist.month.dropna().unique())
     if len(months) < 2: st.info("Needs two months in the history (upload the saved history CSV)."); st.stop()
@@ -433,7 +460,7 @@ elif page.startswith("6"):
     pdf_button("Monthly comparison", "monthly_cmp", lambda: PG.monthly_comparison_report(hist, m1, m2))
 
 # ------------------------------------------------------------------ page 7: driver pay policy review
-elif page.startswith("7"):
+elif page == _general_labels["policy"]:
     st.header("Driver pay policy review")
     if not has_state: st.info("Upload the state reports to review driver payments."); st.stop()
     _book = RB.load()
@@ -471,9 +498,9 @@ elif page.startswith("7"):
 
 
 # ------------------------------------------------------------------ page 8: full report per state
-elif page.startswith("8"):
+elif page == "8) Full report per state":
     st.header("Full report per state")
-    st.caption("One report per state, shown on the screen and downloadable as a 2-page PDF or an Excel file: First/EverDriven vs the state report, prices paid, pay policy, and the differences for the state manager. States without a state report get the estimate and the price check only.")
+    st.caption("One compact management report per state, downloadable as a 3-page maximum PDF or an Excel file. It includes financial totals, all-driver performance, grouped price differences and policy results; trip-level details remain in the Excel/detail views.")
     import state_view as SV
     codes_ = PG.report_states(main, rec); _b8 = RB.load()
     if ss.get("state_pick") not in codes_: ss["state_pick"] = codes_[0] if codes_ else None
@@ -487,7 +514,7 @@ elif page.startswith("8"):
     if st.button("Generate ZIP with all states", key="gen_zip"): ss["zip_all"] = PG.all_states_zip(main, rec, hist, _b8, ak_rate, err_price)
     if ss.get("zip_all"): st.download_button("⬇️ Download ZIP: all states", ss["zip_all"], "All_States_Full_Reports.zip", "application/zip", key="dl_zip")
 
-elif page.startswith("9"):
+elif page == _general_labels["driver"]:
     st.header("Driver report")
     st.caption("Pick a driver: every trip of his from the uploaded reports (provider price, state-report revenue and pay, differences, pay policy), as a PDF or Excel file.")
     import excel_generator as EG

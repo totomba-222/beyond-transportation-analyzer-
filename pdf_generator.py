@@ -100,7 +100,7 @@ def fmt_cell(col, v):
     return str(v)
 
 
-def df_table(df, width, font=7):
+def df_table(df, width, font=7, tight=False):
     df = df.reset_index(drop=True)
     data = [[Paragraph(f"<b>{c}</b>", ParagraphStyle("th", fontName=FONT_BOLD, fontSize=font, textColor=colors.white, leading=font + 2)) for c in df.columns]]
     for _, r in df.iterrows():
@@ -109,9 +109,10 @@ def df_table(df, width, font=7):
     lens = [max(11, max([len(str(c)) * 0.8] + [min(len(fmt_cell(c, v)), 28) for v in df[c].head(150)]) + 2) for c in df.columns]
     tot = sum(lens)
     t = LongTable(data, colWidths=[width * l / tot for l in lens], repeatRows=1)
+    pad = 1.5 if tight else 4
     st = [("BACKGROUND", (0, 0), (-1, 0), NAVY), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
           ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#CBD5E1")), ("VALIGN", (0, 0), (-1, -1), "TOP"),
-          ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+          ("TOPPADDING", (0, 0), (-1, -1), pad), ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
           ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GREY])]
     if len(df):
         st += [("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E5EEF5")),
@@ -169,15 +170,15 @@ class Report:
         rows = [[k, fmt_cell(k, v)] for k, v in d.items()]
         t = df_table(pd.DataFrame(rows, columns=["KPI", "Value"]).astype(object), 90 * mm, 8)
         self.story += [t, Spacer(1, 6)]
-    def table(self, df, title=None, wide=True, font=None, note=None):
+    def table(self, df, title=None, wide=True, font=None, note=None, tight=False, add_total=True):
         (self.land if wide else self.portrait)()
         if title: self.h2(title)
         if df is None or len(df) == 0: self.p("No records in this scope."); return
         # Every numeric report table ends with a visible TOTAL row; percentages are not summed.
         total_helper = getattr(SR, "ensure_total", None)
-        if callable(total_helper):
+        if callable(total_helper) and add_total:
             df = total_helper(df)
-        self.story.append(df_table(df, self.width, font or (6.5 if len(df.columns) > 9 else 7.5)))
+        self.story.append(df_table(df, self.width, font or (6.5 if len(df.columns) > 9 else 7.5), tight=tight))
         txt = note if note is not None else explain_for(title)
         if txt: self.story += [Spacer(1, 2), Paragraph("<i>What this table shows:</i> " + txt, EXP), Spacer(1, 4)]
     def chart(self, df, x, ys, title):
@@ -543,7 +544,9 @@ def consolidated_summary_tables(main, rec, book=None, rate=45.0, err=None):
                 "Loss from not applying policy": loss, "Trips not checked": not_checked}
 
     states = sorted(set(main.state.dropna()) | set(rec.state.dropna())) if len(main) or len(rec) else []
-    providers = sorted((set(main.Provider.dropna()) | set(rec.Provider.dropna())) - {"", "Unknown", "Company (First + EverDriven)"}) if len(main) or len(rec) else []
+    providers = [p for p in ("First", "EverDriven") if p in (set(main.Provider.dropna()) | set(rec.Provider.dropna()))]
+    if not providers and (len(main) or len(rec)):
+        providers = sorted((set(main.Provider.dropna()) | set(rec.Provider.dropna())) - {"", "Unknown", "Company (First + EverDriven)"})
     state_rows = [row("State", p, st, main[(main.Provider == p) & (main.state == st)], rec[(rec.Provider == p) & (rec.state == st)]) for p in providers for st in states if ((main.Provider == p) & (main.state == st)).any() or ((rec.Provider == p) & (rec.state == st)).any()]
     provider_rows = [row("Provider", p, None, main[main.Provider == p], rec[rec.Provider == p]) for p in providers]
     company = pd.DataFrame([row("Company", None, None, main, rec)])
@@ -734,8 +737,9 @@ def consolidated_summary_report(main, rec, book=None, rate=45.0, err=None):
                  "Amount to request from provider": x.get("Amount to request from provider", np.nan),
                  "Policy loss": x.get("Policy loss", np.nan)})
     R_.p("<b>Management interpretation:</b> this report is summary-only and contains no trip-level rows. First and EverDriven are separated into clearly named provider reports. Contract price is evaluated using the matched trip/route and its reported miles where a mile-based rule applies; a route or district/address change must be reviewed as a new negotiated route rather than automatically treated as an error. Spiff is shown separately and is not added twice to provider revenue.")
-    for key, title in (("company", "Company total - First + EverDriven"), ("providers", "Provider reports - First and EverDriven"), ("states", "State totals within each provider report")):
-        if len(tabs[key]): R_.table(tabs[key], title, font=6.5, note="This is an executive summary, not a trip list. Revenue = state-report/current-policy revenue used for the financial result. Driver payments = expected payments to drivers. Amount to request from provider = positive unpaid shortfall only. Trips % of provider and Revenue % of provider compare each First state with First total, and each EverDriven state with EverDriven total. Current profit = revenue minus driver payments; margin = profit divided by revenue.")
+    for key, title in (("providers", "First and EverDriven consolidated totals"), ("company", "Company total - First + EverDriven"), ("states", "State totals within each provider report")):
+        if len(tabs[key]):
+            R_.table(tabs[key].head(2) if key == "providers" else tabs[key], title, font=6.5, add_total=(key != "providers"), note="This is an executive summary, not a trip list. Revenue = state-report/current-policy revenue used for the financial result. Driver payments = expected payments to drivers. Amount to request from provider = positive unpaid shortfall only. Trips % of provider and Revenue % of provider compare each First state with First total, and each EverDriven state with EverDriven total. Current profit = revenue minus driver payments; margin = profit divided by aggregated revenue.")
     p = tabs["providers"].copy()
     if len(p) and "Amount to request from provider" in p.columns:
         p = p[["Provider", "Amount to request from provider"]].dropna()
@@ -814,6 +818,95 @@ def state_full_report_long(code, main, rec, hist, book, rate=45.0, err=None, wee
 
 
 # ---------------------------------------------------------------- compact 2-page state report (long version kept as state_full_report_long)
+def state_compact_report(code, main, rec, hist=None, book=None, rate=45.0, err=None, week=None):
+    """Administrative state report capped at three landscape pages.
+
+    This is the user-facing state PDF: financial totals, all-driver performance,
+    and grouped exceptions/policy results. Trip-level rows and weekly/monthly
+    history remain available in the Excel/detail views instead of expanding the
+    management PDF into 20+ pages.
+    """
+    import ratebook as RB
+    book = book if book is not None else RB.load()
+    nm = STATE_NAMES.get(code, code)
+    ms, rs = main[main.state == code], rec[rec.state == code]
+    has_rep = bool(len(rs)) and bool((rs.state_source != "").any())
+    R_ = Report(f"{nm} - Compact State Report", _period(ms if len(ms) else rs))
+    R_.land()
+
+    R_.h1(f"{nm}: executive summary")
+    k = {"Provider trips": len(ms), "Drivers": ms.driver.nunique() if len(ms) else 0,
+         "Miles": ms.miles.sum(min_count=1) if len(ms) else np.nan,
+         "Provider revenue paid": ms.main_amount.sum(min_count=1) if len(ms) else np.nan}
+    if has_rep:
+        fin = SR.state_financials(rs)
+        row = fin[fin.State == nm]
+        if len(row):
+            row = row.iloc[0]
+            k.update({"State-report trips": row["Trips"], "Agreed revenue": row["Revenue"],
+                      "Paid revenue (comparison)": row.get("Paid Revenue", np.nan),
+                      "Driver payments": row["Driver Payments"], "Monitor payments": row["Monitor payments"],
+                      "Profit": row["Profit"], "Margin %": row["Margin %"]})
+    R_.kpis(k)
+    if has_rep:
+        if code == "AK":
+            cols = ["State", "Trips", "Paid Revenue", "Agreed Revenue", "Driver Payments", "Profit (Paid)", "Margin % (Paid)", "Profit (Agreed)"]
+            R_.table(fin[cols], "Financial reconciliation: paid vs agreed price", font=7,
+                     note="Agreed Revenue is used for the financial result. Paid Revenue is retained only as a comparison value.")
+        else:
+            cols = ["State", "Trips", "Revenue", "Driver Payments", "Profit", "Margin %"]
+            R_.table(fin[cols], "Financial result", font=7)
+    if len(ms):
+        pc, _, _ = SR.price_check(ms, book, SR._err(err), rate)
+        pc = pc[pc.State == nm] if (pc.State == nm).any() else pc.iloc[-1:]
+        pcols = [c for c in ["State", "Trips", "Trips with a known contract price", "Coverage %",
+                             "Trips paid below contract price", "Total shortfall"] if c in pc.columns]
+        R_.table(pc[pcols], "Price coverage and grouped shortfall", font=7,
+                 note="The detailed trip list is intentionally omitted from this management PDF and remains available in Excel/detail views.")
+    R_.p("This compact report contains the complete management summary for the state. It does not repeat weekly/monthly history or print every trip as a separate page.")
+
+    R_.section("L")
+    R_.h1(f"{nm}: driver performance")
+    if has_rep:
+        d = F.driver_table(rs, code)
+        keep = [c for c in ["Driver", "Trips", "Miles", "Revenue", "State Revenue", "Driver Payments", "Profit", "Margin %"] if c in d.columns]
+        R_.table(d[keep], "All drivers", font=5.5, tight=True,
+                 note="One row per driver. Monitor-only entries are included in total driver payments and profit but have no trip revenue.")
+    else:
+        R_.p("No state report was uploaded, so driver payments and profit are not available.")
+
+    R_.section("L")
+    R_.h1(f"{nm}: differences, policy and action summary")
+    if has_rep:
+        rr = SR.apply_rate_rule(rs, rate, err)
+        ds = SR.discrepancy_summary(rr)
+        if len(ds):
+            dcols = [c for c in ["State", "Trips with price difference", "Total difference (First - State)",
+                                 "Trips in First but not in state report", "Trips in state report but not in First",
+                                 "Their driver payments"] if c in ds.columns]
+            R_.table(ds[dcols], "Reconciliation exceptions by state", font=6.5)
+        claim, _ = SR.claim_split(rr, code, rate, err)
+        if len(claim):
+            ccols = [c for c in ["Trips", "Official price", "Price paid by First", "Shortfall per trip", "Total owed"] if c in claim.columns]
+            R_.table(claim[ccols], "Grouped price shortages", font=7)
+        detail, summary, pk = SR.policy_compliance_report(rs, book)
+        if len(summary):
+            scols = [c for c in ["State", "Trips checked", "Compliant", "Non-compliant", "Not verifiable",
+                                 "Coverage %", "Non-compliant %", "Loss from non-compliance"] if c in summary.columns]
+            R_.table(summary[scols], "Driver-pay policy compliance", font=6.5,
+                     note="A missing policy input is NOT_VERIFIABLE, never compliant. Loss counts positive payments above policy.")
+            R_.kpis({"Policy trips checked": pk["Trips"], "Compliant": pk["Compliant"],
+                     "Non-compliant": pk["Non-compliant"], "Not verifiable": pk["Not verifiable"],
+                     "Loss from non-compliance": pk["Loss"]})
+        mo = SR.monitor_by_driver(rr, code)
+        if len(mo):
+            mcols = [c for c in ["Monitor", "Entries", "Driver Payment"] if c in mo.columns]
+            R_.table(mo[mcols], "Monitor payments", font=7)
+    else:
+        R_.p("No state report was uploaded, so reconciliation and policy compliance cannot be verified.")
+    return R_.build()
+
+
 def provider_of(code):
     """The company that pays Beyond in this state: EverDriven (NE, KS) or First (all others)."""
     from config import EVERDRIVEN_STATES

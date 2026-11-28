@@ -211,7 +211,7 @@ def render(code, main, rec, hist, book, rate, err, show):
 
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("Download PDF report", SP.state_report_pdf(D, hist, None, rate, err), f"{fn}_report.pdf", "application/pdf", key=f"sv_pdf_{code}", use_container_width=True, type="primary")
+        st.download_button("Download compact PDF report", PG.state_compact_report(code, main, rec, hist, book, rate=rate, err=err), f"{fn}_compact_report.pdf", "application/pdf", key=f"sv_pdf_{code}", use_container_width=True, type="primary")
     with c2:
         st.download_button("Download Excel (all details)", PG.state_excel(code, main, rec, hist, book, rate, err), f"{fn}_details.xlsx", XLSX, key=f"sv_xls_{code}", use_container_width=True)
 
